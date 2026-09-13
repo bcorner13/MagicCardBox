@@ -468,6 +468,51 @@ failure (4 mm of connection out of 105) happened while the audit was clean. Trea
 audit as necessary, never sufficient — and for anything that moves, measure `distToShape`
 as well as `common().Volume`.
 
+### THE TWO CHECKS THAT PASS WHILE THE MODEL IS WRONG
+
+Both of these were learned the expensive way on 2026-09-13. They share a shape: the obvious
+test returns green because it is looking somewhere the defect is not. Run them BY HAND after
+any change to a moving interface or a feature tree — no script here catches either.
+
+**1. A zero gap is not an interference. Measure `distToShape`, not just `common().Volume`.**
+
+`common().Volume` is 0.000 for surfaces that merely TOUCH. The lid's rear panel rode on the
+box at radius exactly 5.000 for the whole 0-90 deg swing — a ~95 mm line contact that would
+have welded shut in a print-in-place part — and the swing test passed at every angle the
+entire time. For anything that has to move relative to something else:
+
+```python
+gap  = box.distToShape(rotated_lid)[0]      # the number that matters
+volume = box.common(rotated_lid).Volume     # 0.0 proves nothing on its own
+```
+
+Macro 16's export gate now checks the GAP, which is why it can refuse a mesh that every
+interference test would have waved through.
+
+**2. Geometrically perfect and structurally inconsistent are not exclusive. Check Group
+order against the BaseFeature chain.**
+
+PartDesign carries TWO orderings of a Body's features:
+  * `BaseFeature` — the chain the solid is actually computed from
+  * `Group` — the tree order, which FreeCAD **re-derives `BaseFeature` from** on later
+    evaluations (reload, reopening a feature for edit, ...)
+
+`body.newObject()` appends to the END of `Group`. So setting only `BaseFeature` leaves the
+two disagreeing, and FreeCAD will silently rewrite one from the other later. Macro 25 did
+exactly this and produced a **cycle** — `Chamfer.BaseFeature = PocketKnuckleRelief` while
+`PocketKnuckleRelief.BaseFeature = Chamfer`. The Chamfer then held `?Edge30` and died when
+the feature was next opened; cancelling that dialog deleted it outright.
+
+Every geometric check had passed: valid, closed, single solid, exactly 10.000 mm3 removed,
+0.4000 mm gap at 90 deg. All of them true, because `BaseFeature` was correct at that instant
+and that is what the shape is computed from. None of them looked at the tree.
+
+Whenever a macro reorders features or inserts one mid-chain, rebuild BOTH and then verify —
+`macros/25-knuckle_relief_parametric.FCMacro` carries `check_body_order()`, which walks the
+chain from its root and refuses if any feature is unreachable or in a cycle, if
+`Group != chain`, or if `Tip` is not the chain end. **Run it against every body in the
+document, not just the one you touched.** Macro 24 does the reorder correctly; copy from it.
+
 **Exemptions and known blind spots:**
 
 - No dimensional exemptions — every one of the 19 is a real violation that must be bound.
