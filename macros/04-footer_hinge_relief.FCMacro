@@ -1,0 +1,185 @@
+# -*- coding: utf-8 -*-
+"""
+04-footer_hinge_relief.FCMacro — MagicCardBox
+
+Cuts the hinge relief in the footer (Pad001) so the lid can actually swing.
+
+WHAT THE MEASUREMENT SAID — read this before assuming small notches would do
+---------------------------------------------------------------------------
+The lid was swept about the hinge axis in 5 deg steps and intersected with the footer
+solid (everything below Z=0). Result:
+
+  * Interference starts at **5 deg** of opening -- the lid is blocked essentially
+    immediately, not just at large angles.
+  * The required relief is **full width**: X -49.95..49.95, Y 22.77..35.95, Z -2..0,
+    total 2249 mm^3.
+  * It is NOT two small pockets at the hinge tabs. The lid's rear panel spans the whole
+    width of the box (X -48.5..48.5) and its bottom edge sweeps down and back through the
+    footer's rear edge across the entire width. Per-zone split of the swept volume:
+    left tab 197 mm^3, centre/rear panel 1855 mm^3, right tab 197 mm^3 -- the middle is
+    the bulk of it.
+
+So the relief is one full-width slot across the rear of the footer, not hinge-local
+cutouts. After this the box rests on the front ~54 mm of the footer plate; the rear
+~15 mm is recessed by FooterHeight.
+
+PARAMETRIC BASIS (deliberately conservative)
+--------------------------------------------
+The front edge of the relief is placed at the forward-most reach of the hinge tab's
+swept circle rather than at the measured 22.77:
+
+    Y_front = Depth/2 - HingeAxisFromRear - HingeTabRadius - HingeSwingClearance
+            = 34.5 - 5 - 10 - 0.5 = 19.0
+
+The tab arc has radius HingeTabRadius about the axis, so nothing on the lid can ever
+reach forward of (axis - HingeTabRadius) at any angle. Using that bound instead of the
+empirical 22.77 removes ~3.8 mm more footer, but it stays correct for ANY combination of
+Depth / HingeAxisFromRear / HingeTabRadius, which an empirical number would not.
+
+The slot is deliberately over-extended in X (to +/-Width) and rearward (to +Depth) so it
+always clears the taper flare. Over-extending a cut into empty space is harmless and
+avoids having to model the flare.
+
+ALSO FIXED HERE (both geometry-neutral, both invisible to the audit script)
+  * Pad001.Length was bound to WallThickness -- footer height and wall thickness are
+    different concerns that merely share the value 2.0. Rebound to a new FooterHeight.
+  * Pad001.TaperAngle was the literal 35.999999 deg. The audit does not check TaperAngle,
+    so it passed a clean audit while unbound. Bound to a new FooterTaperAngle = 36 deg.
+    This nudges the value by 1e-6 deg; the resulting flare change is ~1e-8 mm.
+
+Idempotent: re-running skips objects that already exist and only re-asserts expressions.
+
+Run: Macro -> Macros... -> 04-footer_hinge_relief -> Execute
+"""
+
+import FreeCAD
+import Part
+import Sketcher
+
+DOC = "MagicCardBox"
+BODY = "Body"
+SKETCH = "Sketch005"
+POCKET = "Pocket003"
+P = "<<Params>>#VarSet."
+
+NEW_VARS = [
+    ("FooterHeight", "App::PropertyLength", 2.0, "Footer",
+     "Height of the footer plinth below the box floor. Distinct from WallThickness: "
+     "this is a stance/clearance dimension, not a shell dimension."),
+    ("FooterTaperAngle", "App::PropertyAngle", 36.0, "Footer",
+     "Outward taper of the footer, measured from vertical. Was an unbound literal that "
+     "the audit script cannot see, because it checks Length/Radius but not TaperAngle."),
+    ("HingeSwingClearance", "App::PropertyLength", 0.5, "Clearances",
+     "Gap between the swinging lid and the footer relief. A third, separate clearance "
+     "concern from HingePinClearance and HingeTabClearance -- do not merge them."),
+]
+
+E_X = P + "Width"
+E_YFRONT = (P + "Depth / 2 - " + P + "HingeAxisFromRear - "
+            + P + "HingeTabRadius - " + P + "HingeSwingClearance")
+E_YREAR = P + "Depth"
+E_DEPTH = P + "FooterHeight"
+
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject(BODY)
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+# ---- 1. Params -------------------------------------------------------------
+for name, typ, default, group, docstr in NEW_VARS:
+    if name in vs.PropertiesList:
+        log.append("Param %s already present (%s) - left alone" % (name, getattr(vs, name)))
+        continue
+    vs.addProperty(typ, name, group, docstr)
+    setattr(vs, name, default)
+    log.append("Param %s = %s added" % (name, default))
+
+# ---- 2. Re-bind the footer pad itself --------------------------------------
+pad = doc.getObject("Pad001")
+pad.setExpression("Length", P + "FooterHeight")
+pad.setExpression("TaperAngle", P + "FooterTaperAngle")
+log.append("Pad001.Length -> FooterHeight, Pad001.TaperAngle -> FooterTaperAngle")
+
+# ---- 3. Relief sketch ------------------------------------------------------
+XE = vs.Width.Value
+YF = (vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+      - vs.HingeTabRadius.Value - vs.HingeSwingClearance.Value)
+YR = vs.Depth.Value
+
+sk = doc.getObject(SKETCH)
+if sk is None:
+    xy = None
+    for f in body.Origin.OriginFeatures:
+        if f.Role == "XY_Plane":
+            xy = f
+            break
+    if xy is None:
+        raise RuntimeError("Body origin has no XY_Plane")
+    sk = body.newObject("Sketcher::SketchObject", SKETCH)
+    sk.AttachmentSupport = [(xy, "")]
+    sk.MapMode = "FlatFace"
+
+    V = FreeCAD.Vector
+    pts = [V(-XE, YF, 0), V(XE, YF, 0), V(XE, YR, 0), V(-XE, YR, 0)]
+    for i in range(4):
+        sk.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+    for i in range(4):
+        sk.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 0))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 2))
+    sk.addConstraint(Sketcher.Constraint("Vertical", 1))
+    sk.addConstraint(Sketcher.Constraint("Vertical", 3))
+    i_xr = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, XE))
+    i_xl = sk.addConstraint(Sketcher.Constraint("DistanceX", 3, 1, -1, 1, XE))
+    i_yf = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, YF))
+    i_yr = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, YR))
+    log.append("created %s (4 lines, DoF-complete)" % SKETCH)
+else:
+    idx = {}
+    for i, c in enumerate(sk.Constraints):
+        idx[(c.Type, c.First, c.FirstPos, c.Second, c.SecondPos)] = i
+    i_xr = idx[("DistanceX", -1, 1, 1, 1)]
+    i_xl = idx[("DistanceX", 3, 1, -1, 1)]
+    i_yf = idx[("DistanceY", -1, 1, 0, 1)]
+    i_yr = idx[("DistanceY", -1, 1, 2, 1)]
+    log.append("%s already exists - re-asserting expressions" % SKETCH)
+
+for i, e in ((i_xr, E_X), (i_xl, E_X), (i_yf, E_YFRONT), (i_yr, E_YREAR)):
+    sk.setExpression("Constraints[%d]" % i, e)
+
+# ---- 4. Pocket -------------------------------------------------------------
+pk = doc.getObject(POCKET)
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", POCKET)
+    pk.Profile = sk
+    pk.Type = 0                      # Length
+    pk.Reversed = False              # cuts along -Z, i.e. down through the footer
+    log.append("created %s" % POCKET)
+else:
+    log.append("%s already exists" % POCKET)
+pk.setExpression("Length", E_DEPTH)
+sk.Visibility = False
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 04-footer_hinge_relief ===")
+for line in log:
+    print("  " + line)
+print("Sketch005 DoF=%d fullyConstrained=%s extLinks=%d OutList=%s"
+      % (sk.solve(), sk.FullyConstrained, len(sk.ExternalGeometry),
+         sorted({o.Name for o in sk.OutList})))
+print("Relief front edge Y = %.3f (expected %.3f)" % (sk.Shape.BoundBox.YMin, YF))
+print("Body tip: %s   bbox: %s" % (body.Tip.Name, body.Shape.BoundBox))
+print("Body volume: %.3f" % body.Shape.Volume)
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- verify the swing is clear, then save.")

@@ -1,0 +1,158 @@
+# -*- coding: utf-8 -*-
+"""
+05-repair_hinge_joint.FCMacro — MagicCardBox
+
+Repairs `MagicCardAssembly/Joint` (Revolute) after the box or lid feature tree changes.
+
+WHY THIS KEEPS HAPPENING (defect D4)
+------------------------------------
+The joint stores its references as NAMED FACES — `Box001: Body.Face21`,
+`Lid: Body001.Face13`. Any feature added to either body renumbers faces, the reference
+stops resolving (FreeCAD rewrites it as `Body.?Face21`, the `?` marking it dead), and the
+joint goes Invalid. Adding the footer relief pocket did exactly that.
+
+Rather than hard-coding a replacement face number — which would just break again on the
+next feature — this macro finds the correct faces BY GEOMETRY:
+
+  box side : the flat circular END DISC of radius HingePinDia/2 centred on the hinge
+             axis, +X side  (the end of the printed hinge pin, at x = 46.5 nominal)
+  lid side : the flat circular END DISC of radius HingePinDia/2 + HingePinClearance
+             centred on the hinge axis, +X side  (bottom of the blind hole in the tab)
+
+It matches on the DISC, not the cylindrical wall. The joint frame sits at the centre of
+the disc (x = 46.5); the cylinder's centre of mass is its midpoint (x = 45), so matching
+the cylinder shifts the whole assembly by 1.5 mm. Discs are identified by area = pi*r^2,
+which also distinguishes the pin end from any other planar face on the axis.
+
+Both are located by matching centre and radius against the Params values, so the macro
+stays correct when Depth, the hinge params, or the feature tree change. Re-run it any
+time the joint goes Invalid.
+
+TWO THINGS THIS MACRO MUST NOT DO (learned the hard way, 2026-09-13)
+--------------------------------------------------------------------
+1. Do NOT re-point a reference that still resolves. Assigning Reference1/Reference2 makes
+   FreeCAD re-derive Placement1/Placement2 from the newly picked face. Re-pointing the
+   still-valid lid reference moved the joint frame from the cylinder's end (x=46.5) to its
+   midpoint (x=45) and flipped Placement2's rotation from (0,-90,180) to (90,0,90). The
+   joint then solved happily into a COMPLETELY DIFFERENT pose -- the lid swung 90 deg out,
+   bbox Y 47..116 instead of sitting closed on the box. An Up-to-date joint is not proof
+   of a correct joint.
+2. Therefore: capture Placement1/Placement2 first, repair only the dead reference (the one
+   FreeCAD has rewritten with a '?'), then write the captured placements back.
+
+The macro asserts afterwards that the Lid link's placement is unchanged, and refuses to
+report success if it moved.
+
+Run: Macro -> Macros... -> 05-repair_hinge_joint -> Execute
+"""
+
+import FreeCAD
+
+TOL = 1e-6
+
+asm = FreeCAD.getDocument("MagicCardAssembly")
+mb = FreeCAD.getDocument("MagicCardBox")
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+
+aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+r_pin = vs.HingePinDia.Value / 2.0
+r_hole = r_pin + vs.HingePinClearance.Value
+
+
+def find_disc(shape, radius, label):
+    """The flat circular END face on the hinge axis, +X side, of the given radius.
+
+    NOT the cylindrical wall. The joint's frame sits at the centre of the pin's end
+    disc (x = 46.5 at nominal); picking the cylinder instead puts the frame at the
+    cylinder's midpoint (x = 45) and shifts the whole assembly by 1.5 mm.
+    """
+    import math
+    want_area = math.pi * radius * radius
+    hits = []
+    for i, f in enumerate(shape.Faces):
+        if f.Surface.TypeId != "Part::GeomPlane":
+            continue
+        c = f.CenterOfMass
+        if abs(c.y - aY) > 1e-3 or abs(c.z - aZ) > 1e-3 or c.x <= 0:
+            continue
+        if abs(f.Area - want_area) > 1e-2:
+            continue
+        hits.append(("Face%d" % (i + 1), round(c.x, 3), round(f.Area, 3)))
+    if not hits:
+        raise RuntimeError("%s: no flat disc r=%.3f centred on the hinge axis "
+                           "(Y=%.3f Z=%.3f)" % (label, radius, aY, aZ))
+    hits.sort(key=lambda h: -h[1])                # outermost first
+    return hits
+
+
+box_body = mb.getObject("Body")
+lid_back = ld.getObject("Body001")
+box_hits = find_disc(box_body.Shape, r_pin, "box pin end face")
+lid_hits = find_disc(lid_back.Shape, r_hole, "lid hole end face")
+
+box_face = box_hits[0][0]
+lid_face = lid_hits[0][0]
+
+j = asm.getObject("Joint")
+link_lid = asm.getObject("Lid")
+link_box = asm.getObject("Box001")
+
+# Capture BEFORE touching anything — these are what must survive.
+P1 = FreeCAD.Placement(j.Placement1)
+P2 = FreeCAD.Placement(j.Placement2)
+lid_pose_before = FreeCAD.Placement(link_lid.Placement)
+ref1_before, ref2_before = str(j.Reference1), str(j.Reference2)
+state_before = list(j.State)
+
+
+def is_dead(ref):
+    """FreeCAD rewrites an unresolvable subelement with a '?' prefix."""
+    return any("?" in s for s in ref[1])
+
+
+repaired = []
+if is_dead(j.Reference2):
+    j.Reference2 = (link_box, ["Body." + box_face, "Body." + box_face])
+    repaired.append("Reference2 -> Body.%s" % box_face)
+if is_dead(j.Reference1):
+    j.Reference1 = (link_lid, ["Body001." + lid_face, "Body001." + lid_face])
+    repaired.append("Reference1 -> Body001.%s" % lid_face)
+
+# Writing a reference makes FreeCAD re-derive the joint frames. Put them back.
+j.Placement1 = P1
+j.Placement2 = P2
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+moved = (link_lid.Placement.Base - lid_pose_before.Base).Length
+rot_same = link_lid.Placement.Rotation.isSame(lid_pose_before.Rotation, 1e-9)
+pose_ok = moved < 1e-6 and rot_same
+
+print("=== 05-repair_hinge_joint ===")
+print("  hinge axis  : Y=%.3f  Z=%.3f" % (aY, aZ))
+print("  pin end disc : %.3f -> box candidates %s" % (r_pin, box_hits))
+print("  hole end disc: %.3f -> lid candidates %s" % (r_hole, lid_hits))
+print("  before: Ref1=%s" % ref1_before)
+print("          Ref2=%s  State=%s" % (ref2_before, state_before))
+print("  repaired: %s" % (", ".join(repaired) if repaired else "nothing was dead"))
+print("  after : Ref1=%s" % str(j.Reference1))
+print("          Ref2=%s" % str(j.Reference2))
+print("  Placement1 restored: %s" % j.Placement1)
+print("  Placement2 restored: %s" % j.Placement2)
+print("  Lid link pose moved by %.9f mm, rotation unchanged=%s  -> %s"
+      % (moved, rot_same, "OK" if pose_ok else "*** POSE CHANGED - DO NOT SAVE ***"))
+print("  Joint State: %s" % list(j.State))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- verify, then save.")

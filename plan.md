@@ -150,6 +150,33 @@ reloaded document:
 
 | **D6** ⛔ **OPEN — blocks Depth** | `Depth` 69 → 80 | The lid's **rear wall does not move with Depth**. Box rear goes to Y=40 while the rear wall stays at Y 19.52…36.50 — floating inside the box, detached from the hinge. The lid *top plate* tracks correctly (overhang stays 2.00). | `Lid/Sketch001` has **`AttachmentSupport = []`** — no attachment at all. Its `.AttachmentOffset.Base.z = -Depth` expression is bound but **completely inert**, because with no support the attachment engine never applies the offset. The real position is a hard-coded `Placement` of Y = 34.5, correct only at Depth 69. Invisible to the audit, which does not check Placements — a bound-but-inert expression looks like compliance. |
 
+| **D7** ⛔ **OPEN — blocks the whole design** | opening the lid at all | The lid **cannot rotate**, footer or no footer. Two pre-existing collisions with the box, both present before the footer existed: (a) the rear panel's inner face vs the box **rear wall and floor** — starts at 5°, peaks at 372.7 mm³ at 45°, spanning X −43.5…43.5 (i.e. *between* the hinge tabs), Y 31.6…34.5, Z 0…2.9; (b) the top plate's underside vs the box **rear top rim**, 22 mm³ at 5°, Z 66.8…67. Total relief needed over 0–90° = **487.7 mm³**. | The hinge axis sits **5 mm inside the rear face and 5 mm above the floor**, so the rear panel's inner face is only 5 mm from the axis and sweeps a cylinder spanning Y 24.5…34.5 — straight through the rear wall. That cylinder is **tangent to the rear outer face**, so any relief large enough to clear the panel removes the 2 mm rear wall entirely at axis height. The assembly's Revolute joint rotates happily because assembly joints do no collision detection. |
+
+---
+
+## Footer hinge relief — done (2026-09-13)
+
+`macros/04-footer_hinge_relief.FCMacro`. The measurement drove the shape: interference
+with the footer starts at **5°** of opening and the required relief is **full width**
+(X −49.95…49.95, Y 22.77…35.95, Z −2…0, 2249 mm³) — not two hinge-local notches, because
+the lid's rear panel spans the whole box width. Split of the swept volume: left tab
+197 mm³, centre 1855 mm³, right tab 197 mm³.
+
+Implemented as one full-width slot across the rear of the footer, front edge at
+`Depth/2 − HingeAxisFromRear − HingeTabRadius − HingeSwingClearance` = 19.0 mm. That bound
+is the forward-most reach of the tab's swept circle, so it stays correct for any
+Depth/hinge combination — deliberately ~3.8 mm more generous than the measured 22.77.
+Box now rests on the front ~54 mm of the footer plate; the rear ~15 mm is recessed.
+
+Also bound here, both invisible to the audit: `Pad001.Length` (was on `WallThickness` —
+different concern, now `FooterHeight`) and `Pad001.TaperAngle` (was the literal 35.999999;
+the audit checks Length/Radius but **not TaperAngle**, so it passed while unbound).
+
+New Params: `FooterHeight` 2.0, `FooterTaperAngle` 36°, `HingeSwingClearance` 0.5.
+
+**Verified: the footer no longer obstructs the lid at any angle.** What remains is D7,
+which is a hinge-geometry problem, not a footer problem.
+
 ---
 
 ## Depth safety — current state (2026-09-13)
