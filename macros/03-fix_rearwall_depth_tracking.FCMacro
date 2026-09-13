@@ -1,0 +1,152 @@
+# -*- coding: utf-8 -*-
+"""
+03-fix_rearwall_depth_tracking.FCMacro — MagicCardBox
+
+!!! NOT APPLIED. DO NOT RUN WITHOUT READING THE CASCADE NOTE AT THE BOTTOM. !!!
+Deliberately NOT symlinked into FreeCAD's macro directory, so it cannot be run from the
+Macro menu by accident. It is kept here because the diagnosis is correct and worth
+preserving; the fix itself is incomplete on its own.
+
+Attempted 2026-09-13, verified correct in isolation (Placement landed on the expected
+value to 1e-9 mm), then REVERTED because it cascades — see the bottom of this docstring.
+
+Fixes the last thing blocking a safe `Depth` change: the lid's rear wall does not move
+with Depth, so at Depth 80 the box rear sits at Y=40 while the rear wall is still back at
+Y 34.5..36.5 — floating inside the box, detached from the hinge.
+
+ROOT CAUSE (measured, not inferred)
+-----------------------------------
+`Lid/Sketch001` has **AttachmentSupport = []** — no attachment at all. Its MapMode reads
+FlatFace and it carries the expression `.AttachmentOffset.Base.z = -<<Params>>#VarSet.Depth`,
+but with no support the attachment engine never runs, so that offset is never applied to
+the Placement. The expression is bound and completely inert. The sketch's real position is
+a hard-coded Placement, Pos=(0, 34.5, 0) — a literal that happens to be correct only at
+Depth 69.
+
+(This is invisible to scripts/audit_parametric.py, which checks constraints and feature
+dimensions but not object Placements. A bound-but-inert expression looks like compliance.)
+
+THE FIX
+-------
+Give the sketch a real attachment to Body001's own origin XZ plane and drive the offset
+parametrically:
+
+    AttachmentSupport = [(XZ_Plane of Body001, '')]
+    MapMode           = FlatFace
+    .AttachmentOffset.Base.z = -<<Params>>#VarSet.Depth / 2
+
+Sign check: FreeCAD's XZ plane carries rotation Yaw-Pitch-Roll (0,0,90), i.e. +90 deg about
+X, which maps local +Z onto global -Y. So an offset of local z = -Depth/2 places the sketch
+at global Y = +Depth/2 = +34.5 at nominal — exactly where the hard-coded Placement had it,
+and now tracking Depth. The old `-Depth` expression was written for an attachment that was
+never hooked up; at Depth 69 it would have meant Y = +69, which is why it must be replaced
+rather than kept.
+
+Pad001 (RearWall) is Reversed with Length = WallThickness, so it grows from the sketch
+plane in +Y, giving the rear wall Y = Depth/2 .. Depth/2 + WallThickness. The hinge tab
+chain (DatumPlane001 -> Sketch002 -> Pad002 -> DatumPlane002 -> Sketch003) hangs off this
+wall and follows it.
+
+Geometry-neutral at nominal: asserts the resulting Placement lands back on (0, 34.5, 0)
+and aborts if it does not. Idempotent.
+
+WHY IT WAS REVERTED — THE CASCADE
+---------------------------------
+The fix does exactly what it says: Sketch001 lands on (0, 34.5, 0) to within 1e-9 mm, and
+Pad001 / Fillet / Pad002 / Mirrored all rebuild to their exact baseline volumes. But
+`Lid/Pocket` (the pin hole) goes Invalid, because of a dependency this fix disturbs:
+
+    DatumPlane002  --MapMode ObjectYZ-->  Pad002        (a feature OBJECT reference)
+    Sketch003      --attached to-->       DatumPlane002
+
+`ObjectYZ` positions the datum from Pad002's **Placement**, not its shape. Pad002's
+Placement was (0, 34.5, 0) *only as a side effect* of Sketch001's hard-coded Placement
+propagating down the Body001 feature chain. Removing that literal — which is the whole
+point of the fix — collapses Pad002's Placement to (0, 0, 0). DatumPlane002 follows it,
+Sketch003 follows that, and the pin-hole centre lands at global Y = -5.0 instead of +29.5.
+Pocket is UpToFirst, finds no material there, and fails.
+
+So the rear wall's Y position and the hinge tab's datum chain are coupled through an
+accident of Placement inheritance. Fixing one without the other breaks the model.
+
+WHAT A COMPLETE FIX NEEDS (own plan required — this is not a one-liner)
+  1. Re-anchor `DatumPlane002` to a stable origin plane with an explicit parametric
+     AttachmentOffset, instead of `ObjectYZ` on Pad002. Note its current frame is
+     local +X -> global +Z and local +Y -> global -Y, which a plain FlatFace attachment
+     to YZ_Plane does NOT reproduce — an AttachmentOffset rotation is needed, or
+     Sketch003's geometry must be re-expressed in the new frame.
+  2. Re-anchor `DatumPlane001` off `Fillet.Face6`. Note `Fillet` belongs to Body (the lid
+     top plate), not Body001 — so this is a cross-body feature-face reference.
+  3. Re-point `Binder002` (currently `Pad001.Face3`).
+  4. Only then apply this macro, and re-verify the whole hinge chain across a Depth sweep.
+"""
+
+import FreeCAD
+
+EXPR = "-<<Params>>#VarSet.Depth / 2"
+EXPECTED_POS = FreeCAD.Vector(0.0, 34.5, 0.0)   # at Depth = 69
+
+ld = FreeCAD.getDocument("Lid")
+sk = ld.getObject("Sketch001")
+body = ld.getObject("Body001")
+if sk is None or body is None:
+    raise RuntimeError("Lid/Sketch001 or Lid/Body001 not found")
+
+before = FreeCAD.Placement(sk.Placement)
+
+# Locate Body001's own origin XZ plane (not another body's).
+xz = None
+for f in body.Origin.OriginFeatures:
+    if f.Role == "XZ_Plane":
+        xz = f
+        break
+if xz is None:
+    raise RuntimeError("Body001 origin has no XZ_Plane")
+
+cur = []
+try:
+    cur = [(s[0].Name, list(s[1])) for s in sk.AttachmentSupport]
+except Exception:
+    pass
+
+if cur == [(xz.Name, [""])] and sk.MapMode == "FlatFace":
+    action = "attachment already correct; re-asserting expression only"
+else:
+    sk.AttachmentSupport = [(xz, "")]
+    sk.MapMode = "FlatFace"
+    action = "attached Sketch001 to %s (%s), MapMode=FlatFace" % (xz.Name, xz.Role)
+
+sk.setExpression(".AttachmentOffset.Base.z", EXPR)
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+after = sk.Placement
+delta = (after.Base - EXPECTED_POS).Length
+ok = delta < 1e-6
+
+print("=== 03-fix_rearwall_depth_tracking ===")
+print("  " + action)
+print("  AttachmentOffset expression: %s" % EXPR)
+print("  Placement before: %s" % before.Base)
+print("  Placement after:  %s" % after.Base)
+print("  Expected at Depth=69: %s  -> delta %.9f mm  %s"
+      % (EXPECTED_POS, delta, "OK" if ok else "*** MISMATCH ***"))
+print("  Sketch001 OutList: %s" % sorted({o.Name for o in sk.OutList}))
+print("  DoF=%d fullyConstrained=%s" % (sk.solve(), sk.FullyConstrained))
+
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+
+if not ok:
+    print("*** Placement did not land where expected - DO NOT SAVE. Reload from disk. ***")
+else:
+    print("NOT SAVED -- verify geometry unchanged, then save.")

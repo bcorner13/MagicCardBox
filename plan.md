@@ -141,13 +141,51 @@ reloaded document:
 
 | # | Change | Symptom | Root cause |
 |---|---|---|---|
-| **D1** | `Depth` 69 → 80 | `MagicCardBox/Sketch003` goes **Invalid**, so `Pocket002` cannot rebuild and the box body silently keeps its old shape (vol stays 87462, Y stays ±34.5) | **External-geometry index shift** — measured, not inferred. `Sketch003` is correctly *attached* to `YZ_Plane`, but it dimensions against projected edges of `Mirrored` Face3. At `Depth` 80 that face gains two bounding edges (the hinge cut-out stops coinciding with the rear face and becomes an interior notch), so every external GeoId shifts by two: the top edge moves `-7`→`-9`, the left edge `-8`→`-10`, while the constraints still reference `-7`/`-8`. **Not** a cross-document problem and **not** an attachment problem — a third mechanism that datum/binder discipline does not cover. |
+| **D1** ✅ **FIXED** | `Depth` 69 → 80 | `MagicCardBox/Sketch003` goes **Invalid**, so `Pocket002` cannot rebuild and the box body silently keeps its old shape (vol stays 87462, Y stays ±34.5) | **External-geometry index shift** — measured, not inferred. `Sketch003` is correctly *attached* to `YZ_Plane`, but it dimensions against projected edges of `Mirrored` Face3. At `Depth` 80 that face gains two bounding edges (the hinge cut-out stops coinciding with the rear face and becomes an interior notch), so every external GeoId shifts by two: the top edge moves `-7`→`-9`, the left edge `-8`→`-10`, while the constraints still reference `-7`/`-8`. **Not** a cross-document problem and **not** an attachment problem — a third mechanism that datum/binder discipline does not cover. |
+| **D1b** ✅ **FIXED** | `Depth`, any | `MagicCardBox/Sketch001` and `Sketch002` dimension against projected external geometry too — and fail **silently**, which is worse. After a sweep-and-restore, Sketch002's projected edge `-3` was left **stale** at `(42.50,0)→(42.50,75.00)` (values from the sweep, not the restored model) and its distance resolved on the opposite side: the pin centre moved from local x 29.5 to 47.5, outside the box. `Pocket001` then cut nothing, pins stayed full length, body came back 113.10 mm³ heavy (= 2 × the Ø6×2 trim that never happened). DoF stayed 0, state stayed "Up-to-date", nothing flagged. | Both sketches have an **empty `ExternalGeometry` property but a populated `ExternalGeo` projection list** — orphaned cached projections with no live link to refresh from. |
 | **D2** | `Width` 97 → 110 | `Lid/Body001` (LidBack) spans X −48.5…61.5 instead of ±55 — grows off-centre, breaking the "centered at (0,0,0)" rule in `CAD_STANDARDS.md` | `Lid/Sketch001` pins one corner with a Coincident to element −5 instead of a Symmetric constraint about the vertical axis. |
 | **D3** | `Height` 67 → 75 | `Lid/Body001` spans Z −8…67 instead of 0…75 — the rear wall hangs below the floor and stops short of the lid | `Lid/Sketch001` is anchored at its **top** edge, so added height grows downward. Its Z anchor is not tied to the box floor. |
 | **D4** | any of the three | `MagicCardAssembly/Joint` (Revolute) goes **Invalid** | The joint references named faces `Body001.Face13` / `Body.Face21`. Already flagged as a risk in `CLAUDE.md`; now confirmed. |
 | **D5** | after D1 fires | Restoring 97/69/67 does **not** restore the geometry — `MagicCardBox/Body` comes back 87571.81 mm³ vs the correct 87461.94 (+109.87). Reproducible. | A failed recompute leaves a stale tip. **Recovery: close all four documents without saving and reopen from disk.** Do not try to fix this forward. |
 
-**Consequence for the next session:** `Width`, `Depth` and `Height` are *not* yet safe to
-change. Fixing D1–D3 means removing the feature-face external-geometry reference in
-`MagicCardBox/Sketch003` and re-anchoring `Lid/Sketch001` symmetrically — both are geometry
-changes and need their own approved plan. D1 is the one that actually breaks the solid.
+| **D6** ⛔ **OPEN — blocks Depth** | `Depth` 69 → 80 | The lid's **rear wall does not move with Depth**. Box rear goes to Y=40 while the rear wall stays at Y 19.52…36.50 — floating inside the box, detached from the hinge. The lid *top plate* tracks correctly (overhang stays 2.00). | `Lid/Sketch001` has **`AttachmentSupport = []`** — no attachment at all. Its `.AttachmentOffset.Base.z = -Depth` expression is bound but **completely inert**, because with no support the attachment engine never applies the offset. The real position is a hard-coded `Placement` of Y = 34.5, correct only at Depth 69. Invisible to the audit, which does not check Placements — a bound-but-inert expression looks like compliance. |
+
+---
+
+## Depth safety — current state (2026-09-13)
+
+**The box is Depth-safe. The lid is not.**
+
+`macros/02-fix_depth_safety.FCMacro` removed every projected-external-geometry dependency
+from all three `MagicCardBox` sketches and re-dimensioned them from Params against each
+sketch's own origin axes. All three now have `OutList = [Origin, VarSet]` — nothing else.
+Verified geometry-neutral at nominal (14/14 shapes identical on volume, area, bbox) and
+swept `Depth` = 55 / 69 / 80 / 100:
+
+| | Depth 55 | Depth 69 | Depth 80 | Depth 100 |
+|---|---|---|---|---|
+| walls front / rear | 2.00 / 2.00 | 2.00 / 2.00 | 2.00 / 2.00 | 2.00 / 2.00 |
+| floor | 2.00 | 2.00 | 2.00 | 2.00 |
+| pin inset from rear | 5.00 | 5.00 | 5.00 | 5.00 |
+| pin trim cut | 56.549 mm³ | 56.549 mm³ | 56.549 mm³ | 56.549 mm³ |
+| body valid closed solid | yes | yes | yes | yes |
+
+Restoring to 69 returns **exactly** 87461.942 mm³ — the D5 non-idempotency is gone for
+Depth, because it was a consequence of D1/D1b rather than a separate fault.
+
+**D6 still blocks a real Depth change.** The fix is diagnosed and written up in
+`macros/03-fix_rearwall_depth_tracking.FCMacro`, which is deliberately **not applied and
+not symlinked**. Applied alone it lands Sketch001 on the right placement to 1e-9 mm and
+rebuilds Pad001/Fillet/Pad002/Mirrored to exact baseline volumes — but `Lid/Pocket` goes
+Invalid, because `DatumPlane002` uses `MapMode ObjectYZ` on `Pad002` and therefore follows
+Pad002's **Placement**, which was (0, 34.5, 0) only as a side effect of the very literal
+being removed. The pin hole lands at global Y = −5.0 instead of +29.5.
+
+So the rear wall's position and the hinge-tab datum chain are coupled through Placement
+inheritance. Making the lid Depth-safe requires re-anchoring `DatumPlane002`,
+`DatumPlane001` (which references `Fillet.Face6` — and `Fillet` belongs to the *other*
+body, the lid top plate) and `Binder002`, then applying macro 03. That is a lid hinge-chain
+restructure and needs its own approved plan.
+
+**Until then:** changing `Depth` gives you a correct box with a rear wall in the wrong
+place. `Width` and `Height` remain unsafe for the separate reasons D2/D3.

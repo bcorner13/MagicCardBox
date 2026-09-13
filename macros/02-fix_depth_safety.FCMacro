@@ -1,0 +1,234 @@
+# -*- coding: utf-8 -*-
+"""
+02-fix_depth_safety.FCMacro — MagicCardBox
+
+Makes `Depth` (and `Height`) safe to change by removing every dependency on projected
+external geometry in the MagicCardBox part, and dimensioning from Params against each
+sketch's own origin axes instead.
+
+WHY THIS IS WIDER THAN THE ORIGINAL D1
+--------------------------------------
+D1 was diagnosed as `Sketch003` (cavity) dimensioning against projected edges of
+`Mirrored` Face3, which shift index when the referenced face gains edges. Fixing only
+that is NOT enough. Measured 2026-09-13: `Sketch001` (HingProfile) and `Sketch002`
+(pin trim) also dimension against projected external geometry, and they fail *silently*
+-- worse than Sketch003, which at least goes Invalid:
+
+  After a Depth/Height sweep and restore, Sketch002's projected edge -3 was left STALE at
+  (42.50, 0)->(42.50, 75.00) -- values from the sweep, not the restored model -- and the
+  distance resolved on the opposite side of it. The pin centre moved from local x 29.5 to
+  47.5, i.e. outside the box. Pocket001 then cut nothing, the pins stayed full-length
+  instead of being trimmed to HingePinLength, and the body came back 113.10 mm^3 heavy
+  (= 2 x the Oe6x2 trim that no longer happened). Throughout, the sketch reported DoF 0
+  and "Up-to-date". Nothing flagged an error.
+
+Note both hinge sketches have an EMPTY `ExternalGeometry` property but a populated
+`ExternalGeo` projection list -- orphaned cached geometry with no live link to refresh
+from. That is why `delExternal` is only applicable to Sketch003; for the other two the
+cached projections are simply left unreferenced.
+
+SUBSTITUTIONS (every one replaces an external-geometry reference)
+----------------------------------------------------------------
+Sketch001 "HingProfile"  (local +X = global +Y depth, +Y = global +Z height)
+  [1]  Distance  rear-bottom corner -> hinge axis line   -> DistanceX origin -> geo1.start
+  [6]  PointOnObject geo2.end on rear edge               -> DistanceX origin -> geo2.end
+  [8]  Coincident geo3.end to rear-bottom corner         -> DistanceX origin -> geo3.end
+                                                          + PointOnObject geo3.end on X axis
+Sketch002 "pin trim"
+  [0]  Distance point -> rear edge                       -> DistanceX origin -> geo0.start
+  [1]  Distance point -> X axis                          -> DistanceY origin -> geo0.start
+  [3]  Diameter                                          -> re-added unchanged
+Sketch003 "cavity"
+  [8]  Distance front wall -> ext edge                   -> DistanceX geo2.start -> origin
+  [9]  Distance rear wall  -> ext edge                   -> DistanceX origin -> geo0.start
+  [10] Distance floor      -> ext edge                   -> DistanceY origin -> geo1.start
+  [11] PointOnObject top on ext edge                     -> DistanceY origin -> geo3.start
+  ...and the Mirrored Face3 link itself is deleted.
+
+Every replacement expression evaluates to the value the constraint already holds, so this
+is geometry-neutral. Verify it; do not assume it.
+
+Expression bindings on constraints that SURVIVE the surgery are preserved by constraint
+IDENTITY (Type, First, FirstPos, Second, SecondPos), not by index -- deleting constraints
+renumbers everything after them, so an index-based reapply would silently bind the wrong
+dimensions.
+
+Idempotent: re-running finds the replacement constraints already present and only
+re-asserts expressions.
+
+Run: Macro -> Macros... -> 02-fix_depth_safety -> Execute
+"""
+
+import re
+import FreeCAD
+import Sketcher
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+
+E_HALF_DEPTH = P + "Depth / 2"
+E_AXIS_Y = P + "Depth / 2 - " + P + "HingeAxisFromRear"
+E_AXIS_Z = P + "HingeAxisFromBottom"
+E_PIN_DIA = P + "HingePinDia"
+E_CAV_SIDE = P + "Depth / 2 - " + P + "WallThickness"
+E_FLOOR = P + "FloorThickness"
+E_TOP = P + "Height"
+
+# (type, g1, p1, g2, p2, value, expression-or-None)
+SPECS = {
+    "Sketch001": {
+        "expect": {(1, 1): (29.5, 15.0), (2, 2): (34.5, 15.0), (3, 2): (34.5, 0.0)},
+        "delete": [8, 6, 1],
+        "drop_external": False,
+        "add": [
+            ("DistanceX", -1, 1, 1, 1, 29.5, E_AXIS_Y),
+            ("DistanceX", -1, 1, 2, 2, 34.5, E_HALF_DEPTH),
+            ("DistanceX", -1, 1, 3, 2, 34.5, E_HALF_DEPTH),
+            ("PointOnObject", 3, 2, -1, 0, None, None),
+        ],
+    },
+    "Sketch002": {
+        "expect": {(0, 1): (29.5, 5.0)},
+        "delete": [3, 1, 0],
+        "drop_external": False,
+        "add": [
+            ("DistanceX", -1, 1, 0, 1, 29.5, E_AXIS_Y),
+            ("DistanceY", -1, 1, 0, 1, 5.0, E_AXIS_Z),
+            ("Diameter", 1, 0, None, None, 6.0, E_PIN_DIA),
+        ],
+    },
+    "Sketch003": {
+        "expect": {(0, 1): (32.5, 67.0), (1, 1): (32.5, 2.0),
+                   (2, 1): (-32.5, 2.0), (3, 1): (-32.5, 67.0)},
+        "delete": [11, 10, 9, 8],
+        "drop_external": True,
+        "add": [
+            ("DistanceX", 2, 1, -1, 1, 32.5, E_CAV_SIDE),
+            ("DistanceX", -1, 1, 0, 1, 32.5, E_CAV_SIDE),
+            ("DistanceY", -1, 1, 1, 1, 2.0, E_FLOOR),
+            ("DistanceY", -1, 1, 3, 1, 67.0, E_TOP),
+        ],
+    },
+}
+
+doc = FreeCAD.getDocument(DOC)
+log = []
+
+
+def ident(c):
+    return (c.Type, c.First, c.FirstPos, c.Second, c.SecondPos)
+
+
+def spec_ident(a):
+    """Identity tuple a spec entry will have once added."""
+    t, g1, p1, g2, p2 = a[0], a[1], a[2], a[3], a[4]
+    if g2 is None:
+        return (t, g1, p1, -2000, 0)
+    return (t, g1, p1, g2, p2)
+
+
+def make_constraint(a):
+    t, g1, p1, g2, p2, val = a[0], a[1], a[2], a[3], a[4], a[5]
+    if t == "Diameter":
+        return Sketcher.Constraint(t, g1, val)
+    if t == "PointOnObject":
+        return Sketcher.Constraint(t, g1, p1, g2)
+    return Sketcher.Constraint(t, g1, p1, g2, p2, val)
+
+
+def capture_expressions(sk):
+    out = {}
+    for path, expr in list(sk.ExpressionEngine):
+        m = re.match(r"\.?Constraints\[(\d+)\]$", path)
+        if m:
+            out[ident(sk.Constraints[int(m.group(1))])] = expr
+    return out
+
+
+def clear_constraint_expressions(sk):
+    for path, _ in list(sk.ExpressionEngine):
+        if re.match(r"\.?Constraints\[(\d+)\]$", path):
+            sk.setExpression(path, None)
+
+
+def already_fixed(sk, spec):
+    wanted = {spec_ident(a) for a in spec["add"]}
+    have = {ident(c) for c in sk.Constraints}
+    return wanted.issubset(have)
+
+
+for name, spec in SPECS.items():
+    sk = doc.getObject(name)
+    if sk is None:
+        raise RuntimeError("%s/%s not found" % (DOC, name))
+
+    for (gi, pi), (ex, ey) in spec["expect"].items():
+        p = sk.getPoint(gi, pi)
+        if abs(p.x - ex) > 1e-6 or abs(p.y - ey) > 1e-6:
+            raise RuntimeError(
+                "%s: point (geo %d, pos %d) is (%.4f, %.4f), expected (%.4f, %.4f). "
+                "Sketch has been edited — aborting rather than guessing."
+                % (name, gi, pi, p.x, p.y, ex, ey))
+
+    if already_fixed(sk, spec):
+        log.append("%s: replacements already present — re-asserting expressions only" % name)
+        by_id = {}
+        for i, c in enumerate(sk.Constraints):
+            by_id.setdefault(ident(c), i)
+        for a in spec["add"]:
+            if a[6]:
+                sk.setExpression("Constraints[%d]" % by_id[spec_ident(a)], a[6])
+        continue
+
+    keep = capture_expressions(sk)
+    clear_constraint_expressions(sk)
+
+    for idx in spec["delete"]:                      # descending order in SPECS
+        sk.delConstraint(idx)
+    log.append("%s: deleted constraints %s" % (name, spec["delete"]))
+
+    if spec["drop_external"]:
+        n = len(sk.ExternalGeometry)
+        while len(sk.ExternalGeometry) > 0:
+            sk.delExternal(0)
+        log.append("%s: deleted %d external geometry link(s)" % (name, n))
+
+    new_idx = []
+    for a in spec["add"]:
+        new_idx.append(sk.addConstraint(make_constraint(a)))
+    log.append("%s: added %d replacement constraint(s) at %s"
+               % (name, len(new_idx), new_idx))
+
+    # Re-bind survivors by identity, then the new ones explicitly.
+    for i, c in enumerate(sk.Constraints):
+        k = ident(c)
+        if k in keep:
+            sk.setExpression("Constraints[%d]" % i, keep[k])
+    for a, i in zip(spec["add"], new_idx):
+        if a[6]:
+            sk.setExpression("Constraints[%d]" % i, a[6])
+    log.append("%s: re-bound %d survivor expression(s) + %d new"
+               % (name, len(keep), sum(1 for a in spec["add"] if a[6])))
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 02-fix_depth_safety ===")
+for line in log:
+    print("  " + line)
+for name in SPECS:
+    sk = doc.getObject(name)
+    print("%s: DoF=%d fullyConstrained=%s extLinks=%d OutList=%s"
+          % (name, sk.solve(), sk.FullyConstrained, len(sk.ExternalGeometry),
+             sorted({o.Name for o in sk.OutList})))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- verify geometry unchanged, then save.")

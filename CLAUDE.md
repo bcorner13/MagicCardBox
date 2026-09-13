@@ -1,20 +1,35 @@
 # Project rules — MagicCardBox
 
 This model was built **manually, before the project was bootstrapped**. The 19 unbound
-dimensional literals it carried were bound on 2026-09-13 and the audit is now clean — but
-**the model still does not survive a parameter change.** Sweeping `Width`, `Depth` or
-`Height` breaks it three different ways (D1–D5 in `plan.md`); the worst, D1, silently
-leaves the box body stale while looking fine. **Treat `Width`/`Depth`/`Height` as frozen
-until D1–D3 are fixed.**
+dimensional literals it carried were bound on 2026-09-13, the audit is clean, and the
+**box** is now fully `Depth`-safe. The **lid is not**, and neither `Width` nor `Height` is
+safe on either part. See "Parameter safety" in `plan.md` for the measured detail; the
+short version:
+
+| Parameter | Box | Lid |
+|---|---|---|
+| `Depth` | ✅ safe — swept 55/69/80/100, walls, floor, pin inset and trim all hold | ⛔ **D6** — top plate tracks, but the **rear wall stays put** and detaches from the hinge |
+| `Width` | ⚠️ untested since the fix | ⛔ **D2** — rear wall grows off-centre |
+| `Height` | ⚠️ untested since the fix | ⛔ **D3** — rear wall grows downward, below the floor |
+
+**So: do not change any of the three yet.** `Depth` will give you a correct box with a
+rear wall in the wrong place.
 
 Two further things to know before you touch anything:
 
 - **The hinge has zero clearance.** `HingePinClearance` and `HingeTabClearance` exist as
   knobs but default to **0.0 mm** — the as-modelled interference fit. They must be set
   before any print or the lid will seize on its pin.
-- **A failed recompute does not roll back.** If a sweep or an edit puts a feature into an
-  Invalid state, the geometry does *not* return when you restore the parameter (D5).
-  Recover by closing all four documents **without saving** and reopening from disk.
+- **A failed recompute does not roll back.** If an edit puts a feature into an Invalid
+  state, the geometry does *not* return when you restore the parameter (D5). Recover by
+  closing all four documents **without saving** and reopening from disk. (For `Depth` this
+  is now fixed — restoring returns exactly 87461.942 mm³ — because D5 was a consequence of
+  D1/D1b, not a separate fault. It still applies to `Width`/`Height`.)
+- **A bound expression is not proof of anything.** `Lid/Sketch001` carries
+  `.AttachmentOffset.Base.z = -Depth` and has carried it all along — but with
+  `AttachmentSupport = []` the attachment engine never runs and the offset is never
+  applied. The audit sees a bound expression and passes it. Check `Placement` and
+  `AttachmentSupport`, not just `ExpressionEngine`.
 
 Do not "fix" any of this by nudging coordinates. Read the rules below before touching
 geometry.
