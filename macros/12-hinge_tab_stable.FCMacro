@@ -1,0 +1,185 @@
+# -*- coding: utf-8 -*-
+"""
+12-hinge_tab_stable.FCMacro — MagicCardBox
+
+Run AFTER 07, 08, 10, 11. Replaces the lid tab's single 270-deg-arc outline with two
+unambiguous pads.
+
+WHY THE SINGLE OUTLINE HAD TO GO
+---------------------------------
+Macro 08 built the tab as one closed profile: a 270 deg arc about the hinge axis closed by
+a neck rectangle. Its arc endpoints sit at the circle's EXTREMA (top and right), reached by
+"line is vertical/horizontal" + "endpoint is on the circle". That has TWO valid solutions
+(top or bottom, left or right) and the solver picks whichever is nearer the current state.
+
+Measured: it holds for W97/115 and D69/85, then flips at W85 D55 H55 and STAYS flipped —
+the disc collapses to a quarter, `Pad002` bbox YMin jumps from aY-HingeTabRadius to aY, and
+the tab loses the material around the pin hole. Nothing reports an error; the sketch stays
+DoF 0 and fully constrained. Pinning the endpoints instead with DistanceY = centre +/- R is
+degenerate (that is a tangency; it over-constrains, DoF -2 — see macro 07).
+
+Two shapes that do NOT solve this: an obround slot from the axis to the panel puts its side
+edges forward of the axis at radius > HingeTabRadius for the first ~5 mm (they would foul the
+box), and enlarging the disc to reach the panel is impossible — the nearest panel point is
+7.43 mm from the axis while the knuckle is capped at 5 mm by the side wall.
+
+THE FIX: two pads, neck first
+-----------------------------
+    Pad001  RearWall  (panel, Z = PanelBottomZ .. Height)
+    Pad002  <- Sketch002, now a plain NECK RECTANGLE. Touches the panel along Z =
+              PanelBottomZ, so it is never a disconnected solid.
+    Pad004  <- Sketch010, a plain CIRCLE about the hinge axis. Overlaps the neck, so it
+              fuses. A circle has no branch ambiguity at all.
+    Pocket  pin hole, rebuilt at the tip so it cuts AFTER the disc exists
+    Mirrored  one mirror carrying neck + disc + pin hole to the other side wall
+
+The tail is deleted and rebuilt rather than reordered: PartDesign refuses every reordering
+route ("The graph must be a DAG") — insertObject, reassigning Pad.Profile to a later sketch,
+and Tip-swapping. Deleting and re-creating at the tip is the one thing it allows.
+
+Sketch002's Placement is untouched, so DatumPlane002 (MapMode ObjectYZ on Pad002) does not
+move and the pin hole stays put; the macro asserts that.
+
+Run: Macro -> Macros... -> 12-hinge_tab_stable -> Execute
+"""
+
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+body1 = ld.getObject("Body001")
+V = FreeCAD.Vector
+log = []
+
+H = vs.Height.Value
+D = vs.Depth.Value
+WT = vs.WallThickness.Value
+PB = vs.PanelBottomZ.Value
+aY = D / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+R = vs.HingeTabRadius.Value
+
+E_AXIS_Y = P + "Depth / 2 - " + P + "HingeAxisFromRear"
+E_AXIS_Z_LOCAL = P + "HingeAxisFromBottom - " + P + "Height"
+E_R = P + "HingeTabRadius"
+E_NECK_REAR = P + "Depth / 2 + " + P + "WallThickness"
+E_NECK_TOP = P + "PanelBottomZ - " + P + "Height"
+
+sk2 = ld.getObject("Sketch002")
+sk3 = ld.getObject("Sketch003")
+pad2 = ld.getObject("Pad002")
+pad2_before = FreeCAD.Placement(pad2.Placement)
+dp2_before = FreeCAD.Placement(ld.getObject("DatumPlane002").Placement)
+
+old_pocket = ld.getObject("Pocket")
+pocket_cfg = {"Type": str(old_pocket.Type), "Reversed": bool(old_pocket.Reversed),
+              "Midplane": bool(old_pocket.Midplane), "Length": old_pocket.Length}
+mirror_plane = ld.getObject("Mirrored").MirrorPlane
+pad2_len_expr = dict(pad2.ExpressionEngine).get("Length", P + "HingeTabThickness")
+
+for name in ("Mirrored001", "Mirrored", "Pocket", "Pad004", "Sketch010"):
+    if ld.getObject(name) is not None:
+        ld.removeObject(name)
+        log.append("removed %s" % name)
+
+# ---- Sketch002 -> plain neck rectangle -------------------------------------
+for path, _ in list(sk2.ExpressionEngine):
+    if re.match(r"\.?Constraints\[\d+\]$", path):
+        sk2.setExpression(path, None)
+sk2.deleteAllConstraints()
+sk2.deleteAllGeometry()
+x0, y0, x1, y1 = aY, aZ - H, D / 2 + WT, PB - H
+pts = [V(x0, y0, 0), V(x1, y0, 0), V(x1, y1, 0), V(x0, y1, 0)]
+for i in range(4):
+    sk2.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    sk2.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+sk2.addConstraint(Sketcher.Constraint("Horizontal", 0))
+sk2.addConstraint(Sketcher.Constraint("Horizontal", 2))
+sk2.addConstraint(Sketcher.Constraint("Vertical", 1))
+sk2.addConstraint(Sketcher.Constraint("Vertical", 3))
+a = sk2.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 1, x0))
+b = sk2.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, x1))
+c = sk2.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, y0))
+d = sk2.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, y1))
+for i, e in ((a, E_AXIS_Y), (b, E_NECK_REAR), (c, E_AXIS_Z_LOCAL), (d, E_NECK_TOP)):
+    sk2.setExpression("Constraints[%d]" % i, e)
+sk2.Label = "HingeNeck"
+pad2.Label = "HingeNeck"
+log.append("Sketch002 -> neck rectangle")
+ld.recompute(None, True, True)
+
+# ---- new disc sketch + pad at the tip --------------------------------------
+sk10 = body1.newObject("Sketcher::SketchObject", "Sketch010")
+sk10.AttachmentSupport = sk2.AttachmentSupport
+sk10.MapMode = sk2.MapMode
+sk10.AttachmentOffset = FreeCAD.Placement(sk2.AttachmentOffset)
+sk10.addGeometry(Part.Circle(V(aY, aZ - H, 0), V(0, 0, 1), R), False)
+e1 = sk10.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, aY))
+e2 = sk10.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, aZ - H))
+e3 = sk10.addConstraint(Sketcher.Constraint("Radius", 0, R))
+for i, e in ((e1, E_AXIS_Y), (e2, E_AXIS_Z_LOCAL), (e3, E_R)):
+    sk10.setExpression("Constraints[%d]" % i, e)
+sk10.Label = "HingeTab"
+pad4 = body1.newObject("PartDesign::Pad", "Pad004")
+pad4.Profile = sk10
+pad4.Type = "Length"
+pad4.Reversed = pad2.Reversed
+pad4.Midplane = pad2.Midplane
+pad4.setExpression("Length", pad2_len_expr)
+pad4.Label = "HingeTab"
+sk10.Visibility = False
+log.append("Sketch010 + Pad004 created (disc, no branch ambiguity)")
+ld.recompute(None, True, True)
+
+# ---- pin hole and one mirror at the tip ------------------------------------
+pk = body1.newObject("PartDesign::Pocket", "Pocket")
+pk.Profile = sk3
+pk.Type = pocket_cfg["Type"]
+pk.Reversed = pocket_cfg["Reversed"]
+pk.Midplane = pocket_cfg["Midplane"]
+pk.Length = pocket_cfg["Length"]
+log.append("Pocket (pin hole) rebuilt at the tip")
+mir = body1.newObject("PartDesign::Mirrored", "Mirrored")
+mir.Originals = [pad2, pad4, pk]
+mir.MirrorPlane = mirror_plane
+body1.Tip = mir
+log.append("Mirrored rebuilt: neck + disc + pin hole")
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+moved_pad2 = (pad2.Placement.Base - pad2_before.Base).Length
+moved_dp2 = (ld.getObject("DatumPlane002").Placement.Base - dp2_before.Base).Length
+
+print("=== 12-hinge_tab_stable ===")
+for line in log:
+    print("  " + line)
+print("Pad002 moved %.9f mm; DatumPlane002 moved %.9f mm (both must be 0)"
+      % (moved_pad2, moved_dp2))
+print("Body001 feature order: %s"
+      % [o.Name for o in body1.Group
+         if o.TypeId.startswith(("PartDesign::Pad", "PartDesign::Pocket", "PartDesign::Mirrored"))])
+for nm in ("Sketch002", "Sketch010"):
+    s = ld.getObject(nm)
+    print("%s: DoF=%d fully=%s" % (nm, s.solve(), s.FullyConstrained))
+for nm in ("Body", "Body001"):
+    sh = ld.getObject(nm).Shape
+    bb = sh.BoundBox
+    print("%s: vol=%.2f valid=%s solids=%d  Y %.2f..%.2f  Z %.2f..%.2f"
+          % (nm, sh.Volume, sh.isValid(), len(sh.Solids), bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- sweep-test before saving.")

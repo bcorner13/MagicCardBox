@@ -143,12 +143,12 @@ reloaded document:
 |---|---|---|---|
 | **D1** ✅ **FIXED** | `Depth` 69 → 80 | `MagicCardBox/Sketch003` goes **Invalid**, so `Pocket002` cannot rebuild and the box body silently keeps its old shape (vol stays 87462, Y stays ±34.5) | **External-geometry index shift** — measured, not inferred. `Sketch003` is correctly *attached* to `YZ_Plane`, but it dimensions against projected edges of `Mirrored` Face3. At `Depth` 80 that face gains two bounding edges (the hinge cut-out stops coinciding with the rear face and becomes an interior notch), so every external GeoId shifts by two: the top edge moves `-7`→`-9`, the left edge `-8`→`-10`, while the constraints still reference `-7`/`-8`. **Not** a cross-document problem and **not** an attachment problem — a third mechanism that datum/binder discipline does not cover. |
 | **D1b** ✅ **FIXED** | `Depth`, any | `MagicCardBox/Sketch001` and `Sketch002` dimension against projected external geometry too — and fail **silently**, which is worse. After a sweep-and-restore, Sketch002's projected edge `-3` was left **stale** at `(42.50,0)→(42.50,75.00)` (values from the sweep, not the restored model) and its distance resolved on the opposite side: the pin centre moved from local x 29.5 to 47.5, outside the box. `Pocket001` then cut nothing, pins stayed full length, body came back 113.10 mm³ heavy (= 2 × the Ø6×2 trim that never happened). DoF stayed 0, state stayed "Up-to-date", nothing flagged. | Both sketches have an **empty `ExternalGeometry` property but a populated `ExternalGeo` projection list** — orphaned cached projections with no live link to refresh from. |
-| **D2** | `Width` 97 → 110 | `Lid/Body001` (LidBack) spans X −48.5…61.5 instead of ±55 — grows off-centre, breaking the "centered at (0,0,0)" rule in `CAD_STANDARDS.md` | `Lid/Sketch001` pins one corner with a Coincident to element −5 instead of a Symmetric constraint about the vertical axis. |
-| **D3** | `Height` 67 → 75 | `Lid/Body001` spans Z −8…67 instead of 0…75 — the rear wall hangs below the floor and stops short of the lid | `Lid/Sketch001` is anchored at its **top** edge, so added height grows downward. Its Z anchor is not tied to the box floor. |
+| **D2** ✅ **FIXED** | `Width` 97 → 110 | `Lid/Body001` (LidBack) spans X −48.5…61.5 instead of ±55 — grows off-centre, breaking the "centered at (0,0,0)" rule in `CAD_STANDARDS.md` | `Lid/Sketch001` pins one corner with a Coincident to element −5 instead of a Symmetric constraint about the vertical axis. |
+| **D3** ✅ **FIXED** | `Height` 67 → 75 | `Lid/Body001` spans Z −8…67 instead of 0…75 — the rear wall hangs below the floor and stops short of the lid | `Lid/Sketch001` is anchored at its **top** edge, so added height grows downward. Its Z anchor is not tied to the box floor. |
 | **D4** | any of the three | `MagicCardAssembly/Joint` (Revolute) goes **Invalid** | The joint references named faces `Body001.Face13` / `Body.Face21`. Already flagged as a risk in `CLAUDE.md`; now confirmed. |
 | **D5** | after D1 fires | Restoring 97/69/67 does **not** restore the geometry — `MagicCardBox/Body` comes back 87571.81 mm³ vs the correct 87461.94 (+109.87). Reproducible. | A failed recompute leaves a stale tip. **Recovery: close all four documents without saving and reopen from disk.** Do not try to fix this forward. |
 
-| **D6** ⛔ **OPEN — blocks Depth** | `Depth` 69 → 80 | The lid's **rear wall does not move with Depth**. Box rear goes to Y=40 while the rear wall stays at Y 19.52…36.50 — floating inside the box, detached from the hinge. The lid *top plate* tracks correctly (overhang stays 2.00). | `Lid/Sketch001` has **`AttachmentSupport = []`** — no attachment at all. Its `.AttachmentOffset.Base.z = -Depth` expression is bound but **completely inert**, because with no support the attachment engine never applies the offset. The real position is a hard-coded `Placement` of Y = 34.5, correct only at Depth 69. Invisible to the audit, which does not check Placements — a bound-but-inert expression looks like compliance. |
+| **D6** ✅ **FIXED** | `Depth` 69 → 80 | The lid's **rear wall does not move with Depth**. Box rear goes to Y=40 while the rear wall stays at Y 19.52…36.50 — floating inside the box, detached from the hinge. The lid *top plate* tracks correctly (overhang stays 2.00). | `Lid/Sketch001` has **`AttachmentSupport = []`** — no attachment at all. Its `.AttachmentOffset.Base.z = -Depth` expression is bound but **completely inert**, because with no support the attachment engine never applies the offset. The real position is a hard-coded `Placement` of Y = 34.5, correct only at Depth 69. Invisible to the audit, which does not check Placements — a bound-but-inert expression looks like compliance. |
 
 | **D7** ✅ **FIXED 2026-09-13** | opening the lid at all | The lid **cannot rotate**, footer or no footer. Two pre-existing collisions with the box, both present before the footer existed: (a) the rear panel's inner face vs the box **rear wall and floor** — starts at 5°, peaks at 372.7 mm³ at 45°, spanning X −43.5…43.5 (i.e. *between* the hinge tabs), Y 31.6…34.5, Z 0…2.9; (b) the top plate's underside vs the box **rear top rim**, 22 mm³ at 5°, Z 66.8…67. Total relief needed over 0–90° = **487.7 mm³**. | The hinge axis sits **5 mm inside the rear face and 5 mm above the floor**, so the rear panel's inner face is only 5 mm from the axis and sweeps a cylinder spanning Y 24.5…34.5 — straight through the rear wall. That cylinder is **tangent to the rear outer face**, so any relief large enough to clear the panel removes the 2 mm rear wall entirely at axis height. The assembly's Revolute joint rotates happily because assembly joints do no collision detection. |
 
@@ -313,3 +313,58 @@ solids and not just the Params:
 
 **Still open:** D2 (`Width` — rear panel grows off-centre) and D3 (`Height`). D6 is now moot
 for the panel bottom but `Lid/Sketch001`'s attachment is still empty — see macro 03.
+
+---
+
+## D2 / D3 / D6 fixed + footer resized (2026-09-13)
+
+`macros/11-width_depth_footer` + `12-hinge_tab_stable`.
+
+**D2 and D3 were already gone** — the D7 rebuild replaced `Lid/Sketch001` with
+origin-relative constraints, which centres the panel and anchors it in Z. Confirmed by
+measurement before touching anything.
+
+**Width** was broken by a fresh defect of mine: `MagicCardBox/Sketch007`'s
+`AttachmentOffset` was a copied LITERAL (48.5), because macro 07 did
+`sl.AttachmentOffset = FreeCAD.Placement(sk.AttachmentOffset)` — that copies the value, not
+the binding. The socket tracked `Width`, the neck slot did not; at Width 115 that buried
+46.46 mm³ of the lid's neck in the side wall. Now bound to `Width / 2`.
+
+**D6 (Depth)** — `Lid/Sketch001` has no attachment, so its `.AttachmentOffset` expression is
+inert and its position was a hard-coded Placement of Y = 34.5. Macro 03 tried giving it a
+real attachment and that cascaded (attaching collapses the Body001 feature placements to
+identity, dragging `DatumPlane002` and the pin hole). Binding `.Placement.Base.y` directly
+sidesteps the attachment engine — geometry-neutral at nominal, and the panel now tracks Depth.
+
+**Footer over-cut.** The arc relief from macro 06 was sized for the OLD lid, whose panel
+reached Z = 0 and swung a corner deep into the footer. After the knuckle rebuild:
+
+| | required | cut before | over-cut |
+|---|---|---|---|
+| footer relief | **180.93 mm³** | 2466.61 mm³ | **2285.69 mm³** |
+
+The required relief is a plain rectangle — Y 29.500…31.953 at *every* Z in the band — and its
+front boundary is exactly the hinge axis. That is not a coincidence: every lid part except
+the tab disc sits at Δy ≥ 0 **and** Δz ≥ 0 from the axis, so
+`Y(θ) = aY + Δy·cosθ + Δz·sinθ ≥ aY` for the whole sweep; and the disc is a surface of
+revolution whose lowest point is `aZ - HingeTabRadius` = 0, so it never enters the band.
+Hence a flat cut at the axis, not an arc. The open lid's footprint also starts at exactly
+Y 29.500, so footer and open lid meet with a uniform **0.5 mm** gap (`HingeSwingClearance`),
+against 0.83–2.59 mm for the arc and 5.50 mm for the original slot.
+
+### A branch-instability bug worth remembering
+
+Macro 08's tab was one closed outline: a 270° arc closed by a neck. Its arc endpoints sat at
+the circle's **extrema**, reached by "line is vertical/horizontal" + "endpoint on circle" —
+which has **two valid solutions**. It held for W97/115 and D69/85, then flipped at
+W85 D55 H55 and **stayed flipped**: the disc collapsed to a quarter and the tab lost the
+material around the pin hole. Nothing errored; the sketch stayed DoF 0 and fully
+constrained. Pinning the endpoints with `DistanceY = centre ± R` is degenerate (a tangency;
+DoF −2).
+
+Fixed in macro 12 by splitting the tab into two unambiguous pads — a plain neck rectangle
+(`Pad002`, first, so it bridges to the panel) and a plain circle (`Pad004`, second, fusing
+into it). A circle has no branch ambiguity.
+
+**Verified across W 80–130, D 50–100, H 50–95** (9 cases): disc intact, all dimensions
+tracking, **swing interference 0.0000 mm³**, every solid valid/closed/single.

@@ -1,0 +1,132 @@
+# -*- coding: utf-8 -*-
+"""
+11-width_depth_footer.FCMacro — MagicCardBox
+
+Run AFTER 07, 08 and 10. Three fixes, all measured:
+
+1. WIDTH (was broken)  — MagicCardBox/Sketch007's AttachmentOffset was a copied LITERAL
+   (48.5) instead of an expression. Macro 07 created it with
+   `sl.AttachmentOffset = FreeCAD.Placement(sk.AttachmentOffset)`, which copies the value,
+   not the binding. Sketch001 next to it has `.AttachmentOffset.Base.z -> Width / 2`, so the
+   socket tracked Width while the neck slot stayed at 48.5. At Width 115 that left 46.46 mm^3
+   of the lid's neck buried in the side wall at 0 deg. Now bound.
+
+2. DEPTH (defect D6)   — Lid/Sketch001 has no attachment at all, so its `.AttachmentOffset`
+   expression is inert and its position is a hard-coded Placement of Y = 34.5. Macro 03 tried
+   giving it a real attachment and that cascaded: attaching it collapses the Body001 feature
+   placements to identity, which drags DatumPlane002 (MapMode ObjectYZ on Pad002) and moves
+   the pin hole. Binding `.Placement.Base.y` directly avoids the attachment engine entirely —
+   verified geometry-neutral at nominal (Pad001/Pad002/DatumPlane002/pin-hole centre all
+   unchanged) and the panel now tracks Depth at 55 / 69 / 85.
+
+3. FOOTER (over-cut)   — the arc relief from macro 06 was sized for the OLD lid, whose rear
+   panel reached Z = 0 and swung a corner at radius 8.60 deep into the footer. After the
+   knuckle rebuild the panel starts at PanelBottomZ, and the required relief collapses to a
+   simple rectangle:
+
+       required : 180.93 mm^3,  Y 29.500..35.953, identical at every Z in the band
+       cut today: 2466.61 mm^3  ->  over-cut of 2285.69 mm^3
+
+   The front boundary is exactly the hinge axis Y, and that is not a coincidence: every lid
+   part except the tab disc sits at Dy >= 0 AND Dz >= 0 from the axis, so
+   Y(theta) = aY + Dy*cos + Dz*sin >= aY for the whole 0..90 deg sweep. The disc is a surface
+   of revolution whose lowest point is aZ - HingeTabRadius = 0, so it never enters the band
+   at all. Hence a flat cut at the axis, not an arc.
+
+   Bonus: the OPEN lid's footprint in the footer band also starts at exactly Y 29.500, so the
+   footer edge and the open lid meet flush apart from HingeSwingClearance — a uniform 0.5 mm
+   gap, against 0.83..2.59 mm for the arc and 5.50 mm for the original straight slot.
+
+Run: Macro -> Macros... -> 11-width_depth_footer -> Execute
+"""
+
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+mb = FreeCAD.getDocument("MagicCardBox")
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+V = FreeCAD.Vector
+log = []
+
+D = vs.Depth.Value
+FH = vs.FooterHeight.Value
+WT = vs.WallThickness.Value
+aY = D / 2 - vs.HingeAxisFromRear.Value
+SC = vs.HingeSwingClearance.Value
+
+E_WIDTH_HALF = P + "Width / 2"
+E_DEPTH_HALF = P + "Depth / 2"
+E_FRONT = P + "Depth / 2 - " + P + "HingeAxisFromRear - " + P + "HingeSwingClearance"
+E_REAR = P + "Depth"
+E_BOT = "-(" + P + "FooterHeight + " + P + "WallThickness + 0 mm)"
+E_TOP = "0 mm"
+
+# ---- 1. Width: bind the neck slot's attachment offset -----------------------
+sl = mb.getObject("Sketch007")
+sl.setExpression(".AttachmentOffset.Base.z", E_WIDTH_HALF)
+log.append("Sketch007 .AttachmentOffset.Base.z -> Width / 2  (was the literal %.1f)"
+           % vs.Width.Value)
+
+# ---- 2. Depth: bind the lid panel's placement -------------------------------
+sk1 = ld.getObject("Sketch001")
+sk1.setExpression(".Placement.Base.y", E_DEPTH_HALF)
+log.append("Lid/Sketch001 .Placement.Base.y -> Depth / 2  (was the literal 34.5)")
+
+# ---- 3. Footer: arc relief -> flat cut at the hinge axis --------------------
+sk6 = mb.getObject("Sketch006")
+for path, _ in list(sk6.ExpressionEngine):
+    if re.match(r"\.?Constraints\[\d+\]$", path):
+        sk6.setExpression(path, None)
+sk6.deleteAllConstraints()
+sk6.deleteAllGeometry()
+x0, x1 = aY - SC, D
+y0, y1 = -(FH + WT), 0.0
+pts = [V(x0, y0, 0), V(x1, y0, 0), V(x1, y1, 0), V(x0, y1, 0)]
+for i in range(4):
+    sk6.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    sk6.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+sk6.addConstraint(Sketcher.Constraint("Horizontal", 0))
+sk6.addConstraint(Sketcher.Constraint("Horizontal", 2))
+sk6.addConstraint(Sketcher.Constraint("Vertical", 1))
+sk6.addConstraint(Sketcher.Constraint("Vertical", 3))
+a = sk6.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 1, x0))
+b = sk6.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, x1))
+c = sk6.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, y0))
+d = sk6.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, y1))
+for i, e in ((a, E_FRONT), (b, E_REAR), (c, E_BOT), (d, E_TOP)):
+    sk6.setExpression("Constraints[%d]" % i, e)
+log.append("Sketch006 rebuilt: flat footer cut, front edge at Y %.2f (was an arc reaching %.2f)"
+           % (x0, 21.894))
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 11-width_depth_footer ===")
+for line in log:
+    print("  " + line)
+for nm, doc in (("MagicCardBox/Sketch006", mb), ("MagicCardBox/Sketch007", mb)):
+    s = doc.getObject(nm.split("/")[1])
+    print("%s: DoF=%d fully=%s" % (nm, s.solve(), s.FullyConstrained))
+print("Lid/Sketch001 Placement: %s" % ld.getObject("Sketch001").Placement)
+for nm, o in (("box", mb.getObject("Body")), ("lid plate", ld.getObject("Body")),
+              ("lid back", ld.getObject("Body001"))):
+    s = o.Shape
+    bb = s.BoundBox
+    print("%s: vol=%.1f valid=%s solids=%d  Y %.2f..%.2f  Z %.2f..%.2f"
+          % (nm, s.Volume, s.isValid(), len(s.Solids), bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- sweep-test before saving.")
