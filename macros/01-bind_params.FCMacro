@@ -1,0 +1,181 @@
+# -*- coding: utf-8 -*-
+"""
+01-bind_params.FCMacro — MagicCardBox
+
+Closes the 19 unbound dimensional literals recorded as the bootstrap audit baseline
+(2026-09-13) by adding the missing VarSet variables and binding every literal to a
+`<<Params>>#VarSet.*` expression.
+
+GEOMETRY-NEUTRAL BY DESIGN. Every new Param defaults to the value the literal already
+held, and the two new clearance knobs default to 0.0, so a first run must leave every
+solid volume bit-identical. Verify that, don't assume it.
+
+Idempotent: an existing VarSet property is never overwritten (so tuned values survive a
+re-run); expressions are always re-set (setExpression overwrites, never appends).
+
+Semantics were established by measuring the solids, not by reading the numbers:
+  * Sketch001's Ol6 circle is an INNER wire -- Pocket cuts around it, leaving a pin
+    standing proud of the recess floor. Pocket001 then trims that pin back.
+    Pin length = Pocket.Length - Pocket001.Length = 5 - 2 = 3 mm.
+  * The hinge axis sits at global (Y=29.5, Z=5) = (Depth/2 - HingeAxisFromRear,
+    HingeAxisFromBottom). Four sketches locate it, each in a different local frame;
+    the frames were resolved via getGlobalPlacement() before binding.
+  * MagicCardBox/Sketch003 [8] front wall, [9] rear wall, [10] floor -- all 2.0 mm
+    today. [8] was already bound to WallThickness by hand, so [9] follows it; [10] is
+    the floor, a genuinely different concern, and gets its own knob.
+
+Run: Macro -> Macros... -> 01-bind_params -> Execute
+"""
+
+import FreeCAD
+
+PARAMS_DOC = "Params"
+VARSET = "VarSet"
+
+# ---------------------------------------------------------------------------
+# 1. Variables to ensure exist on Params#VarSet.
+#    (name, type, default, group, doc)
+# ---------------------------------------------------------------------------
+NEW_VARS = [
+    ("HingeTabRadius", "App::PropertyLength", 10.0, "Hinge",
+     "Radius of the hinge knuckle arc. Same nominal feature on the box socket "
+     "profile and the lid tab profile."),
+    ("HingePinDia", "App::PropertyLength", 6.0, "Hinge",
+     "Nominal diameter of the printed hinge pin standing in the box side-wall "
+     "socket. The lid's mating hole derives from this plus HingePinClearance."),
+    ("HingePinLength", "App::PropertyLength", 3.0, "Hinge",
+     "How far the hinge pin stands proud of the socket floor, i.e. how deep it "
+     "engages the lid tab. Drives Pocket001 as a derived quantity so the pin "
+     "keeps its length when the tab clearance changes."),
+    ("HingeAxisFromRear", "App::PropertyLength", 5.0, "Hinge",
+     "Inset of the hinge axis from the box rear face, measured along Y. Distinct "
+     "concept from HingeAxisFromBottom -- do not merge them just because both "
+     "are 5 mm today."),
+    ("HingeAxisFromBottom", "App::PropertyLength", 5.0, "Hinge",
+     "Height of the hinge axis above the box floor, measured along Z."),
+    ("HingeTabThickness", "App::PropertyLength", 5.0, "Hinge",
+     "Thickness of the lid's hinge tab (Lid/Pad002). The box socket recess is "
+     "this plus HingeTabClearance."),
+    ("HingePinClearance", "App::PropertyLength", 0.0, "Clearances",
+     "Per-side radial clearance between the lid pin hole and the box hinge pin. "
+     "0.0 = the as-modelled interference fit. SET THIS BEFORE PRINTING -- try "
+     "0.2 mm for PLA, ~0.3 mm for ASA, then tune from the test print."),
+    ("HingeTabClearance", "App::PropertyLength", 0.0, "Clearances",
+     "Axial clearance between the lid hinge tab and its socket recess in the box "
+     "side wall. Deliberately NOT the same knob as HingePinClearance -- different "
+     "physical interface. 0.0 = as-modelled. SET THIS BEFORE PRINTING."),
+    ("FloorThickness", "App::PropertyLength", 2.0, "Geometry",
+     "Thickness of the box floor. Separate from WallThickness because the base "
+     "layer count and the wall perimeters are independent print concerns."),
+    ("EdgeFilletRadius", "App::PropertyLength", 1.0, "Geometry",
+     "Fillet radius on the lid rear-wall edges (Lid/Fillet)."),
+]
+
+# ---------------------------------------------------------------------------
+# 2. The 19 bindings.  (doc, object, property-path, expression)
+#    Sketch constraint paths use the Constraints[i] form.
+# ---------------------------------------------------------------------------
+P = "<<Params>>#VarSet."
+
+BINDINGS = [
+    # --- MagicCardBox: Sketch001 "HingProfile" -- socket profile + pin -------
+    ("MagicCardBox", "Sketch001", "Constraints[0]",  P + "HingeTabRadius"),
+    ("MagicCardBox", "Sketch001", "Constraints[1]",  P + "HingeAxisFromRear"),
+    ("MagicCardBox", "Sketch001", "Constraints[12]", P + "HingePinDia"),
+    ("MagicCardBox", "Sketch001", "Constraints[15]", P + "HingeAxisFromBottom"),
+    # --- MagicCardBox: Sketch002 -- pin-trim circle --------------------------
+    ("MagicCardBox", "Sketch002", "Constraints[0]",  P + "HingeAxisFromRear"),
+    ("MagicCardBox", "Sketch002", "Constraints[1]",  P + "HingeAxisFromBottom"),
+    ("MagicCardBox", "Sketch002", "Constraints[3]",  P + "HingePinDia"),
+    # --- MagicCardBox: Sketch003 -- interior cavity --------------------------
+    # [8] front wall is already bound to WallThickness; [9] is the rear wall,
+    # the same concern, so it follows. [10] is the floor -- its own knob.
+    ("MagicCardBox", "Sketch003", "Constraints[9]",  P + "WallThickness"),
+    ("MagicCardBox", "Sketch003", "Constraints[10]", P + "FloorThickness"),
+    # --- MagicCardBox: features ---------------------------------------------
+    ("MagicCardBox", "Pocket",    "Length",
+     P + "HingeTabThickness + " + P + "HingeTabClearance"),
+    # Pin length is the design intent; the trim depth is derived from it, so the
+    # pin does not grow when the tab clearance is dialled in.
+    ("MagicCardBox", "Pocket001", "Length",
+     P + "HingeTabThickness + " + P + "HingeTabClearance - " + P + "HingePinLength"),
+
+    # --- Lid: Sketch002 -- hinge tab profile --------------------------------
+    ("Lid", "Sketch002", "Constraints[1]",  P + "HingeTabRadius"),
+    ("Lid", "Sketch002", "Constraints[9]",  P + "HingeAxisFromBottom"),
+    ("Lid", "Sketch002", "Constraints[10]", P + "HingeAxisFromRear"),
+    # --- Lid: Sketch003 -- pin hole -----------------------------------------
+    # Local frame resolved by measurement: local +X -> global +Z (height),
+    # local +Y -> global -Y (inset from the rear face). Hence the apparent
+    # swap between DistanceX/DistanceY and the two axis knobs.
+    ("Lid", "Sketch003", "Constraints[0]",
+     P + "HingePinDia + " + P + "HingePinClearance * 2"),
+    ("Lid", "Sketch003", "Constraints[3]",  P + "HingeAxisFromRear"),
+    ("Lid", "Sketch003", "Constraints[7]",  P + "HingeAxisFromBottom"),
+    # --- Lid: features -------------------------------------------------------
+    ("Lid", "Pad002", "Length", P + "HingeTabThickness"),
+    ("Lid", "Fillet", "Radius", P + "EdgeFilletRadius"),
+]
+
+
+def ensure_vars():
+    doc = FreeCAD.getDocument(PARAMS_DOC)
+    vs = doc.getObject(VARSET)
+    if vs is None:
+        raise RuntimeError("Params#VarSet not found")
+    added, kept = [], []
+    for name, typ, default, group, doc_str in NEW_VARS:
+        if name in vs.PropertiesList:
+            kept.append(name)
+            continue
+        vs.addProperty(typ, name, group, doc_str)
+        setattr(vs, name, default)
+        added.append("%s = %s" % (name, default))
+    return added, kept
+
+
+def apply_bindings():
+    applied, failed = [], []
+    for doc_name, obj_name, path, expr in BINDINGS:
+        try:
+            obj = FreeCAD.getDocument(doc_name).getObject(obj_name)
+            if obj is None:
+                failed.append("%s/%s -> object not found" % (doc_name, obj_name))
+                continue
+            obj.setExpression(path, expr)
+            applied.append("%s/%s.%s = %s" % (doc_name, obj_name, path, expr))
+        except Exception as exc:
+            failed.append("%s/%s.%s -> %r" % (doc_name, obj_name, path, exc))
+    return applied, failed
+
+
+def recompute_all():
+    # Params first, then the parts, then the assembly that links them.
+    for name in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+        d = FreeCAD.getDocument(name)
+        d.recompute(None, True, True)
+    errs = []
+    for name in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+        d = FreeCAD.getDocument(name)
+        for o in d.Objects:
+            state = list(getattr(o, "State", []) or [])
+            bad = [s for s in state if s in ("Invalid", "Error", "Touched")]
+            if bad:
+                errs.append("%s/%s: %s" % (name, o.Name, ", ".join(bad)))
+    return errs
+
+
+added, kept = ensure_vars()
+applied, failed = apply_bindings()
+errs = recompute_all()
+
+print("=== 01-bind_params ===")
+print("VarSet added (%d): %s" % (len(added), ", ".join(added) or "none"))
+print("VarSet already present (%d): %s" % (len(kept), ", ".join(kept) or "none"))
+print("Bindings applied: %d / %d" % (len(applied), len(BINDINGS)))
+for f in failed:
+    print("  FAILED: %s" % f)
+print("Recompute problems: %d" % len(errs))
+for e in errs:
+    print("  %s" % e)
+print("NOT SAVED -- save explicitly after verifying volumes are unchanged.")

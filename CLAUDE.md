@@ -1,12 +1,23 @@
 # Project rules — MagicCardBox
 
-This model was built **manually, before the project was bootstrapped**, so it carries real
-parametric debt: **19 unbound dimensional literals** across `MagicCardBox.FCStd` and
-`Lid.FCStd`, and **two datum planes attached to feature geometry** in `Lid.FCStd`. The
-highest-risk item is the hinge: the box boss, the box pocket and the lid pin hole are all
-the *same* Ø6.0 literal, so there is **no clearance parameter anywhere in this project** —
-a printed lid will bind. Do not "fix" any of this by nudging coordinates. Read the rules
-below before touching geometry.
+This model was built **manually, before the project was bootstrapped**. The 19 unbound
+dimensional literals it carried were bound on 2026-09-13 and the audit is now clean — but
+**the model still does not survive a parameter change.** Sweeping `Width`, `Depth` or
+`Height` breaks it three different ways (D1–D5 in `plan.md`); the worst, D1, silently
+leaves the box body stale while looking fine. **Treat `Width`/`Depth`/`Height` as frozen
+until D1–D3 are fixed.**
+
+Two further things to know before you touch anything:
+
+- **The hinge has zero clearance.** `HingePinClearance` and `HingeTabClearance` exist as
+  knobs but default to **0.0 mm** — the as-modelled interference fit. They must be set
+  before any print or the lid will seize on its pin.
+- **A failed recompute does not roll back.** If a sweep or an edit puts a feature into an
+  Invalid state, the geometry does *not* return when you restore the parameter (D5).
+  Recover by closing all four documents **without saving** and reopening from disk.
+
+Do not "fix" any of this by nudging coordinates. Read the rules below before touching
+geometry.
 
 ---
 
@@ -14,12 +25,11 @@ below before touching geometry.
 
 These restate the global rules in `~/.claude/CLAUDE.md` with project-specific context.
 
-1. **Everything parametric.** The worst offenders are the hinge sketches:
-   `MagicCardBox/Sketch001` (HingProfile, 4 literals), `MagicCardBox/Sketch002` (3),
-   `Lid/Sketch002` (3), `Lid/Sketch003` (3), plus 4 unbound feature dims
-   (`MagicCardBox/Pocket.Length`, `Pocket001.Length`, `Lid/Pad002.Length`,
-   `Lid/Fillet.Radius`). The box footprint, pad height and interior pocket **are** bound
-   correctly — do not re-do those. See `plan.md` for the proposed Param names per literal.
+1. **Everything parametric.** All 19 literals were bound on 2026-09-13 via
+   `macros/01-bind_params.FCMacro` — that macro is the record of what maps to what, and
+   re-running it is safe (it never overwrites an existing VarSet value). The audit is
+   clean; keep it that way. Note the audit's blind spots below — a clean audit here does
+   **not** mean the model is parametrically sound, as the failed sweep proves.
 
 2. **No fixing geometry by editing raw sketch coordinates.** No prior coordinate-edit
    incident in this project; rule applies preventively. All 9 sketches are already fully
@@ -27,7 +37,14 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    move a vertex means a missing *Param*, not a missing coordinate edit.
 
 3. **Attach sketches to datum planes, not feature faces.** This project **has** the
-   condition the rule exists to prevent, in `Lid.FCStd`:
+   condition the rule exists to prevent, and it has already caused a real failure:
+   **`MagicCardBox/Sketch003` draws its cavity profile from external geometry
+   `Mirrored.Face3`** — a feature face. Changing `Depth` renumbers that face, the
+   reference re-binds wrongly, and `Pocket002` goes Invalid while the body silently keeps
+   its old shape (defect D1 in `plan.md`). `Lid/Sketch002` has the same shape of problem
+   via `Binder002.Face1`.
+
+   Also in `Lid.FCStd`:
    - `DatumPlane001` → attached to `Fillet.Face6` (a PartDesign::Fillet face). `Sketch002`
      (the hinge tab profile) sits on it, so the tab inherits topological-naming fragility.
    - `DatumPlane002` → attached to the `Pad` object with MapMode `ObjectYZ`. `Sketch003`
@@ -38,16 +55,29 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    script does not catch these** — it only checks *sketch* attachment, not datum-plane
    attachment. Check datum planes by hand via `execute_python`.
 
-4. **Clearance concepts stay decoupled.** This project currently uses **zero** clearance
-   Params — that is the debt, not the design. Two are required and neither exists yet:
-   - `HingePinClearance` — lid pin hole ↔ box hinge boss (per side). Today both are the
-     same Ø6.0 literal: an interference fit.
-   - `HingeTabClearance` — lid hinge tab ↔ its socket pocket in the box side wall. Today
-     `Pad002.Length` and `Pocket.Length` are both the same 5.0 literal.
+4. **Clearance concepts stay decoupled.** Two clearance Params now exist, deliberately
+   separate because they are different physical interfaces:
+   - `HingePinClearance` — lid pin hole ↔ the Ø6 pin standing in the box socket. Drives
+     `Lid/Sketch003.Constraints[0]` as `HingePinDia + HingePinClearance * 2`.
+   - `HingeTabClearance` — lid hinge tab ↔ its socket recess in the box side wall. Drives
+     `MagicCardBox/Pocket.Length` as `HingeTabThickness + HingeTabClearance`.
 
-   Never collapse these two into one knob, and never reuse `WallThickness` for either.
-   PLA needs ~0.1 mm less per side than ASA; size the defaults for the test material and
-   re-tune after the first print.
+   **Both default to 0.0 mm** — the binding pass was deliberately geometry-neutral, so
+   these are wired but not yet dialled in. That is the as-modelled interference fit and it
+   will not open. Never collapse them into one knob and never reuse `WallThickness`.
+
+   **These are print-in-place clearances, not assembly clearances.** The box and lid are
+   printed as **one part with the lid open** (see Design direction below), so the pin and
+   its hole are formed in the same print and must come off the plate already free. That is
+   a stricter requirement than a press fit between two separately printed parts:
+   - The gap must not fuse. Size it against the layer height and extrusion width, not just
+     a nominal fit — a clearance smaller than roughly one layer height in the Z-facing
+     direction will weld solid and the hinge will never move.
+   - Typical FDM print-in-place hinges want **0.15–0.3 mm per side** (0.3–0.6 mm on
+     diameter). Start at the top of that range and tighten after the first print; a hinge
+     that prints seized cannot be rescued, one that prints loose still works.
+   - `HingePinClearance` is applied to the **hole** (`HingePinDia + HingePinClearance * 2`),
+     so it is a per-side radial value.
 
 ---
 
@@ -80,6 +110,41 @@ Two printed parts, no fasteners, no separate hinge component.
 - **Opening direction:** the lid + rear wall rotate rearward about that X axis, so the
   whole back of the box folds away. `MagicCardAssembly.FCStd` models this with the box
   grounded and a `Revolute` joint between `LidBack.Face13` and `Box.Face21`.
+
+---
+
+## Design direction (stated by Bradley 2026-09-13 — not yet modelled)
+
+Four intentions that are **not** visible anywhere in the FCStd files. Nothing below has
+been built yet; treat them as the agreed direction for the next modeling passes.
+
+1. **Print as a single part, lid open.** The box and lid are one print with a
+   print-in-place hinge — not two parts assembled. This is why the hinge clearances are
+   sized as print-in-place clearances (rule #4), and it means
+   `MagicCardAssembly.FCStd` is a *design-intent / motion* check, not a description of how
+   the object is manufactured.
+   **Unresolved:** the hinge axis sits at Z = 5 mm, so with the lid folded open the lid and
+   rear wall lie in a plane 5 mm above the bed — an unsupported span unless the part is
+   reoriented, the open angle is chosen to bring the lid down to the plate, or support is
+   accepted under the lid. Settle this **before** tuning clearances, because it decides
+   which surfaces are Z-facing and therefore which gaps are at risk of fusing.
+
+2. **Finger slots front and back** to lift the cards out. Needs its own Params
+   (slot width, depth, corner radius) — do not borrow `WallThickness` or any hinge knob.
+
+3. **Bottom extended by 2 mm**, as an additional body that tapers outward to a wider
+   footprint. Note this interacts with `FloorThickness` and with the "centered at (0,0,0)"
+   rule — the taper must stay symmetric in X and Y. Being a separate body, it also needs a
+   deliberate decision about whether it fuses into the box for export.
+
+4. **Decoration on the outer faces** — last, after the functional geometry is settled and
+   the sweep defects (D1–D3) are fixed. Decoration multiplies the face count and will make
+   any remaining topological-naming reference far more fragile.
+
+**Sequencing note:** items 2 and 3 both add features to `MagicCardBox`, which will renumber
+faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external geometry
+(defect D1), so **fix D1 first** or these additions will break the cavity the same way a
+`Depth` change does.
 
 ---
 

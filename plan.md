@@ -120,11 +120,34 @@ mating interface (global rule #4).
 
 ## REMAINING WORK (ordered)
 
-1. Retarget `DatumPlane001` / `DatumPlane002` off feature references onto datum planes.
-2. Add the missing Params (table above), including the two **absent** clearance knobs.
-3. Bind all 19 unbound dimensions via macro.
-4. Re-run the audit until clean; run the parameter sweep test.
-5. Export `stl/` + `3mf/`, slice, confirm the $36–$45 target.
-6. Test print in PLA; fill in the print profile table in `CLAUDE.md`.
+1. ~~Retarget `DatumPlane001` / `DatumPlane002` off feature references onto datum planes.~~ **Still open** — see "Parameter sweep" below; the scope is now wider than these two datums.
+2. ~~Add the missing Params (table above), including the two **absent** clearance knobs.~~ **Done 2026-09-13** — 10 variables added via `macros/01-bind_params.FCMacro`.
+3. ~~Bind all 19 unbound dimensions via macro.~~ **Done 2026-09-13** — 19/19 bound, geometry verified bit-identical.
+4. ~~Re-run the audit until clean~~ **Done — 0 issues.** Parameter sweep test **FAILED** — see below.
+5. Fix the sweep defects (D1–D5 below).
+6. Set `HingePinClearance` / `HingeTabClearance` to real values before printing.
+7. Export `stl/` + `3mf/`, slice, confirm the $36–$45 target.
+8. Test print in PLA; fill in the print profile table in `CLAUDE.md`.
 
-**Execution of step 1 onward is not authorized until this plan is approved.**
+---
+
+## Parameter sweep — result: FAILED (2026-09-13)
+
+Validation step 2 was run after the binding pass. The bindings themselves are correct —
+every literal now tracks its Param — but the model **does not survive a parameter change**.
+These are pre-existing modeling defects, independent of the 19 bindings, uncovered *because*
+the model became parametric enough to sweep. Measured one parameter at a time from a freshly
+reloaded document:
+
+| # | Change | Symptom | Root cause |
+|---|---|---|---|
+| **D1** | `Depth` 69 → 80 | `MagicCardBox/Pocket002` goes **Invalid**; the whole box body silently keeps its old shape (vol stays 87462, Y stays ±34.5) | `MagicCardBox/Sketch003` takes its cavity profile from **external geometry `Mirrored.Face3`** — a feature face. Changing `Depth` renumbers the faces and the reference re-binds to the wrong one. Classic topological-naming failure. |
+| **D2** | `Width` 97 → 110 | `Lid/Body001` (LidBack) spans X −48.5…61.5 instead of ±55 — grows off-centre, breaking the "centered at (0,0,0)" rule in `CAD_STANDARDS.md` | `Lid/Sketch001` pins one corner with a Coincident to element −5 instead of a Symmetric constraint about the vertical axis. |
+| **D3** | `Height` 67 → 75 | `Lid/Body001` spans Z −8…67 instead of 0…75 — the rear wall hangs below the floor and stops short of the lid | `Lid/Sketch001` is anchored at its **top** edge, so added height grows downward. Its Z anchor is not tied to the box floor. |
+| **D4** | any of the three | `MagicCardAssembly/Joint` (Revolute) goes **Invalid** | The joint references named faces `Body001.Face13` / `Body.Face21`. Already flagged as a risk in `CLAUDE.md`; now confirmed. |
+| **D5** | after D1 fires | Restoring 97/69/67 does **not** restore the geometry — `MagicCardBox/Body` comes back 87571.81 mm³ vs the correct 87461.94 (+109.87). Reproducible. | A failed recompute leaves a stale tip. **Recovery: close all four documents without saving and reopen from disk.** Do not try to fix this forward. |
+
+**Consequence for the next session:** `Width`, `Depth` and `Height` are *not* yet safe to
+change. Fixing D1–D3 means removing the feature-face external-geometry reference in
+`MagicCardBox/Sketch003` and re-anchoring `Lid/Sketch001` symmetrically — both are geometry
+changes and need their own approved plan. D1 is the one that actually breaks the solid.
