@@ -2,8 +2,7 @@
 """
 17-flutes.FCMacro — MagicCardBox
 
-Vertical fluting on the box's front and side walls. The lid's top plate is deliberately
-left plain — see ORIENTATION.
+Vertical fluting on the box's front and side walls, and across the lid's top plate.
 
 HOW A FLUTE IS MADE
 -------------------
@@ -25,8 +24,14 @@ ORIENTATION — why this prints clean
 The part prints with the lid open 90 deg, box upright.
   * Box walls stand vertical, so wall flutes run ALONG the extrusion direction: no
     overhangs, no supports, and silk filament catches each groove separately.
-  * The lid's TOP PLATE is NOT fluted: in the print pose it lies against the build plate,
-    so grooves there would be cut into the first layer.
+  * The lid's TOP PLATE also stands VERTICAL in the print pose. Confirmed against the
+    slicer preview: the box sits upright (finger-slot notch visible in a vertical wall),
+    the lid's REAR PANEL lies flat on the bed, and the top plate stands on edge at the far
+    end - the two first-layer rectangles are the footer and the rear panel, not the top.
+    Its flutes are cut as cylinders whose axis runs along Y and are spaced along X; after
+    the 90 deg rotation Y maps to Z, so those grooves land VERTICAL too.
+  * Front-wall and lid-top flutes share the same X positions, so the ribbing runs
+    continuously over the front rim when the lid is shut.
 
 WHERE FLUTES MUST NOT GO
 ------------------------
@@ -70,7 +75,8 @@ NEW_VARS = [
     ("FluteMargin", "App::PropertyLength", 6.0, "Flutes",
      "Keep-off distance from each vertical corner, so corners stay crisp."),
     ("FluteCountFront", "App::PropertyInteger", 24, "Flutes",
-     "Flutes across the front wall. Changing a COUNT needs this macro re-run; "
+     "Flutes across the front wall. The lid top uses the same count so the ribbing "
+     "lines up over the rim. Changing a COUNT needs this macro re-run; "
      "radius/depth/start/margin are live."),
     ("FluteCountSide", "App::PropertyInteger", 15, "Flutes",
      "Flutes along each side wall."),
@@ -179,10 +185,43 @@ pk.setExpression("Length", P + "Height - " + P + "FluteStartZ")
 sk.Visibility = False
 body.Tip = pk
 
-# ============ LID TOP: deliberately NOT fluted =================================
-# Bradley's call, and he is right. In the print pose the lid's TOP PLATE ends up lying
-# against the build plate, so flutes there would be cut into the first layer — fighting
-# first-layer squish and adhesion for no visual gain. Box walls only.
+# ============ LID TOP: flutes along Y, spaced in X =============================
+# Cut as cylinders with their axis along Y. In the print pose Y maps to Z, so these grooves
+# run vertically up the standing plate — same as the wall flutes.
+lbody = ld.getObject("Body")
+lsk = ld.getObject("Sketch012")
+if lsk is None:
+    xz = None
+    for f in lbody.Origin.OriginFeatures:
+        if f.Role == "XZ_Plane":
+            xz = f
+            break
+    lsk = lbody.newObject("Sketcher::SketchObject", "Sketch012")
+    lsk.AttachmentSupport = [(xz, "")]
+    lsk.MapMode = "FlatFace"
+    lsk.Label = "LidTopFlutes"
+    log.append("Lid/Sketch012 created")
+else:
+    wipe(lsk)
+    log.append("Lid/Sketch012 rebuilt")
+
+top_z = H + WT + (R - DP)
+E_TOP_Z = P + "Height + " + P + "WallThickness + (" + E_OFF + ")"
+for i in range(NF):
+    add_circle(lsk, -(W / 2 - MG) + i * (W - 2 * MG) / (NF - 1), top_z,
+               pos_expr("Width", i, NF), E_TOP_Z)
+log.append("Lid/Sketch012: %d top-plate flutes, same X positions as the front" % NF)
+
+lpk = ld.getObject("Pocket009")
+if lpk is None:
+    lpk = lbody.newObject("PartDesign::Pocket", "Pocket009")
+    lpk.Profile = lsk
+    lpk.Label = "LidTopFlutes"
+    log.append("Lid/Pocket009 created")
+lpk.Type = "ThroughAll"
+lpk.SideType = "Symmetric"
+lsk.Visibility = False
+lbody.Tip = lpk
 
 for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
     FreeCAD.getDocument(n).recompute(None, True, True)
