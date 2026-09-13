@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+"""
+13-finger_slots.FCMacro — MagicCardBox
+
+Adds the finger slots: a U-shaped thumb notch cut down from the rim of the front AND rear
+walls, so a card stack can be pinched out.
+
+ONE FEATURE, BOTH WALLS
+-----------------------
+The sketch sits on the Body's XZ_Plane (local x -> global X, local y -> global Z, verified
+via getGlobalPlacement) and the pocket is ThroughAll with SideType "Symmetric". That cuts
+forward and back from Y=0 in a single feature: through the rear wall (Y 32.5..34.5), through
+the cavity — already empty, so no effect — and through the front wall (Y -34.5..-32.5).
+No mirror feature needed.
+
+PROFILE — and why it is built with tangents
+--------------------------------------------
+A half-round-bottomed slot: a 180 deg arc of radius FingerSlotWidth/2 closed by two vertical
+sides and a horizontal line ABOVE the rim, so the cut opens at the top.
+
+The arc endpoints sit at the circle's horizontal extrema. Pinning them with DistanceX =
+centre +/- R would be degenerate — that is a tangency, and it is exactly what over-constrained
+Sketch007 (DoF -2) and what let macro 08's tab flip solver branch at W85 D55 H55. Here the
+vertical sides are made TANGENT to the arc instead: tangency is well-conditioned AND lands on
+the extremum by definition, so there is no second solution to fall into.
+
+The arc centre is placed on the sketch's vertical axis with PointOnObject rather than
+DistanceX = 0, for the same reason — a zero-valued dimensional constraint is worth avoiding.
+
+GEOMETRY NOTES
+--------------
+  slot spans X +/- FingerSlotWidth/2          (cavity is +/-42.5, side walls start at 42.5)
+  slot bottom at Z = Height - FingerSlotDepth  (floor top is at FloorThickness)
+  arc centre at Z = Height - FingerSlotDepth + FingerSlotWidth/2
+
+Valid ranges — the macro checks these and refuses rather than building a broken profile:
+  * FingerSlotWidth  < Width - 2*SideWallThickness   (must clear the side walls)
+  * FingerSlotDepth  > FingerSlotWidth/2 - WallThickness
+        Below that the straight sides invert: their length is
+        FingerSlotDepth - FingerSlotWidth/2 + WallThickness.
+  * FingerSlotDepth  < Height - FloorThickness       (must not reach the floor)
+
+THE REAR SLOT IS BACKED BY THE LID WHEN CLOSED
+-----------------------------------------------
+The lid's rear panel covers the box's rear wall over Z = PanelBottomZ..Height, so with the
+lid shut the rear notch is closed off and the cards stay in. It is open exactly when the lid
+is open — which is when you are reaching for cards. Deliberate: cutting a matching notch in
+the lid panel would leave the closed box open at the back.
+
+NOTE: this renumbers faces, so re-run 05-repair_hinge_joint afterwards.
+
+Idempotent: re-running rebuilds the sketch and re-asserts the expressions.
+
+Run: Macro -> Macros... -> 13-finger_slots -> Execute
+"""
+
+import math
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject("Body")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+V = FreeCAD.Vector
+log = []
+
+NEW_VARS = [
+    ("FingerSlotWidth", "App::PropertyLength", 40.0, "FingerSlot",
+     "Width of the thumb notch in the front and rear walls. Must stay under "
+     "Width - 2*SideWallThickness so it clears the side walls."),
+    ("FingerSlotDepth", "App::PropertyLength", 25.0, "FingerSlot",
+     "How far the notch reaches down from the rim. Must exceed "
+     "FingerSlotWidth/2 - WallThickness (or the straight sides invert) and stay under "
+     "Height - FloorThickness (or it breaks into the floor)."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+
+W = vs.Width.Value
+H = vs.Height.Value
+WT = vs.WallThickness.Value
+SW = vs.SideWallThickness.Value
+FT = vs.FloorThickness.Value
+SLW = vs.FingerSlotWidth.Value
+SLD = vs.FingerSlotDepth.Value
+R = SLW / 2.0
+
+if SLW >= W - 2 * SW:
+    raise RuntimeError("FingerSlotWidth %.2f must be < Width - 2*SideWallThickness = %.2f"
+                       % (SLW, W - 2 * SW))
+if SLD <= R - WT:
+    raise RuntimeError("FingerSlotDepth %.2f must be > FingerSlotWidth/2 - WallThickness "
+                       "= %.2f, or the straight sides invert" % (SLD, R - WT))
+if SLD >= H - FT:
+    raise RuntimeError("FingerSlotDepth %.2f must be < Height - FloorThickness = %.2f"
+                       % (SLD, H - FT))
+
+cz = H - SLD + R          # arc centre, global Z
+top = H + WT              # close the profile above the rim
+
+E_R = P + "FingerSlotWidth / 2"
+E_CZ = P + "Height - " + P + "FingerSlotDepth + " + P + "FingerSlotWidth / 2"
+E_TOP = P + "Height + " + P + "WallThickness"
+
+sk = doc.getObject("Sketch011")
+if sk is None:
+    xz = None
+    for f in body.Origin.OriginFeatures:
+        if f.Role == "XZ_Plane":
+            xz = f
+            break
+    if xz is None:
+        raise RuntimeError("Body origin has no XZ_Plane")
+    sk = body.newObject("Sketcher::SketchObject", "Sketch011")
+    sk.AttachmentSupport = [(xz, "")]
+    sk.MapMode = "FlatFace"
+    sk.Label = "FingerSlot"
+    log.append("Sketch011 created")
+else:
+    for path, _ in list(sk.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            sk.setExpression(path, None)
+    sk.deleteAllConstraints()
+    sk.deleteAllGeometry()
+    log.append("Sketch011 rebuilt")
+
+A = V(-R, cz, 0)          # arc start, left extremum
+B = V(R, cz, 0)           # arc end,   right extremum
+sk.addGeometry(Part.ArcOfCircle(Part.Circle(V(0, cz, 0), V(0, 0, 1), R),
+                                math.pi, 2 * math.pi), False)      # 0: lower half
+sk.addGeometry(Part.LineSegment(B, V(R, top, 0)), False)           # 1: right side
+sk.addGeometry(Part.LineSegment(V(R, top, 0), V(-R, top, 0)), False)  # 2: top
+sk.addGeometry(Part.LineSegment(V(-R, top, 0), A), False)          # 3: left side
+sk.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+sk.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+sk.addConstraint(Sketcher.Constraint("Vertical", 1))
+sk.addConstraint(Sketcher.Constraint("Horizontal", 2))
+sk.addConstraint(Sketcher.Constraint("Vertical", 3))
+# Endpoint tangency, not DistanceX = centre +/- R: the latter is degenerate at the extremum
+# and is what over-constrained Sketch007 and flipped macro 08's tab.
+#
+# NB an endpoint Tangent in FreeCAD ALREADY IMPLIES coincidence (it removes 3 DoF, not 1),
+# so the arc-to-side junctions must NOT also get a Coincident — doing both is redundant by
+# one each and the sketch comes out at DoF -2, Invalid. Only the two junctions that are not
+# tangential (side-to-top) take a plain Coincident.
+sk.addConstraint(Sketcher.Constraint("Tangent", 0, 2, 1, 1))
+sk.addConstraint(Sketcher.Constraint("Tangent", 3, 2, 0, 1))
+sk.addConstraint(Sketcher.Constraint("PointOnObject", 0, 3, -2))   # arc centre on the V axis
+i_cz = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, cz))
+i_r = sk.addConstraint(Sketcher.Constraint("Radius", 0, R))
+i_top = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, top))
+for i, e in ((i_cz, E_CZ), (i_r, E_R), (i_top, E_TOP)):
+    sk.setExpression("Constraints[%d]" % i, e)
+
+pk = doc.getObject("Pocket007")
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", "Pocket007")
+    pk.Profile = sk
+    pk.Label = "FingerSlot"
+    log.append("Pocket007 created")
+pk.Type = "ThroughAll"
+# SideType, not the deprecated Midplane — see CLAUDE.md. "Symmetric" cuts both walls.
+pk.SideType = "Symmetric"
+sk.Visibility = False
+body.Tip = pk
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 13-finger_slots ===")
+for line in log:
+    print("  " + line)
+print("slot: width %.1f  depth %.1f  bottom radius %.1f" % (SLW, SLD, R))
+print("      X %.1f..%.1f   Z %.1f..%.1f   (cavity X +/-%.1f, floor top %.1f)"
+      % (-R, R, H - SLD, H, W / 2 - SW, FT))
+print("Sketch011: DoF=%d fully=%s extLinks=%d" % (sk.solve(), sk.FullyConstrained,
+                                                  len(sk.ExternalGeometry)))
+b = body.Shape.BoundBox
+print("Body: vol=%.2f valid=%s solids=%d  Y %.2f..%.2f Z %.2f..%.2f"
+      % (body.Shape.Volume, body.Shape.isValid(), len(body.Shape.Solids),
+         b.YMin, b.YMax, b.ZMin, b.ZMax))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")
