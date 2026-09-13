@@ -245,17 +245,31 @@ faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external ge
 
 ## Params variables (summary)
 
-`Params.FCStd` → `VarSet` currently holds **5** variables, all `App::PropertyLength`,
-all in one group — there is no clearance group yet:
+**The box size is DERIVED from the card spec** (macro 14) — `Width` / `Depth` / `Height` are
+still Params and still drive everything downstream, but they are no longer free numbers:
 
-- **Geometry:** `Width` (97 mm), `Depth` (69 mm), `Height` (67 mm),
-  `WallThickness` (2 mm), `SideWallThickness` (6 mm)
-- **Hinge:** *none yet* — `HingeTabRadius`, `HingePinDia`, `HingeAxisInset`,
-  `HingeTabThickness`, `HingeSocketDepth`, `EdgeFilletRadius` all need adding
-- **Clearances:** *none yet* — `HingePinClearance`, `HingeTabClearance` need adding
+```
+Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 105.0
+Depth  = CardWidth       + 2*CardClearance + 2*WallThickness       =  72.0
+Height = CardStackHeight +   CardClearance +   FloorThickness      =  63.0
+```
 
-The full literal→Param mapping is tabled in `plan.md`. Add missing variables to the VarSet
-**first**, then bind — never the other way around.
+Interior is therefore **93.0 x 68.0 x 61.0 mm**, verified from the solid, holding a
+91 x 66 x 60 stack of 60 sleeved cards with 1 mm all round and 1 mm headroom.
+To go back to free knobs, clear those three expressions.
+
+- **Cards (the input):** `CardLength` 91.0, `CardWidth` 66.0, `CardStackHeight` 60.0.
+  Only `CardStackHeight` was measured by caliper; the two card dimensions **assume** a
+  standard 88 x 63 card plus a sleeve. Measure and correct them — everything follows.
+- **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
+  `SideWallThickness` 6.0, `FloorThickness` 2.0, `EdgeFilletRadius` 1.0
+- **Footer:** `FooterHeight` 2.0, `FooterTaperAngle` 36 deg
+- **Hinge:** `HingeTabRadius` 5.0 (capped by the side wall — see the header),
+  `HingePinDia` 6.0, `HingePinLength` 3.0, `HingeAxisFromRear` 5.0,
+  `HingeAxisFromBottom` 5.0, `HingeTabThickness` 5.0, `PanelBottomZ` (derived), `RimRelief` 1.0
+- **Finger slot:** `FingerSlotWidth` 40.0, `FingerSlotDepth` 25.0
+- **Clearances (one per interface, never merged):** `HingePinClearance` 0.4,
+  `HingeTabClearance` 0.4, `HingeSwingClearance` 0.5, `CardClearance` 1.0
 
 ---
 

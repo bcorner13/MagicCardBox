@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+"""
+14-size_for_cards.FCMacro — MagicCardBox
+
+Sizes the box for its actual payload: 60 sleeved cards lying FLAT, stacked vertically.
+
+Until now `Width` / `Depth` / `Height` were free numbers that happened not to fit anything.
+Measured before this macro, the interior was 85.00 x 65.00 x 65.00 mm, while a sleeved card
+is about 66 x 91 — the 91 mm dimension exceeded EVERY interior dimension, so a card would
+not go in flat or upright. This macro makes the three box dimensions DERIVED from the card
+spec, so the box can never silently stop fitting its contents again:
+
+    Width  = CardLength      + 2*CardClearance + 2*SideWallThickness
+    Depth  = CardWidth       + 2*CardClearance + 2*WallThickness
+    Height = CardStackHeight +   CardClearance +   FloorThickness
+
+With the defaults below that gives Width 105, Depth 72, Height 63, i.e. an interior of
+93 x 68 x 61 mm holding a 91 x 66 x 60 stack with 1 mm all round and 1 mm of headroom.
+
+CHECK THESE AGAINST YOUR OWN CALIPERS — they are now one-line Params
+--------------------------------------------------------------------
+  CardStackHeight 60.0  <- measured by Bradley, 60 sleeved cards
+  CardLength      91.0  <- ASSUMED: standard 88 mm card + sleeve. Measure and correct.
+  CardWidth       66.0  <- ASSUMED: standard 63 mm card + sleeve. Measure and correct.
+  CardClearance    1.0  <- per side in X and Y, and as headroom in Z. Its own knob because
+                           card-to-box is a different interface from every hinge clearance
+                           (project rule 4); do not fold it into one of those.
+
+Double-sleeved cards run nearer 67 x 92 — if that is the intent, bump the two card Params
+and everything downstream follows.
+
+WHY BIND RATHER THAN JUST TYPE THREE NUMBERS
+---------------------------------------------
+Typing 105/72/63 would work today and rot silently the moment the sleeve spec changes. With
+these bound, the payload is the input and the box is the output. `Width`/`Depth`/`Height`
+remain Params and still drive everything downstream exactly as before — they are simply no
+longer free. To go back to free knobs, clear the three expressions.
+
+Headroom sanity (checked by the macro, which refuses rather than building something wrong):
+  * FingerSlotWidth  < Width - 2*SideWallThickness
+  * FingerSlotDepth  < Height - FloorThickness   and  > FingerSlotWidth/2 - WallThickness
+  * HingeTabRadius  <= min(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom)
+  * PanelBottomZ     < Height
+
+Run: Macro -> Macros... -> 14-size_for_cards -> Execute
+"""
+
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+NEW_VARS = [
+    ("CardLength", "App::PropertyLength", 91.0, "Cards",
+     "Long dimension of ONE sleeved card. Standard card is 88 mm; 91 assumes a sleeve. "
+     "Measure yours and correct — everything downstream follows."),
+    ("CardWidth", "App::PropertyLength", 66.0, "Cards",
+     "Short dimension of ONE sleeved card. Standard card is 63 mm; 66 assumes a sleeve."),
+    ("CardStackHeight", "App::PropertyLength", 60.0, "Cards",
+     "Height of the stack lying flat. Measured by caliper: 60 sleeved cards ~ 60 mm."),
+    ("CardClearance", "App::PropertyLength", 1.0, "Clearances",
+     "Gap between the card stack and the box, per side in X and Y and as headroom in Z. "
+     "A separate knob from every hinge clearance: card-to-box is its own interface."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+
+E_WIDTH = (P + "CardLength + 2 * " + P + "CardClearance + 2 * " + P + "SideWallThickness")
+E_DEPTH = (P + "CardWidth + 2 * " + P + "CardClearance + 2 * " + P + "WallThickness")
+E_HEIGHT = (P + "CardStackHeight + " + P + "CardClearance + " + P + "FloorThickness")
+
+before = (vs.Width.Value, vs.Depth.Value, vs.Height.Value)
+vs.setExpression("Width", E_WIDTH)
+vs.setExpression("Depth", E_DEPTH)
+vs.setExpression("Height", E_HEIGHT)
+log.append("Width / Depth / Height bound to the card spec")
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+W, D, H = vs.Width.Value, vs.Depth.Value, vs.Height.Value
+SW, WT, FT = vs.SideWallThickness.Value, vs.WallThickness.Value, vs.FloorThickness.Value
+iX, iY, iZ = W - 2 * SW, D - 2 * WT, H - FT
+
+errs = []
+if vs.FingerSlotWidth.Value >= iX:
+    errs.append("FingerSlotWidth %.2f >= interior X %.2f" % (vs.FingerSlotWidth.Value, iX))
+if vs.FingerSlotDepth.Value >= iZ:
+    errs.append("FingerSlotDepth %.2f >= interior Z %.2f" % (vs.FingerSlotDepth.Value, iZ))
+if vs.FingerSlotDepth.Value <= vs.FingerSlotWidth.Value / 2 - WT:
+    errs.append("FingerSlotDepth %.2f too shallow for its radius" % vs.FingerSlotDepth.Value)
+cap = min(D / 2 - vs.HingeAxisFromRear.Value, vs.HingeAxisFromBottom.Value)
+if vs.HingeTabRadius.Value > cap + 1e-9:
+    errs.append("HingeTabRadius %.2f exceeds the side-wall cap %.2f"
+                % (vs.HingeTabRadius.Value, cap))
+if vs.PanelBottomZ.Value >= H:
+    errs.append("PanelBottomZ %.2f >= Height %.2f" % (vs.PanelBottomZ.Value, H))
+if errs:
+    raise RuntimeError("size is inconsistent: " + "; ".join(errs))
+
+print("=== 14-size_for_cards ===")
+for line in log:
+    print("  " + line)
+print("  card spec: %s x %s sleeved, stack %s, clearance %s"
+      % (vs.CardLength, vs.CardWidth, vs.CardStackHeight, vs.CardClearance))
+print("  outer  W x D x H : %.1f x %.1f x %.1f   (was %.1f x %.1f x %.1f)"
+      % (W, D, H, before[0], before[1], before[2]))
+print("  interior         : %.1f x %.1f x %.1f" % (iX, iY, iZ))
+print("  stack needs      : %.1f x %.1f x %.1f"
+      % (vs.CardLength.Value, vs.CardWidth.Value, vs.CardStackHeight.Value))
+print("  slack            : %.1f x %.1f x %.1f"
+      % (iX - vs.CardLength.Value, iY - vs.CardWidth.Value, iZ - vs.CardStackHeight.Value))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")
