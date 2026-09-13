@@ -6,6 +6,65 @@ main dimensions sweep safely**, verified by measurement across W 80-130, D 50-10
 (9 cases): every dimension tracks, lid-vs-box swing interference is **0.0000 mm3** over
 0-90 deg, and every solid is valid, closed and single.
 
+## FIRST TEST PRINT — 2026-09-13 — and what it changed
+
+The first PLA print (lid open, box upright on the plate) **failed three ways**, and the fixes
+Bradley made by hand changed the hinge architecture. Read this before the older sections
+below, several of which it supersedes.
+
+| Print failure | Root cause (measured) | Fixed by |
+|---|---|---|
+| Hinge snapped | Lid hung off **4 mm of plastic out of 105** — `PanelBottomZ` held the rear panel 10.4 mm up, so only the two R5 tab discs bridged box to lid | Rear panel extended down to the hinge axis across `x +/-47.5`: **95 mm of connection** |
+| Stringy mess across the back | Travel moves across that same open slot | Same fix |
+| Overhang at the top of the hinge | Socket circle breaks out through the rear face at `y = 36.4` (rear face is `y = 36`), leaving sharp unsupported edges | `BackHengeFilet` R4 on those edges |
+
+Card spec was also corrected from calipers: `CardLength` 91 -> 92, `CardStackHeight` 60 -> 62.
+Interior is now **94 x 68 x 63** for a 92 x 66 x 62 stack — a true 1 mm per side and 1 mm
+headroom. Note this was fixed at the *input*, not by inflating `CardClearance`; that is the
+right move and should be repeated. **`CardWidth` 66 is still an ASSUMPTION** — `CardLength`
+turned out to be wrong by 1 mm, so measure the width too.
+
+### FIXED — the zero running clearance at the hinge (macro 20)
+
+The lid's rear panel had its inner bottom edge at radius **5.000** from the hinge axis, and
+`HengeFilet` generates a roll at radius **5.000**. Both constant, so the panel **rode on the
+box for the entire 0-90 deg swing** — a ~95 mm line contact that would have welded shut in a
+print-in-place part.
+
+**The swing test passed the whole time: interference was 0.000 mm3.** A zero-gap tangency is
+not an interference. When checking a hinge, measure `distToShape` (the GAP) as well as
+`common().Volume`. Macro 16's export gate now checks the gap for exactly this reason.
+
+Fixed on the **lid** side by `PocketHingeWrap` — a rectangular relief setting the panel's
+inner face back to `Depth/2 + HingeSwingClearance` over the wrap region, leaving the outer
+face (and therefore the print-pose bed plane) untouched. Now **0.400 mm running clearance
+from 30 deg through 90 deg, 0.0000 mm3 interference at every angle**.
+
+Two dead ends worth not repeating:
+- **Do NOT fix it by changing `HingeFilletRadius`** — see the concentricity rule below.
+- **Do NOT move the whole panel outboard in Y.** In the 90 deg print pose, closed-frame Y maps
+  onto print Z, so shifting the panel 0.5 mm out drops it to ZMin -2.5 while the box stays at
+  -2.0 — the slicer then rests the part on the lid and the box floats 0.5 mm off the bed.
+
+### The hinge neck, and the socket flat (macro 23)
+
+`HingeNeckDrop` (3 mm) carries the neck below the hinge axis, thickening the joint vertically
+without widening the box. That makes the neck's bottom corner sweep
+`sqrt(HingeAxisFromRear^2 + HingeNeckDrop^2)` = 5.831, wider than the 5.400 bore, and near
+full-open it caught the box floor — 2.25 mm3 at 90 deg.
+
+Cleared by a **flat chord off the bottom of the socket**, `HingeSocketFlatZ` 0.9 high and
+`HingeSocketFlatHalf` 3.514 each side. The half-width is derived from the BORE's chord, so the
+flat's ends land on the circle and it leaves no notch; deriving it from the swept radius
+instead made the flat wider than the bore and gouged 2.8 mm into solid side wall.
+
+Two things that do NOT work here, both measured:
+- **An annular sector** (bore out to swept radius, 180..270 deg) clears it but leaves an ugly
+  thin crescent up the side of the socket — 90 deg of arc for a defect occupying 236..248 deg.
+- **Raising the footer relief** to clear it makes the box's bottom-rear edge CONCAVE, and
+  `HengeFilet` then ADDS material there instead of rolling it away (+7.56 mm3, contact
+  restored). Fillets fill concave edges.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -23,9 +82,24 @@ Three things to know before touching anything:
   at 45 deg). `HingeTabRadius` is capped at
   `min(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom)` = 5 mm by the side wall — do not
   raise it without re-checking that bound.
-- **`PanelBottomZ` is BOUND, not free.** The lid's rear panel cannot reach the bottom; it
-  must start at or above `HingeAxisFromBottom + HingeAxisFromRear` or it digs into the box
-  rear wall, and the failure is silent. It is bound to the socket circle's top.
+- **`PanelBottomZ` — SUPERSEDED 2026-09-13, and it was the cause of the broken hinge.**
+  The old rule read "the lid's rear panel cannot reach the bottom; it must start at or above
+  `HingeAxisFromBottom + HingeAxisFromRear`." That is true of the *full-width* panel, but it
+  was applied to the whole panel, which left the two R5 tab discs as the only thing joining
+  lid to box — **4 mm of connection out of 105**. The hinge snapped on the first print.
+  The panel now steps down to the hinge axis across `x +/-47.5` (95 mm) and only the outer
+  5 mm at each end stays at `PanelBottomZ` where the knuckles are. `PanelBottomZ` still
+  governs that outer step, and is still bound to the socket circle's top.
+
+- **`HingeFilletRadius` must equal the axis offsets — this is a hard geometric constraint.**
+  A fillet on the bottom-rear edge centres at `(Depth/2 - R, R)`. That lands on the hinge axis
+  `(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom)` **only when
+  `R == HingeAxisFromRear == HingeAxisFromBottom`.** At R = 5 the roll is concentric with the
+  axis, which is what makes it a usable journal surface. Measured: setting R = 4.5 (which looks
+  like a reasonable "add clearance" move) shifts the centre to (31.5, 4.5), breaks
+  concentricity, and drives the box **18.086 mm3 into the lid's sweep**. It is now bound to
+  `HingeAxisFromBottom` by `macros/18-bind_fillet_params.FCMacro`, which also refuses to run
+  if the two axis offsets differ.
 - **A failed recompute does not roll back** (D5). If an edit puts a feature Invalid, the
   geometry does *not* return when you restore the parameter. Recover by closing all four
   documents **without saving** and reopening from disk.
@@ -157,18 +231,27 @@ Current hinge, after the 2026-09-13 rebuild:
 
 
 - **Box** (`MagicCardBox.FCStd` → `Part` "Box001" → `Body` "Box") is the tub: a padded
-  rectangular solid, `Width` × `Depth` × `Height` (97 × 69 × 67 mm today), hollowed from
+  rectangular solid, `Width` × `Depth` × `Height` (**106 × 72 × 65 mm today**), hollowed from
   the top by `Pocket002` to leave `SideWallThickness` (6 mm) on the ±X side walls. It is
-  centered on the origin in X/Y and sits on Z = 0 (bbox −48.5…48.5, −34.5…34.5, 0…67).
+  centered on the origin in X/Y and sits on Z = 0. Tip is `Fillet003`; 95 128.9 mm³, valid,
+  closed, single solid.
+
+  **The box DOES have a rear wall of its own** — 2 mm at `y 34…36`, full width. An earlier
+  version of this file said it did not; that was wrong and it matters, because that wall sits
+  face-to-face with the lid's rear panel at **zero clearance** (see the open defect above).
+  At mid-width the finger slot cuts through it from z ≈ 4 upward, so what remains there is
+  only the strip below the slot; outside the slot (`|x| > 15`) it is intact from z ≈ 3 up.
 
 - **Lid** (`Lid.FCStd` → `Part` "Lid") is **one part containing two bodies** and is
   L-shaped in section:
   - `Body` ("Lid001") — the flat top plate, `WallThickness` (2 mm) thick, sitting on the
     `LidPlane` datum at Z = `Height`. It overhangs the box in +Y by `WallThickness`
     (`Depth + WallThickness` = 71 mm) so it caps the rear wall.
-  - `Body001` ("LidBack") — the **rear wall**, a full-height panel (Z 0…67) at the +Y end
-    that swings *with* the lid rather than being part of the tub. This is why the box tub
-    has no rear wall of its own.
+  - `Body001` ("LidBack") — the **outer rear panel** at the +Y end (`y 36…38`), which swings
+    *with* the lid. It sits directly outboard of the box's own 2 mm rear wall, not instead of
+    it. Since 2026-09-13 it is **not** a plain rectangle: it runs full width from
+    `PanelBottomZ` to `Height`, then steps down to the hinge axis (`z = HingeAxisFromBottom`)
+    across `x ±47.5`. That step is what carries the hinge load — 95 mm of it.
 
 - **Hinge** is at the **rear-bottom corner, on the ±X side walls**, not on a rod:
   - The box side walls carry a socket + boss pair cut by `Sketch001`/`Pocket` and
@@ -182,9 +265,24 @@ Current hinge, after the 2026-09-13 rebuild:
   whole back of the box folds away. `MagicCardAssembly.FCStd` models this with the box
   grounded and a `Revolute` joint between `LidBack.Face13` and `Box.Face21`.
 
+- **Magnetic closure** (macro 19): two pairs of Ø4 x 2 disc magnets, one pair per thick
+  side wall, `MagnetFromFront` (8 mm) back from the front face. Centres at
+  `x = ±(Width/2 - SideWallThickness/2)` = ±50, `y = -Depth/2 + MagnetFromFront` = -28.
+  The box pocket is `z 63…65` (magnet flush with the rim); the lid pocket is `z 65…67`
+  with `MagnetSkin` above it, so the two magnet faces meet on the parting plane at
+  `z = Height` with **no plastic between them**. Verified from the solid: Ø4.10 bore with
+  0.95 mm of side wall each side, solid below, and the box loses 52.79 mm³ against 52.81
+  predicted.
+
+  **Skin thins to 0.5 mm at the inboard edge of the lid pocket.** The outermost lid-top
+  flute sits at `x = 47` and grazes the hole, which starts at `x = 47.95`. Measured skin is
+  1.0 mm across the whole pocket except the first ~0.8 mm, where it falls to 0.5 mm. If that
+  ever matters, raise `FluteMargin` (moves the outer flute inboard, away from the magnet) or
+  `MagnetSkin` — do not move the magnets outboard, there is only 0.95 mm of wall there.
+
 ---
 
-## Design direction (stated by Bradley 2026-09-13 — not yet modelled)
+## Design direction (stated by Bradley 2026-09-13 — items 2 and 3 now partly built)
 
 Four intentions that are **not** visible anywhere in the FCStd files. Nothing below has
 been built yet; treat them as the agreed direction for the next modeling passes.
@@ -200,8 +298,13 @@ been built yet; treat them as the agreed direction for the next modeling passes.
    accepted under the lid. Settle this **before** tuning clearances, because it decides
    which surfaces are Z-facing and therefore which gaps are at risk of fusing.
 
-2. **Finger slots front and back** to lift the cards out. Needs its own Params
-   (slot width, depth, corner radius) — do not borrow `WallThickness` or any hinge knob.
+2. ~~**Finger slots front and back** to lift the cards out.~~ **BUILT.** `FingerSlotWidth` 30,
+   `FingerSlotDepth` 61 — runs to the interior floor so the whole stack can be gripped.
+   **Caveat:** the slot is cut through *both* the front and rear walls (`Pocket007`,
+   ThroughAll Symmetric), but the lid's rear panel is solid across it — measured material at
+   `y = 37` at both `z = 20` and `z = 50`. **The back slot is sealed shut whenever the lid is
+   closed and currently does nothing.** Either slot the lid panel to match, or drop the rear
+   cut and leave that wall intact (which would also help it print).
 
 3. **Bottom extended by 2 mm**, as an additional body that tapers outward to a wider
    footprint. Note this interacts with `FloorThickness` and with the "centered at (0,0,0)"
@@ -223,23 +326,39 @@ faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external ge
 
 | File | Role | Depends on | Status |
 |---|---|---|---|
-| `Params.FCStd` | VarSet — all parametric variables (5 today) | — | ✅ |
-| `MagicCardBox.FCStd` | The box tub; hinge sockets in the side walls | `Params.FCStd` | ⚠️ 11 unbound literals |
-| `Lid.FCStd` | Lid top plate + integral rear wall + hinge tabs | `Params.FCStd` | ⚠️ 8 unbound literals + 2 feature-attached datums |
+| `Params.FCStd` | VarSet — all parametric variables (36 today) | — | ✅ |
+| `MagicCardBox.FCStd` | The box tub; hinge sockets in the side walls; 4-deep fillet chain | `Params.FCStd` | ✅ clean, tip `Fillet003` |
+| `Lid.FCStd` | Lid top plate + stepped rear panel + hinge knuckles | `Params.FCStd` | ✅ clean; 2 feature-attached datums remain |
 | `MagicCardAssembly.FCStd` | Assembly doc; `App::Link` to both parts, `Revolute` joint | `MagicCardBox.FCStd`, `Lid.FCStd` | ✅ audit clean |
+
+**Verified state, 2026-09-13 after the print-failure round** (all measured in-memory via the
+MCP bridge, all three documents recomputing clean, nothing Touched):
+
+| Check | Result |
+|---|---|
+| Box / lid rear / lid top | each valid, closed, **1 solid** |
+| Static interference, all three pairs | **0 mm³** |
+| Lid `Body` ↔ `Body001` distance | **0.0 mm** — exports as one connected mesh |
+| Swing 0–90° | ≤ 0.29 mm³ (tangency noise on a 95 mm contact line) |
+| Swing past 90° | 95° → 7.6, 100° → 115, 110° → 335 mm³ — **hard stop just past 90°** |
+| Min gap, box ↔ lid | **0.0000 mm** ← the open defect above |
+
+The lid opens to 90° and no further. If a flatter print pose is ever wanted, that limit has to
+be designed for; it is not a slicer setting.
 
 **Known debt (read before poking at these):**
 
-- `MagicCardBox.FCStd` — the four hinge-related literals in `Sketch001` (R10, 5, Ø6, 5),
-  three in `Sketch002` (5, 5, Ø6), two in `Sketch003` (2, 2), and `Pocket.Length = 5.0` /
-  `Pocket001.Length = 2.0`. The footprint sketch, `Pad.Length` and `Pocket002.Length` are
-  already bound correctly.
-- `Lid.FCStd` — `Sketch002` (R10, 5, 5), `Sketch003` (Ø6, 5, 5), `Pad002.Length = 5.0`,
-  `Fillet.Radius = 1.0`, plus the two feature-attached datum planes described in rule #3.
-  Retarget the datums **before** the binding pass; that change can move geometry and needs
+- **The literals listed here through 2026-09-13 are all bound now** (macros 01 and 18). What
+  remains is below.
+- `Lid.FCStd` — the two feature-attached datum planes described in rule #3 (`DatumPlane001`
+  → `Fillet.Face6`, `DatumPlane002` → the `Pad002` object). They have not misbehaved through
+  several dimension changes, but they are the remaining topological-naming exposure. Retarget
+  them to datums **before** any further binding pass; that change can move geometry and needs
   a clean recompute plus a re-solve of the assembly joint afterward.
+- `Binder001` still has an empty `Support` — orphaned, appears dead. Confirm before deleting.
 - Nothing is broken — all three shape-bearing docs recompute clean and every body is a
-  single valid solid. This is debt, not breakage.
+  single valid solid. This is debt, not breakage. The one functional defect is the zero
+  running clearance documented at the top of this file.
 
 ---
 
@@ -249,27 +368,74 @@ faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external ge
 still Params and still drive everything downstream, but they are no longer free numbers:
 
 ```
-Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 105.0
+Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 106.0
 Depth  = CardWidth       + 2*CardClearance + 2*WallThickness       =  72.0
-Height = CardStackHeight +   CardClearance +   FloorThickness      =  63.0
+Height = CardStackHeight +   CardClearance +   FloorThickness      =  65.0
 ```
 
-Interior is therefore **93.0 x 68.0 x 61.0 mm**, verified from the solid, holding a
-91 x 66 x 60 stack of 60 sleeved cards with 1 mm all round and 1 mm headroom.
+Interior is therefore **94.0 x 68.0 x 63.0 mm**, verified from the solid, holding a
+92 x 66 x 62 stack with 1 mm all round and 1 mm headroom.
 To go back to free knobs, clear those three expressions.
 
-- **Cards (the input):** `CardLength` 91.0, `CardWidth` 66.0, `CardStackHeight` 60.0.
-  Only `CardStackHeight` was measured by caliper; the two card dimensions **assume** a
-  standard 88 x 63 card plus a sleeve. Measure and correct them — everything follows.
+- **Cards (the input):** `CardLength` 92.0, `CardWidth` 66.0, `CardStackHeight` 62.0.
+  `CardLength` and `CardStackHeight` were corrected from calipers on 2026-09-13 after the
+  first print rubbed. **`CardWidth` 66.0 is still an ASSUMPTION** (standard 63 card + sleeve)
+  — and since `CardLength` turned out to be off by 1 mm, measure this one too.
 - **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
-  `SideWallThickness` 6.0, `FloorThickness` 2.0, `EdgeFilletRadius` 1.0
+  `SideWallThickness` 6.0, `FloorThickness` 2.0, `EdgeFilletRadius` 1.0,
+  `LidTopThickness` 3.0
+- **Magnets** (added 2026-09-13, macro 19): `MagnetDia` 4.0, `MagnetThickness` 2.0,
+  `MagnetFromFront` 8.0, `MagnetSkin` 1.0, `MagnetFit` 0.05 (per side on the radius)
+
+**`LidTopThickness` is separate from `WallThickness` on purpose — do not merge them.**
+`WallThickness` already means four unrelated things: the box front/rear walls
+(`Sketch003`), the lid's rear panel (`Pad001.Length`), the hinge neck (`Sketch002`), and
+it drives `Depth` (`CardWidth + 2*CardClearance + 2*WallThickness`). The lid's top plate
+needed to go 2.0 -> 3.0 to host a 2 mm magnet blind; raising `WallThickness` would have
+grown the box's Depth by 2 mm and thickened three unrelated walls to fix a lid. Only
+`Lid/Pad.Length` is bound to `LidTopThickness`.
+
+**If you change `LidTopThickness`, the lid flutes must follow it.** `Lid/Sketch012`
+positions all 24 flute circles off the plate's TOP face as
+`Height + LidTopThickness + FluteRadius - FluteDepth`. Macro 19 rewrote those 24
+expressions from `WallThickness`; if they ever drift back, the flutes get cut into the
+middle of the plate instead of its surface.
 - **Footer:** `FooterHeight` 2.0, `FooterTaperAngle` 36 deg
-- **Hinge:** `HingeTabRadius` 5.0 (capped by the side wall — see the header),
-  `HingePinDia` 6.0, `HingePinLength` 3.0, `HingeAxisFromRear` 5.0,
-  `HingeAxisFromBottom` 5.0, `HingeTabThickness` 5.0, `PanelBottomZ` (derived), `RimRelief` 1.0
-- **Finger slot:** `FingerSlotWidth` 40.0, `FingerSlotDepth` 25.0
+- **Hinge:** `HingeTabRadius` 5.0 — **the single knob; `HingeAxisFromRear` and
+  `HingeAxisFromBottom` are DERIVED from it** (see the identity below). `HingePinDia` 6.0,
+  `HingePinLength` 3.0, `HingeTabThickness` 5.0, `HingeNeckDrop` 3.0, `RimRelief` 1.0, plus
+  derived `PanelBottomZ` 10.4, `PanelWrapZ` 0.0, `HingeWrapRadius` 5.5,
+  `HingeFilletRadius` 5.0, `HingeSocketFlatZ` 0.9, `HingeSocketFlatHalf` 3.514
+
+**`HingeTabRadius == HingeAxisFromRear == HingeAxisFromBottom` is a hard requirement, now
+bound.** Three separate things need it and none of them said so:
+1. `HengeFilet` must be concentric with the axis. A fillet on the bottom-rear edge centres at
+   `(Depth/2 - R, R)`, which lands on the axis only when the two offsets are equal.
+2. The knuckle must be tangent to the panel's inner face at `y = Depth/2`, which needs
+   `HingeTabRadius == HingeAxisFromRear`.
+3. `PanelWrapZ = HingeAxisFromBottom - HingeTabRadius` must land on 0 so the panel wraps to the
+   bottom of the circle.
+
+**Growing the knuckle was tried and measured WORSE.** At R = 7 the swing picked up 0.0081 mm3
+at 15 deg and 0.3256 mm3 at 30 deg, and the running gap collapsed to 0.0000 until 45 deg.
+At R = 5 it is 0.0000 at every angle with 0.400 mm from 30 deg on. See `macros/21`, unrun.
+- **Fillets** (added 2026-09-13, macro 18 — four different concerns, never merged):
+  `HingeFilletRadius` 5.0 **(DERIVED from `HingeAxisFromBottom`; concentricity — do not
+  hand-set, see the header)**, `BackHingeFilletRadius` 4.0 (socket-breakout overhang),
+  `RimFilletRadius` 0.8, `EdgeBreakRadius` 0.6
+- **Flutes:** `FluteCountFront` 24, `FluteCountSide` 15, `FluteRadius` 2.5, `FluteDepth` 0.7,
+  `FluteMargin` 6.0, `FluteStartZ` 12.0
+- **Finger slot:** `FingerSlotWidth` 30.0, `FingerSlotDepth` 61.0 (runs to the floor as of
+  2026-09-13 so the whole stack can be gripped)
 - **Clearances (one per interface, never merged):** `HingePinClearance` 0.4,
   `HingeTabClearance` 0.4, `HingeSwingClearance` 0.5, `CardClearance` 1.0
+
+**Still carrying the pin.** `HingePinDia` 6.0 and `HingePinLength` 3.0 are live: the box still
+has a 3 mm-radius pin standing in a **0.6 mm** web (`SideWallThickness 6 − (HingeTabThickness 5
++ HingeTabClearance 0.4)`). Measured along X at the hinge axis: material runs 47.0 → 50.6, with
+the cavity wall at 47.0 and the socket floor at 47.6. Bradley's stated intent (2026-09-13) is to
+**eliminate the pin**; that has not been done. If the first print snapped at the box side wall
+rather than the lid tab, this is why, and it will snap again.
 
 ---
 
@@ -291,7 +457,16 @@ The script is authoritative. If it reports violations, fix them via a `macros/*.
 change before saving or committing — never by direct coordinate edits or FCStd XML surgery.
 
 **Baseline at bootstrap (2026-09-13): 19 issues.** Any run reporting more than 19 means the
-change made things worse.
+change made things worse. **Current target: 0.** The four hand-added fillets regressed it to
+4 unbound `Fillet.Radius` values; `macros/18-bind_fillet_params.FCMacro` binds all four, so a
+clean run is expected again. The audit reads the FCStd **from disk** — if documents are open
+with unsaved changes it is reporting the last save, not what you just measured.
+
+**The audit cannot see the defect that actually broke this print.** It checks expression
+bindings; it does not check clearances, swing interference, or gaps. The first print's hinge
+failure (4 mm of connection out of 105) happened while the audit was clean. Treat a clean
+audit as necessary, never sufficient — and for anything that moves, measure `distToShape`
+as well as `common().Volume`.
 
 **Exemptions and known blind spots:**
 
@@ -387,16 +562,72 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` is empty — the model predates the bootstrap. Every change from here forward
-  goes in as a `.FCMacro`.
+- `macros/` holds 01-18. Every change from here forward goes in as a `.FCMacro`, symlinked
+  into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
+  appears in Macro -> Macros...
+
+- **Fillet edge references survive DIMENSIONAL changes but not TOPOLOGICAL ones.** The box
+  carries a four-deep fillet chain (`Fillet` -> `Fillet001` -> `Fillet002` -> `Fillet003`,
+  17 named edges total). It looks like exactly the topological-naming fragility warned about
+  in rule 3, and a 2026-09-13 review predicted it would break when the finger slot was
+  deepened. **It did not.** The slot change threw a transient `Fillet002: BRep_API: command
+  not done` during recompute and recovered clean; afterwards every stored edge name had been
+  **re-hashed** (`Edge310`->`319`, `Edge113`->`112`, `Edge344`->`348`, ...) and all still
+  resolved. `Use Hasher` is on for these documents. Verify before assuming breakage — check
+  whether the referenced edges still resolve to sane coordinates.
+
+  **But hashing cannot map a name onto an edge that stops existing.** Suppressing the flutes
+  to make a plain variant left `Fillet002` Invalid, because `Fillet001`'s shape then loses
+  most of its edges. That is a topological change, not a dimensional one.
+
+- **The flutes are LAST in the box tree, so they can be suppressed (macro 24).** Order is
+  `... MirroredNeckClip -> Sketch012 -> Pocket009`. Nothing depends on them, which is what
+  makes the plain print variant possible. **Do not move them back upstream.** Re-rooting the
+  chain meant re-picking all 17 edges by POSITION — after the move each fillet computes on a
+  shape with no flutes, so neither the stored names nor exact midpoint/length matching work;
+  what survives is that the recorded midpoint still LIES ON the right edge. Box volume came
+  through the reorder at 93 999.15 -> 93 999.15, drift 0.00 mm3.
+
+  Side effect, accepted: `Fillet002`/`Fillet003` round the top rim, which the flutes reach.
+  The rim is now filleted clean and then fluted through, rather than fluted and then filleted
+  along the scalloped edge. `Fillet`/`Fillet001` sit below `FluteStartZ` and are unaffected.
 
 ---
 
 ## Print profile
 
-**No successful test print yet — profile TBD.**
+**First test print: 2026-09-13, PLA (orange), FAILED — see the print-failure section at the
+top of this file.** No successful print yet.
+
+**Exports current as of 2026-09-13, both variants, both from the same tree state:**
+
+| | plain | fluted |
+|---|---|---|
+| facets | 4 722 | 9 726 |
+| volume | 135.41 cm³ | 128.39 cm³ |
+| watertight / non-manifold / self-int. | ✓ / False / False | ✓ / False / False |
+| components | 2 (box + fused lid) | 2 |
+| footprint | 108.91 × 131.45 × 74.00 on Z=0 | identical |
+| print-pose hinge gap | 0.4000 mm | 0.4000 mm |
+
+Plain is produced by suppressing `Pocket009` in BOTH documents (box flutes and lid top
+flutes), which only works because of the macro-24 reorder. Re-enable them afterwards.
+
+**Print pose is settled: lid OPEN, box upright on the plate.** This is what was printed, and
+it is what the geometry now assumes. It matters because it decides which gaps are horizontal:
+printed open, the lid/box clearances are vertical seams (they string but do not sag or fuse),
+whereas printed closed every clearance becomes something the slicer has to bridge in mid-air.
+The lid only opens to 90°, so a flatter pose is not available without a design change.
+
+What the first print showed, and what to look for on the next one:
+- The hinge snapped — 4 mm of connection out of 105. Fixed (95 mm now). **Check this first.**
+- Stringing across the lid/box gap. Should be much reduced now the slot is mostly closed.
+- Overhang at the top of the hinge socket. Fixed with `BackHengeFilet` R4.
+- Cards rubbed the sides and the stack was too tall. Fixed at the card spec, not the clearance.
+- **Not yet fixed:** the lid rides on the box at zero gap for ~95 mm. Expect it to fuse.
+  Fix that before printing again, or the hinge will not move.
 
 Target hardware per `CAD_STANDARDS.md`: Creality K2 Plus (FDM) / ELEGOO Saturn 4. Test in
-PLA, production in ASA. Fill this section in from the actual first print, not slicer
-defaults — the hinge clearances (`HingePinClearance`, `HingeTabClearance`) will be tuned
-from that print and are material-dependent.
+PLA, production in ASA. Fill in layer height / wall count / material from the first print that
+actually works — the hinge clearances (`HingePinClearance`, `HingeTabClearance`,
+`HingeSwingClearance`) are material-dependent and get tuned from a real print, not defaults.

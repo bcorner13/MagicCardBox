@@ -1,0 +1,216 @@
+# -*- coding: utf-8 -*-
+"""
+18-bind_fillet_params.FCMacro — MagicCardBox
+
+Binds the four box fillets to Params, and records the CONCENTRICITY CONSTRAINT that
+`HengeFilet` silently depends on.
+
+THE CONSTRAINT NOBODY WROTE DOWN
+--------------------------------
+`HengeFilet` rolls the bottom-rear edge at (0, Depth/2, 0) — between the rear face
+(y = Depth/2) and the bottom face (z = 0). A fillet of radius R on that edge has its
+centre at
+
+    ( Depth/2 - R , R )
+
+The hinge axis is at ( Depth/2 - HingeAxisFromRear , HingeAxisFromBottom ). Those two
+points coincide only when
+
+    R == HingeAxisFromRear == HingeAxisFromBottom
+
+At R = 5 that holds, so the roll is a cylinder CONCENTRIC with the hinge axis, which is
+exactly what you want the lid to swing against — a journal surface of constant radius.
+
+R = 5 was therefore not an arbitrary number to be "corrected". Measured proof: setting
+R = 4.5 (HingeTabRadius - HingeSwingClearance, which looks plausible and is wrong) moved
+the centre to (31.5, 4.5), broke concentricity, and drove the box 18.086 mm3 into the
+lid's sweep. The binding below states the real relationship so the next session cannot
+make that mistake.
+
+STILL OPEN — the running clearance is ZERO
+-------------------------------------------
+Concentric is correct, but the gap is not. The lid's rear panel has its inner bottom
+edge at ( Depth/2 , HingeAxisFromBottom ), i.e. radius
+
+    Depth/2 - (Depth/2 - HingeAxisFromRear) = HingeAxisFromRear = 5.000
+
+from the axis — the SAME radius as this roll. Measured contact points at 45 deg and
+90 deg all came back at r = 5.000 across the width (x = +/-47.6, +/-5.39, ...). Because
+both radii are constant, the panel rides on the box for the whole 0-90 deg swing: a
+~95 mm line contact that welds shut in a print-in-place part.
+
+That cannot be fixed here. Changing R breaks concentricity (see above). The fix belongs
+on the LID side — move the panel's inner face out by HingeSwingClearance, to
+y = Depth/2 + HingeSwingClearance. That puts its bottom edge at r = 5.5 against a 5.0
+roll, giving a 0.5 mm annular gap, AND it simultaneously fixes the separate zero-gap
+face contact between the box's rear wall and the lid panel (measured distToShape = 0
+over ~105 x 52 mm). Left for its own macro so this one stays reviewable.
+
+Interference was 0 mm3 and the swing test passed the whole time. A zero-gap tangency is
+not an interference — check the GAP as well as the volume.
+
+WHY FOUR SEPARATE PARAMS (project rule 5, one knob one concern)
+---------------------------------------------------------------
+  HingeFilletRadius      5.0  DERIVED from HingeAxisFromBottom. Geometry-critical: it
+                              must equal the axis offsets or the roll stops being
+                              concentric. Never set by hand, never "optimised".
+  BackHingeFilletRadius  4.0  Printability: rounds the top edges of the hinge socket
+                              breakout so they are not an unsupported overhang.
+  RimFilletRadius        0.8  Top rim beside the lid relief.
+  EdgeBreakRadius        0.6  Cosmetic edge break on the top rim, inside and out.
+
+Four different concerns. Do not collapse them because two happen to be close.
+
+SAFETY
+------
+A failed recompute does NOT roll back in this project (defect D5). If the change leaves
+any feature Invalid, or makes the swing interfere, this macro restores the previous
+literal radii and recomputes again.
+
+Idempotent: re-running never overwrites an existing Param value.
+
+Run: Macro -> Macros... -> 18-bind_fillet_params -> Execute
+"""
+
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+box = FreeCAD.getDocument("MagicCardBox")
+log = []
+
+# ---------------------------------------------------------------- Params
+NEW_VARS = [
+    ("HingeFilletRadius", "App::PropertyLength", 5.0, "Hinge",
+     "Radius of the box's bottom-rear roll at the hinge. DERIVED from "
+     "HingeAxisFromBottom. A fillet on that edge centres at (Depth/2 - R, R), which "
+     "lands on the hinge axis only when R == HingeAxisFromRear == HingeAxisFromBottom. "
+     "At that value the roll is concentric with the axis and the lid swings against a "
+     "constant-radius journal. Any other value tilts the surface into the lid's sweep "
+     "(measured: R=4.5 gives 18.086 mm3 of interference). Never set by hand."),
+    ("BackHingeFilletRadius", "App::PropertyLength", 4.0, "Hinge",
+     "Radius on the top edges of the hinge socket breakout, where the socket circle "
+     "passes through the rear face. Printability only: without it those edges are a "
+     "flat unsupported overhang. Not clearance-critical."),
+    ("RimFilletRadius", "App::PropertyLength", 0.8, "Geometry",
+     "Radius on the top rim edges beside the lid relief."),
+    ("EdgeBreakRadius", "App::PropertyLength", 0.6, "Geometry",
+     "Cosmetic edge break on the top rim, inside and out."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+    else:
+        log.append("Param %s already present (%s) - left alone" % (name, getattr(vs, name)))
+
+# Concentricity is a hard precondition, not a preference.
+if abs(vs.HingeAxisFromRear.Value - vs.HingeAxisFromBottom.Value) > 1e-9:
+    raise RuntimeError(
+        "HingeAxisFromRear (%s) != HingeAxisFromBottom (%s): the bottom-rear roll "
+        "cannot be concentric with the hinge axis. Fix the axis offsets, or replace "
+        "HengeFilet with a feature that does not derive its centre from the two faces."
+        % (vs.HingeAxisFromRear, vs.HingeAxisFromBottom))
+
+vs.setExpression("HingeFilletRadius", "HingeAxisFromBottom")
+log.append("HingeFilletRadius bound to HingeAxisFromBottom (concentric with hinge axis)")
+
+# ---------------------------------------------------------------- bindings
+BINDINGS = [
+    ("Fillet",    "HengeFilet",     "HingeFilletRadius"),
+    ("Fillet001", "BackHengeFilet", "BackHingeFilletRadius"),
+    ("Fillet002", "Fillet002",      "RimFilletRadius"),
+    ("Fillet003", "Fillet003",      "EdgeBreakRadius"),
+]
+
+missing = [n for n, _, _ in BINDINGS if box.getObject(n) is None]
+if missing:
+    raise RuntimeError("expected fillets not found in MagicCardBox: %s" % ", ".join(missing))
+
+previous = {}
+for name, label, var in BINDINGS:
+    o = box.getObject(name)
+    previous[name] = o.Radius.Value
+    o.setExpression("Radius", P + var)
+    log.append("%s (%s).Radius -> %s%s" % (name, label, P, var))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def broken():
+    out = []
+    for n in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(n).Objects:
+            bad = [s for s in (list(getattr(o, "State", []) or []))
+                   if s in ("Invalid", "Error")]
+            if bad:
+                out.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+    return out
+
+
+def rollback(why):
+    for name, _, _ in BINDINGS:
+        o = box.getObject(name)
+        o.setExpression("Radius", None)
+        o.Radius = previous[name]
+    recompute_all()
+    raise RuntimeError("%s - radii restored to %s" % (why, previous))
+
+
+recompute_all()
+problems = broken()
+if problems:
+    rollback("binding produced invalid features: " + "; ".join(problems))
+
+# ---------------------------------------------------------------- verify
+tip = box.getObject("Body").Tip.Shape
+lid = FreeCAD.getDocument("Lid")
+rear = lid.getObject(lid.getObject("Body001").Tip.Name).Shape
+top = lid.getObject(lid.getObject("Body").Tip.Name).Shape
+
+for nm, s in (("box", tip), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid after the change" % nm)
+
+ay = vs.Depth.Value / 2.0 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = FreeCAD.Vector(0, ay, az)
+ax = FreeCAD.Vector(1, 0, 0)
+
+sweep = []
+for deg in (0, 30, 45, 60, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    sweep.append((deg, tip.common(a).Volume, tip.distToShape(a)[0]))
+
+worst = max(v for _, v, _ in sweep)
+if worst > 1.0:
+    rollback("swing interferes by %.3f mm3" % worst)
+
+print("=== 18-bind_fillet_params ===")
+for line in log:
+    print("  " + line)
+print("  concentricity: R %s == HingeAxisFromRear %s == HingeAxisFromBottom %s"
+      % (vs.HingeFilletRadius, vs.HingeAxisFromRear, vs.HingeAxisFromBottom))
+print("  radii: %s" % ", ".join(
+    "%s %.2f (was %.2f)" % (lbl, box.getObject(n).Radius.Value, previous[n])
+    for n, lbl, _ in BINDINGS))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  box volume %.1f mm3" % tip.Volume)
+print("  NOTE: min_gap 0.0000 is the KNOWN open defect - the lid's inner bottom edge")
+print("        rides on this roll at r = %.3f mm." % vs.HingeAxisFromRear.Value)
+print("        Fix on the LID side (move the panel out by HingeSwingClearance),")
+print("        NOT by changing this radius - that breaks concentricity.")
+touched = [("%s/%s" % (n, o.Name)) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("NOT SAVED.")

@@ -1,0 +1,248 @@
+# -*- coding: utf-8 -*-
+"""
+22-thicker_joint.FCMacro — MagicCardBox
+
+Makes the hinge joint thicker, and in doing so fixes the 0.6 mm web that has been the other
+candidate for the first print's failure.
+
+THE JOINT, MEASURED
+-------------------
+The lid's rear panel is 106 mm wide. It hands its entire load to the box through two necks
+and two knuckles, each `HingeTabThickness` = 5 mm:
+
+    lid material across the width
+      y=37 z=8  (panel)          -53..53              106 mm
+      y=35 z=8  (neck)           -53..-48, 48..53     2 x 5 mm
+      y=33 z=8  (neck)           -53..-48, 48..53     2 x 5 mm
+      y=31 z=5  (knuckle centre) -53..-51, 51..53     2 x 2 mm  <- pin hole eats the middle
+
+    lid cross-section    y=31  63.2 mm2     y=33  67.3 mm2     y=36.5  6360 mm2
+
+About 1% of the panel's own section. `HingeTabThickness` is the knob for all of it.
+
+WHY SideWallThickness BECOMES DERIVED
+-------------------------------------
+The tab lives in a blind pocket in the side wall, so the wall has to be thicker than the
+pocket is deep. It was 6.0 against a 5.4 pocket — a 0.6 mm web behind the socket floor,
+measured on the solid (material ran x 47.0..50.6 at the hinge axis, cavity wall at 47.0,
+socket floor at 47.6). That web also backs the pin, so the pin was a 6 mm cantilever rooted
+in 0.6 mm of plastic.
+
+Nothing recorded that the wall existed to host the socket. Now it does:
+
+    SideWallThickness = HingeTabThickness + HingeTabClearance + HingeSocketWeb
+
+so the wall can never again be too thin for its pocket, and a thicker joint automatically
+buys itself the room it needs.
+
+THE CARD SPACE IS UNAFFECTED
+-----------------------------
+Width is already derived from the card spec:
+
+    Width    = CardLength + 2*CardClearance + 2*SideWallThickness
+    interior = Width - 2*SideWallThickness = CardLength + 2*CardClearance = 94.0
+
+so growing the wall grows the OUTSIDE of the box and leaves the 92 mm cards exactly as they
+were. What it costs is external width, and therefore plate space.
+
+    HingeTabThickness   web    SideWallThickness   Width    interior
+            5.0         2.0          7.4           108.8      94.0
+            8.0         2.0         10.4           114.8      94.0     <- this macro
+           10.0         2.0         12.4           118.8      94.0
+
+The print pose lays the lid out flat behind the box, so the footprint is roughly
+Width x 130. CAD_STANDARDS targets 120 x 140, which is why this stops at 8.0 rather than
+going further — 10.0 would leave ~1 mm of margin on the 120 side.
+
+WHAT IS DELIBERATELY NOT TOUCHED
+---------------------------------
+The hinge axis. Growing HingeTabRadius was tried (macro 21) and measured WORSE: at R = 7 the
+swing picked up 0.0081 mm3 at 15 deg and 0.3256 mm3 at 30 deg, and the running gap collapsed
+to 0.0000 until 45 deg. At R = 5 it is 0.0000 interference at every angle with 0.4 mm from
+30 deg on. The joint gets thicker axially; the hinge stays where it is.
+
+Idempotent. Restores everything if the result is invalid, interferes, loses the bed plane,
+or changes the interior.
+
+Run: Macro -> Macros... -> 22-thicker_joint -> Execute
+"""
+
+import FreeCAD
+
+# ------------------------------------------------------------------ the dials
+NEW_TAB_THICKNESS = 8.0
+SOCKET_WEB = 2.0
+MAX_WIDTH = 120.0          # CAD_STANDARDS plate limit
+# ------------------------------------------------------------------
+
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+log = []
+
+before = {n: float(getattr(vs, n)) for n in
+          ("HingeTabThickness", "SideWallThickness", "Width")}
+before["interior"] = before["Width"] - 2 * before["SideWallThickness"]
+before["web"] = (before["SideWallThickness"]
+                 - (before["HingeTabThickness"] + vs.HingeTabClearance.Value))
+prev_sw_expr = dict(vs.ExpressionEngine).get("SideWallThickness")
+
+if "HingeSocketWeb" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "HingeSocketWeb", "Hinge",
+                   "Material left behind the hinge socket floor, inside the side wall. The "
+                   "wall exists to host that pocket, so SideWallThickness is derived as "
+                   "HingeTabThickness + HingeTabClearance + HingeSocketWeb. It was 0.6 mm "
+                   "before this was written down, which is one nozzle width and a half.")
+    vs.HingeSocketWeb = SOCKET_WEB
+    log.append("Param HingeSocketWeb = %s added" % SOCKET_WEB)
+else:
+    log.append("Param HingeSocketWeb already present (%s) - left alone" % vs.HingeSocketWeb)
+
+# ------------------------------------------------------------------ guards
+tab = float(NEW_TAB_THICKNESS)
+web = vs.HingeSocketWeb.Value
+new_sw = tab + vs.HingeTabClearance.Value + web
+new_width = vs.CardLength.Value + 2 * vs.CardClearance.Value + 2 * new_sw
+errs = []
+if web < 1.2:
+    errs.append("HingeSocketWeb %.2f is under 3 nozzle widths" % web)
+if tab <= 0:
+    errs.append("HingeTabThickness must be positive")
+if new_width > MAX_WIDTH:
+    errs.append("Width would be %.1f, over the %.1f plate limit" % (new_width, MAX_WIDTH))
+if tab >= vs.Depth.Value / 2:
+    errs.append("HingeTabThickness %.2f is absurd next to Depth %.2f" % (tab, vs.Depth.Value))
+if errs:
+    raise RuntimeError("cannot thicken the joint: " + "; ".join(errs))
+
+# ------------------------------------------------------------------ apply
+vs.setExpression("SideWallThickness",
+                 "HingeTabThickness + HingeTabClearance + HingeSocketWeb")
+log.append("SideWallThickness bound to HingeTabThickness + HingeTabClearance + HingeSocketWeb")
+vs.HingeTabThickness = tab
+log.append("HingeTabThickness %.2f -> %.2f" % (before["HingeTabThickness"], tab))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    vs.setExpression("SideWallThickness", prev_sw_expr)
+    if prev_sw_expr is None:
+        vs.SideWallThickness = before["SideWallThickness"]
+    vs.HingeTabThickness = before["HingeTabThickness"]
+    recompute_all()
+    raise RuntimeError("%s - joint restored to %.2f mm"
+                       % (why, before["HingeTabThickness"]))
+
+
+recompute_all()
+
+bad = []
+for n in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(n).Objects:
+        if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error")):
+            bad.append("%s/%s" % (n, o.Name))
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Tip.Shape
+rearbody = liddoc.getObject("Body001")
+rear = liddoc.getObject(rearbody.Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+if rear.distToShape(top)[0] > 1e-6:
+    rollback("lid bodies no longer touch - would export as two meshes")
+
+interior = vs.Width.Value - 2 * vs.SideWallThickness.Value
+if abs(interior - before["interior"]) > 1e-6:
+    rollback("interior changed %.2f -> %.2f; the cards must not be affected"
+             % (before["interior"], interior))
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 15, 30, 45, 60, 75, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+worst = max(v for _, v, _ in sweep)
+if worst > 1.0:
+    rollback("swing interferes by %.3f mm3" % worst)
+
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+float_by = box.BoundBox.ZMin - lowest
+if float_by > 1e-6:
+    rollback("box would float %.3f mm above the bed in the print pose" % float_by)
+
+# ------------------------------------------------------------------ the point
+import Part
+
+
+def section(y):
+    cs = rear.common(Part.makeBox(400, 0.2, 400, V(-200, y, -40)))
+    return cs.Volume / 0.2
+
+
+def across(y, z):
+    half = vs.Width.Value / 2 + 1
+    n = int(2 * half / 0.25) + 1
+    xs = [-half + i * 0.25 for i in range(0, n)]
+    on = [round(x, 2) for x in xs if rear.isInside(V(x, y, z), 1e-6, True)]
+    if not on:
+        return "AIR"
+    grp = []
+    s = on[0]
+    p = on[0]
+    for x in on[1:]:
+        if x - p > 0.4:
+            grp.append((s, p))
+            s = x
+        p = x
+    grp.append((s, p))
+    return [(round(a, 1), round(b, 1), round(b - a, 1)) for a, b in grp]
+
+
+print("=== 22-thicker_joint ===")
+for line in log:
+    print("  " + line)
+print("  HingeTabThickness  %.2f -> %.2f" % (before["HingeTabThickness"], tab))
+print("  socket web         %.2f -> %.2f  (SideWallThickness %.2f -> %.2f)"
+      % (before["web"], web, before["SideWallThickness"], vs.SideWallThickness.Value))
+print("  Width              %.2f -> %.2f   interior %.2f -> %.2f (must not change)"
+      % (before["Width"], vs.Width.Value, before["interior"], interior))
+print("  joint section  y=%.0f %.1f mm2   y=%.0f %.1f mm2"
+      % (ay, section(ay), ay + 2, section(ay + 2)))
+print("  neck across width   %s" % across(ay + 2, az + 3))
+print("  knuckle across width %s" % across(ay, az))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  box vol %.2f   lid rear vol %.2f   lid top vol %.2f"
+      % (box.Volume, rear.Volume, top.Volume))
+print("  print footprint  %.1f wide x %.1f deep  (limit %.0f x 140)"
+      % (vs.Width.Value, r90.BoundBox.YMax - box.BoundBox.YMin, MAX_WIDTH))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")

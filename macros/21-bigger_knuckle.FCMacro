@@ -1,0 +1,228 @@
+# -*- coding: utf-8 -*-
+"""
+21-bigger_knuckle.FCMacro — MagicCardBox
+
+Grows the hinge knuckle by raising the axis, and binds the three-way identity that the
+whole hinge silently depends on.
+
+THE IDENTITY — HingeTabRadius == HingeAxisFromRear == HingeAxisFromBottom
+--------------------------------------------------------------------------
+Three separate pieces of this hinge each require it, and none of them said so:
+
+1. `HengeFilet` must be CONCENTRIC with the hinge axis, or it tilts into the lid's sweep
+   (measured: 18.086 mm3 of interference when it was not). A fillet on the bottom-rear edge
+   centres at (Depth/2 - R_f, R_f). `HingeFilletRadius` is bound to HingeAxisFromBottom, so
+   the centre lands on the axis only when HingeAxisFromRear == HingeAxisFromBottom.
+
+2. The knuckle must be TANGENT to the lid panel's inner face at y = Depth/2. The circle is
+   centred at y = Depth/2 - HingeAxisFromRear with radius HingeTabRadius, so it reaches
+   y = Depth/2 only when HingeTabRadius == HingeAxisFromRear.
+
+3. `PanelWrapZ = HingeAxisFromBottom - HingeTabRadius` must land on 0, the box's bottom
+   face, so the panel wraps to the bottom of the circle. That needs
+   HingeTabRadius == HingeAxisFromBottom.
+
+They were all 5.0 and nothing recorded that they had to be. Binding them makes
+HingeTabRadius the single knob for the hinge; the other two follow.
+
+WHY A BIGGER KNUCKLE
+---------------------
+Measured on the lid: at the knuckle's centre (y = axis, z = axis) there was material only
+over x -53..-51 and 51..53 — a 2 mm ring, because the Ø6.8 pin hole eats the middle out of
+a 5 mm disc. Ring thickness is HingeTabRadius - (HingePinDia/2 + HingePinClearance):
+
+    R = 5.0  ->  1.6 mm ring     (what broke)
+    R = 7.0  ->  3.6 mm ring     (2.25x)
+    R = 8.0  ->  4.6 mm ring
+
+Nothing about the box's side walls limits this — the socket's depth is AXIAL
+(HingeTabThickness + HingeTabClearance), not radial — so growing R costs nothing there.
+
+WHAT MOVES, AND WHAT DOESN'T
+-----------------------------
+Everything downstream is already derived, so it follows on its own:
+
+    PanelBottomZ      = 2R + HingeTabClearance      10.4 -> 14.4
+    PanelWrapZ        = 0                           unchanged, always
+    HingeWrapRadius   = R + HingeSwingClearance      5.5 ->  7.5
+    HingeFilletRadius = R                            5.0 ->  7.0
+    footer relief     = Depth/2 - 2R - HingeSwingClearance   25.5 -> 21.5
+    socket breakout   = Depth/2 + HingeTabClearance  36.4, INDEPENDENT of R
+
+And the print pose is invariant. At 90 deg the panel's outer bottom corner lands at
+    z' = HingeAxisFromBottom - (Depth/2 + WallThickness - axis_y) = R - (R + WallThickness)
+       = -WallThickness
+which equals -FooterHeight while those two are both 2 — so box, panel and top plate keep
+sharing the bed plane at z = -2 for ANY R. That is why this change is safe to make.
+
+WHAT THIS DOES *NOT* FIX
+-------------------------
+The 0.6 mm web behind the socket floor (SideWallThickness 6 - (HingeTabThickness 5 +
+HingeTabClearance 0.4)) is AXIAL and completely unaffected by R. If the first print snapped
+at the box side wall rather than at the lid's ring, this macro does not address it — that
+needs SideWallThickness up or HingeTabThickness down, which is a separate decision.
+
+Idempotent. Restores every value and expression it touched if the result is invalid,
+interferes, or loses the bed plane.
+
+Run: Macro -> Macros... -> 21-bigger_knuckle -> Execute
+"""
+
+import FreeCAD
+
+# ------------------------------------------------------------------ the one dial
+NEW_R = 7.0
+# ------------------------------------------------------------------
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+log = []
+
+before = {n: float(getattr(vs, n)) for n in
+          ("HingeTabRadius", "HingeAxisFromRear", "HingeAxisFromBottom",
+           "PanelBottomZ", "PanelWrapZ", "HingeWrapRadius", "HingeFilletRadius")}
+prev_expr = {n: dict(vs.ExpressionEngine).get(n)
+             for n in ("HingeAxisFromRear", "HingeAxisFromBottom")}
+
+# ------------------------------------------------------------------ guards
+R = float(NEW_R)
+ring = R - (vs.HingePinDia.Value / 2.0 + vs.HingePinClearance.Value)
+panel_bottom = 2 * R + vs.HingeTabClearance.Value
+relief_front = vs.Depth.Value / 2 - 2 * R - vs.HingeSwingClearance.Value
+errs = []
+if ring < 1.5:
+    errs.append("knuckle ring would be %.2f mm (R %.2f vs pin hole %.2f) - not worth doing"
+                % (ring, R, vs.HingePinDia.Value / 2 + vs.HingePinClearance.Value))
+if panel_bottom >= vs.Height.Value:
+    errs.append("PanelBottomZ %.2f >= Height %.2f" % (panel_bottom, vs.Height.Value))
+if relief_front <= -vs.Depth.Value / 2 + vs.WallThickness.Value:
+    errs.append("footer relief front %.2f would eat the whole footprint" % relief_front)
+if abs(vs.FooterHeight.Value - vs.WallThickness.Value) > 1e-9:
+    errs.append("FooterHeight %.2f != WallThickness %.2f: the print-pose bed plane is only "
+                "invariant while these are equal - re-derive before growing the knuckle"
+                % (vs.FooterHeight.Value, vs.WallThickness.Value))
+if errs:
+    raise RuntimeError("cannot grow the knuckle: " + "; ".join(errs))
+
+# ------------------------------------------------------------------ bind the identity
+vs.setExpression("HingeAxisFromRear", "HingeTabRadius")
+vs.setExpression("HingeAxisFromBottom", "HingeTabRadius")
+log.append("HingeAxisFromRear and HingeAxisFromBottom bound to HingeTabRadius")
+vs.HingeTabRadius = R
+log.append("HingeTabRadius %.2f -> %.2f" % (before["HingeTabRadius"], R))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    vs.setExpression("HingeAxisFromRear", prev_expr["HingeAxisFromRear"])
+    vs.setExpression("HingeAxisFromBottom", prev_expr["HingeAxisFromBottom"])
+    if prev_expr["HingeAxisFromRear"] is None:
+        vs.HingeAxisFromRear = before["HingeAxisFromRear"]
+    if prev_expr["HingeAxisFromBottom"] is None:
+        vs.HingeAxisFromBottom = before["HingeAxisFromBottom"]
+    vs.HingeTabRadius = before["HingeTabRadius"]
+    recompute_all()
+    raise RuntimeError("%s - hinge restored to R=%.2f" % (why, before["HingeTabRadius"]))
+
+
+recompute_all()
+
+bad = []
+for n in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(n).Objects:
+        if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error")):
+            bad.append("%s/%s" % (n, o.Name))
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Tip.Shape
+rearbody = liddoc.getObject("Body001")
+rear = liddoc.getObject(rearbody.Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+if rear.distToShape(top)[0] > 1e-6:
+    rollback("lid bodies no longer touch - would export as two meshes")
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 15, 30, 45, 60, 75, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+worst = max(v for _, v, _ in sweep)
+if worst > 1.0:
+    rollback("swing interferes by %.3f mm3" % worst)
+
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+float_by = box.BoundBox.ZMin - lowest
+if float_by > 1e-6:
+    rollback("box would float %.3f mm above the bed in the print pose" % float_by)
+
+# the point of the exercise: material at the knuckle centre
+def across(y, z):
+    xs = [-vs.Width.Value / 2 - 1 + i * 0.25 for i in range(0, int(vs.Width.Value / 0.25) + 9)]
+    on = [round(x, 2) for x in xs if rear.isInside(V(x, y, z), 1e-6, True)]
+    if not on:
+        return "AIR"
+    grp = []
+    s = on[0]
+    p = on[0]
+    for x in on[1:]:
+        if x - p > 0.4:
+            grp.append((s, p))
+            s = x
+        p = x
+    grp.append((s, p))
+    return [(round(a, 1), round(b, 1), round(b - a, 1)) for a, b in grp]
+
+
+print("=== 21-bigger_knuckle ===")
+for line in log:
+    print("  " + line)
+print("  identity: HingeTabRadius %s == HingeAxisFromRear %s == HingeAxisFromBottom %s"
+      % (vs.HingeTabRadius, vs.HingeAxisFromRear, vs.HingeAxisFromBottom))
+print("  knuckle ring  %.2f -> %.2f mm   (pin hole stays Ø%.2f)"
+      % (before["HingeTabRadius"] - (vs.HingePinDia.Value / 2 + vs.HingePinClearance.Value),
+         ring, vs.HingePinDia.Value + 2 * vs.HingePinClearance.Value))
+for n in ("PanelBottomZ", "PanelWrapZ", "HingeWrapRadius", "HingeFilletRadius"):
+    print("  %-18s %6.2f -> %6.2f" % (n, before[n], float(getattr(vs, n))))
+print("  footer relief front y %.2f -> %.2f" % (
+    vs.Depth.Value / 2 - 2 * before["HingeTabRadius"] - vs.HingeSwingClearance.Value,
+    relief_front))
+print("  knuckle centre, across width: %s" % across(ay, az))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  box vol %.2f   lid rear vol %.2f   lid top vol %.2f"
+      % (box.Volume, rear.Volume, top.Volume))
+print("  NOT FIXED by this macro: the %.2f mm web behind the socket floor is axial"
+      % (vs.SideWallThickness.Value - (vs.HingeTabThickness.Value + vs.HingeTabClearance.Value)))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")

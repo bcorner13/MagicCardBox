@@ -1,0 +1,334 @@
+# -*- coding: utf-8 -*-
+"""
+23-neck_sweep_clip.FCMacro — MagicCardBox
+
+Box-side companion to Bradley's lid change: clips the BOTTOM-FRONT of the hinge socket so
+the deepened neck can swing to 90 deg.
+
+WHAT BRADLEY CHANGED IN THE LID
+--------------------------------
+`Lid/Sketch002` (HingeNeck) Constraints[10] went from
+    HingeAxisFromBottom - Height          (neck bottom at z = 5, on the hinge axis)
+to
+    HingeAxisFromBottom - Height - 3 mm   (neck bottom at z = 2)
+so the neck is 8.4 mm tall instead of 5.4 and the joint is thicker vertically — without
+touching the box's width, which is what made the earlier SideWallThickness route unattractive.
+
+That 3 mm was typed as a literal. This macro gives it a name, `HingeNeckDrop`, and rebinds
+the lid constraint to it, so the box clip below can be DERIVED from it rather than guessed.
+
+WHY THE BOX HAD TO CHANGE
+--------------------------
+Measured after the lid edit: the swing picked up 2.25 mm3 of interference at 90 deg (it was
+0.0000) and the running gap at 75 deg fell from 0.400 to 0.264. The interference is two
+1.125 mm3 slivers, one per side wall (x +/-48..53), at radius 5.536 from the axis.
+
+The cause is one corner. The neck's bottom edge crosses the panel's inner face at
+y = Depth/2, and that corner sits at
+
+    r = sqrt(HingeAxisFromRear^2 + HingeNeckDrop^2) = sqrt(25 + 9) = 5.831
+
+while the socket bore is only HingeTabRadius + HingeTabClearance = 5.400. So the corner
+sweeps 0.431 mm wider than the hole it turns in, and near full-open it catches the box's
+floor underside around y = 28, z = 0.
+
+A FLAT OFF THE BOTTOM — AND WHY NOT THE TWO OBVIOUS ALTERNATIVES
+-----------------------------------------------------------------
+NOT a bigger bore. Opening the socket to 5.831 + clearance would give the knuckle
+(r = HingeTabRadius = 5.0) about 0.9 mm of radial slop all round, and the hinge would
+rattle and sag. The bore is the bearing; it must stay at HingeTabClearance.
+
+NOT an annular sector either. The first attempt cut an annulus from the bore out to the
+swept radius over the lower-front quadrant (180..270 deg). It cleared the interference, but
+90 deg of arc for a defect that occupies 236..248 deg left a thin crescent running up the
+side of the socket, and it looked like damage rather than design.
+
+What it is: a FLAT CHORD off the very bottom of the bore.
+
+    height     HingeSocketFlatZ    = PanelWrapZ + HingeTabClearance + HingeSwingClearance
+    half-width HingeSocketFlatHalf = the bore's own chord at that height
+    depth      HingeTabThickness + HingeTabClearance   (same as the socket)
+
+The half-width matters. Set it from the swept radius (6.331) and the flat runs WIDER than
+the bore, so its ends carry on past the circle and notch 2.8 mm into solid side wall on each
+side. Derived from the bore's chord instead, the ends land exactly ON the circle: the cut is
+tangent, tapers to nothing, and leaves no notch. It takes about 81 deg off the bottom of the
+bore and leaves the other 279 deg — including the whole upper half that carries the lid —
+untouched.
+
+It starts at the bore's own bottom, so it cannot reach the pin (r < HingePinDia/2 inside it).
+
+Idempotent. Restores everything if the result is invalid, still interferes, or loses the
+print-pose bed plane.
+
+Run: Macro -> Macros... -> 23-neck_sweep_clip -> Execute
+"""
+
+import math
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+boxbody = boxdoc.getObject("Body")
+log = []
+undo = []
+
+
+def set_expr(obj, path, expr):
+    undo.append((obj, path, dict(obj.ExpressionEngine).get(path)))
+    obj.setExpression(path, expr)
+
+
+# ---------------------------------------------------------------- Params
+if "HingeNeckDrop" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "HingeNeckDrop", "Hinge",
+                   "How far the lid's hinge neck reaches BELOW the hinge axis. Thickens the "
+                   "joint vertically without widening the box. Was typed as a literal 3 mm "
+                   "in Lid/Sketch002; named here because the box's socket clip is derived "
+                   "from it — raise this and the clip follows, leave them independent and "
+                   "the neck quietly starts gouging the box floor near full open.")
+    vs.HingeNeckDrop = 3.0
+    log.append("Param HingeNeckDrop = 3.0 added")
+else:
+    log.append("Param HingeNeckDrop already present (%s) - left alone" % vs.HingeNeckDrop)
+
+# An earlier version set the flat's WIDTH from the swept radius (6.331). That made the flat
+# wider than the bore's chord, so its ends ran past the circle and gouged a notch 2.8 mm deep
+# into solid box on each side. The flat now ends exactly ON the bore - see HingeSocketFlatHalf
+# - so it is tangent and leaves no notch. The sweep radius is still computed locally below,
+# for the guard and the report, but it no longer drives geometry, so the Param goes rather
+# than sit there dead for the audit to trip over.
+if "HingeNeckSweepRadius" in vs.PropertiesList:
+    vs.setExpression("HingeNeckSweepRadius", None)
+    vs.removeProperty("HingeNeckSweepRadius")
+    log.append("Param HingeNeckSweepRadius removed - flat now ends on the bore")
+
+E_FLAT = "PanelWrapZ + HingeTabClearance + HingeSwingClearance"
+if "HingeSocketFlatZ" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "HingeSocketFlatZ", "Hinge",
+                   "Height of the flat taken off the BOTTOM of the hinge socket, so the "
+                   "deepened neck's corner clears as it swings. DERIVED. Measured "
+                   "interference topped out at z = 0.51, so this sits above it at 0.9. A flat "
+                   "chord, deliberately not an annular sector - the sector version cleared "
+                   "the same interference but left a thin crescent up the side of the socket.")
+    log.append("Param HingeSocketFlatZ added")
+vs.setExpression("HingeSocketFlatZ", E_FLAT)
+
+# Half-width of the flat = the bore's own chord at that height, so the cut's ends land ON the
+# circle. Any wider and it notches solid box; any narrower and it stops short of the sweep.
+E_HALF = ("sqrt((HingeTabRadius + HingeTabClearance) * (HingeTabRadius + HingeTabClearance)"
+          " - (HingeAxisFromBottom - HingeSocketFlatZ)"
+          " * (HingeAxisFromBottom - HingeSocketFlatZ))")
+if "HingeSocketFlatHalf" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "HingeSocketFlatHalf", "Hinge",
+                   "Half-width of the flat clipped off the bottom of the hinge socket. "
+                   "DERIVED as the bore's chord at HingeSocketFlatZ, so the flat is tangent "
+                   "to the bore and leaves no notch in the side wall.")
+    log.append("Param HingeSocketFlatHalf added")
+vs.setExpression("HingeSocketFlatHalf", E_HALF)
+
+# Expressions only evaluate on recompute. Reading the new Params before this returns the
+# property default (0), which makes the guards below refuse a perfectly good clip.
+FreeCAD.getDocument("Params").recompute(None, True, True)
+log.append("HingeSocketFlatZ = %s   HingeSocketFlatHalf = %s"
+           % (vs.HingeSocketFlatZ, vs.HingeSocketFlatHalf))
+
+# bind Bradley's literal
+sk2 = liddoc.getObject("Sketch002")
+cur = dict(sk2.ExpressionEngine).get("Constraints[10]")
+E_NECK = P + "HingeAxisFromBottom - " + P + "Height - " + P + "HingeNeckDrop"
+set_expr(sk2, "Constraints[10]", E_NECK)
+log.append("Lid/Sketch002 Constraints[10]: %s -> %s" % (cur, E_NECK))
+
+# ---------------------------------------------------------------- guards
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+Ri = vs.HingeTabRadius.Value + vs.HingeTabClearance.Value
+Ro = math.hypot(vs.HingeAxisFromRear.Value, vs.HingeNeckDrop.Value)  # swept corner radius
+half = vs.HingeSocketFlatHalf.Value
+errs = []
+if Ro <= Ri:
+    errs.append("sweep radius %.3f is inside the bore %.3f - nothing to clip" % (Ro, Ri))
+if Ri <= vs.HingePinDia.Value / 2:
+    errs.append("bore %.3f is inside the pin %.3f - the clip would cut the pin"
+                % (Ri, vs.HingePinDia.Value / 2))
+if vs.HingeNeckDrop.Value >= az:
+    errs.append("HingeNeckDrop %.2f reaches at or below the box floor (axis is %.2f up)"
+                % (vs.HingeNeckDrop.Value, az))
+if errs:
+    raise RuntimeError("cannot clip the socket: " + "; ".join(errs))
+
+# ---------------------------------------------------------------- sector sketch
+def origin_plane(body, role):
+    for f in body.Origin.OriginFeatures:
+        if f.Role == role:
+            return f
+    raise RuntimeError("body %s has no %s" % (body.Name, role))
+
+
+skc = boxdoc.getObject("SketchNeckClip")
+if skc is None:
+    skc = boxbody.newObject("Sketcher::SketchObject", "SketchNeckClip")
+    skc.AttachmentSupport = [(origin_plane(boxbody, "YZ_Plane"), "")]
+    skc.MapMode = "FlatFace"
+    skc.Label = "NeckClip"
+    log.append("MagicCardBox/SketchNeckClip created")
+else:
+    for path, _ in list(skc.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            skc.setExpression(path, None)
+    skc.deleteAllConstraints()
+    skc.deleteAllGeometry()
+    log.append("MagicCardBox/SketchNeckClip rebuilt")
+skc.setExpression(".AttachmentOffset.Base.z", P + "Width / 2")
+
+# A FLAT CHORD ACROSS THE BOTTOM, not an annular sector.
+#
+# The first version of this cut an annulus from the bore out to the swept radius over the
+# whole lower-front quadrant, 180..270 deg. It cleared the interference but left an ugly
+# thin crescent running up the side of the socket, and it was 90 deg of arc when the
+# measured interference only occupies 236..248 deg.
+#
+# A single flat taken off the bottom of the socket does the same job, looks deliberate, and
+# is one rectangle. The interference tops out at z = 0.51, so the flat sits at
+#     HingeSocketFlatZ = PanelWrapZ + HingeTabClearance + HingeSwingClearance
+# and the rectangle spans the full swept width so it catches the corner at every angle it
+# passes through, then runs down past the footer where there is no material anyway.
+z_flat = vs.HingeSocketFlatZ.Value
+y_lo = ay - half
+y_hi = ay + half
+z_lo = -(vs.FooterHeight.Value + vs.WallThickness.Value)
+pts = [V(y_lo, z_lo, 0), V(y_hi, z_lo, 0), V(y_hi, z_flat, 0), V(y_lo, z_flat, 0)]
+for i in range(4):
+    skc.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    skc.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+skc.addConstraint(Sketcher.Constraint("Horizontal", 0))
+skc.addConstraint(Sketcher.Constraint("Horizontal", 2))
+skc.addConstraint(Sketcher.Constraint("Vertical", 1))
+skc.addConstraint(Sketcher.Constraint("Vertical", 3))
+i_ylo = skc.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 1, y_lo))
+i_yhi = skc.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, y_hi))
+i_zlo = skc.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, z_lo))
+i_zhi = skc.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, z_flat))
+skc.setExpression("Constraints[%d]" % i_ylo,
+                  P + "Depth / 2 - " + P + "HingeAxisFromRear - " + P + "HingeSocketFlatHalf")
+skc.setExpression("Constraints[%d]" % i_yhi,
+                  P + "Depth / 2 - " + P + "HingeAxisFromRear + " + P + "HingeSocketFlatHalf")
+skc.setExpression("Constraints[%d]" % i_zlo,
+                  "-(" + P + "FooterHeight + " + P + "WallThickness)")
+skc.setExpression("Constraints[%d]" % i_zhi, P + "HingeSocketFlatZ")
+
+pkc = boxdoc.getObject("PocketNeckClip")
+if pkc is None:
+    pkc = boxbody.newObject("PartDesign::Pocket", "PocketNeckClip")
+    pkc.Profile = skc
+    pkc.Label = "NeckClip"
+    log.append("MagicCardBox/PocketNeckClip created")
+pkc.Type = "Length"
+pkc.Midplane = False           # clear the legacy flag FIRST - see CLAUDE.md
+pkc.SideType = "One side"
+pkc.Reversed = False
+pkc.setExpression("Length", P + "HingeTabThickness + " + P + "HingeTabClearance")
+skc.Visibility = False
+boxbody.Tip = pkc
+
+mir = boxdoc.getObject("MirroredNeckClip")
+if mir is None:
+    mir = boxbody.newObject("PartDesign::Mirrored", "MirroredNeckClip")
+    mir.Label = "NeckClip"
+    log.append("MagicCardBox/MirroredNeckClip created")
+# PartDesign::Mirrored calls it Originals (not Transformed), and MirrorPlane takes the
+# origin's App::Plane itself with an empty subelement - matched to Mirrored001 in this body.
+mir.Originals = [pkc]
+mir.MirrorPlane = (origin_plane(boxbody, "YZ_Plane"), [""])
+boxbody.Tip = mir
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    for obj, path, old in reversed(undo):
+        obj.setExpression(path, old)
+    for nm in ("MirroredNeckClip", "PocketNeckClip", "SketchNeckClip"):
+        o = boxdoc.getObject(nm)
+        if o:
+            boxdoc.removeObject(nm)
+    boxbody.Tip = boxdoc.getObject("PocketMagnetBox")
+    recompute_all()
+    raise RuntimeError("%s - clip removed, lid expression restored" % why)
+
+
+recompute_all()
+
+bad = []
+for n in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(n).Objects:
+        if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error")):
+            bad.append("%s/%s" % (n, o.Name))
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxbody.Tip.Shape
+rearbody = liddoc.getObject("Body001")
+rear = liddoc.getObject(rearbody.Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 30, 60, 85, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+worst = max(v for _, v, _ in sweep)
+if worst > 0.01:
+    rollback("still interferes by %.4f mm3" % worst)
+
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+float_by = box.BoundBox.ZMin - lowest
+if float_by > 1e-6:
+    rollback("box would float %.3f mm above the bed" % float_by)
+
+print("=== 23-neck_sweep_clip ===")
+for line in log:
+    print("  " + line)
+print("  neck bottom corner sweeps r = %.3f   bore r = %.3f"
+      % (math.hypot(vs.HingeAxisFromRear.Value, vs.HingeNeckDrop.Value), Ri))
+print("  clip: FLAT chord across the socket bottom at z = %.2f, y %.2f..%.2f, depth %.2f,"
+      % (z_flat, y_lo, y_hi, vs.HingeTabThickness.Value + vs.HingeTabClearance.Value))
+print("        both side walls")
+print("  SketchNeckClip: DoF=%d fully=%s" % (skc.solve(), skc.FullyConstrained))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  box vol %.2f   lid rear vol %.2f" % (box.Volume, rear.Volume))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")

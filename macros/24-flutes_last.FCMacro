@@ -1,0 +1,200 @@
+# -*- coding: utf-8 -*-
+"""
+24-flutes_last.FCMacro — MagicCardBox
+
+Moves the flutes to the END of the box's feature tree so they can be suppressed, which is
+what makes a PLAIN print variant possible again.
+
+THE PROBLEM
+-----------
+The box carries a four-deep fillet chain rooted on `Pocket009` — the flutes:
+
+    Mirrored002 -> Pocket009 (flutes) -> Fillet -> Fillet001 -> Fillet002 -> Fillet003 -> ...
+
+Suppressing `Pocket009` to get a plain box leaves `Fillet002` **Invalid**, so the plain 3MF
+cannot be generated at all. Verified 2026-09-13: suppress both flute pockets, recompute, and
+MagicCardBox/Fillet002 comes back Touched+Invalid.
+
+This is NOT the same failure that was withdrawn earlier. Element-name hashing DOES carry
+these references through dimensional changes — measured: Width 105 -> 106 rewrote every
+stored name (Edge310->319, Edge113->112, ...) and all still resolved. But suppressing a
+feature is a TOPOLOGICAL change: `Fillet001`'s shape loses most of its edges, and hashing
+cannot map a name onto an edge that no longer exists.
+
+THE FIX
+-------
+Reorder so the flutes come last and nothing depends on them:
+
+    Mirrored002 -> Fillet -> ... -> Fillet003 -> PocketMagnetBox -> ... -> Pocket009 (Tip)
+
+PartDesign chains features through `BaseFeature`, not through Group order, so both are
+rewired here and Group is rebuilt to match.
+
+WHY THE EDGES MUST BE RE-PICKED BY POSITION
+--------------------------------------------
+Every fillet stores edge NAMES against its base. After the reorder each fillet computes on a
+shape that has no flutes in it, so those names refer to edges that do not exist in that
+shape. Worse, the top-rim edges that the flutes used to scallop into short segments become
+single long edges — so matching by name OR by exact midpoint/length both fail.
+
+What survives is that the recorded midpoint still LIES ON the correct edge. So each edge is
+re-found by testing which edges of the new base shape actually pass through the recorded
+point, then filtering by curve type. That is why this macro measures the signatures itself
+at run time rather than trusting a stored list.
+
+APPEARANCE CHANGES SLIGHTLY, DELIBERATELY
+------------------------------------------
+`Fillet002` and `Fillet003` round the top rim, which the flutes reach (FluteStartZ 12 runs
+up to Height). Before: flutes cut, then the rim fillet followed the scalloped edge. After:
+the rim is filleted clean, then the flutes cut through it. `Fillet` (z=0) and `Fillet001`
+(z=10.4) both sit below FluteStartZ and are unaffected either way.
+
+RECOVERY
+--------
+A failed recompute does not roll back in this project (defect D5). This macro restores the
+original ordering and edge references if the result is invalid or the geometry moves. If it
+somehow gets past that, the saved FCStd on disk is good: close all four documents WITHOUT
+saving and reopen.
+
+Run: Macro -> Macros... -> 24-flutes_last -> Execute
+"""
+
+import FreeCAD
+import Part
+
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+TOL = 1e-6
+
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+body = boxdoc.getObject("Body")
+log = []
+
+FILLETS = ("Fillet", "Fillet001", "Fillet002", "Fillet003")
+FLUTE_SK = "Sketch012"
+FLUTE_PK = "Pocket009"
+
+# ---------------------------------------------------------------- record current state
+order_before = [o.Name for o in body.Group]
+tip_before = body.Tip.Name
+vol_before = body.Tip.Shape.Volume
+
+if order_before.index(FLUTE_PK) > order_before.index("Fillet"):
+    raise RuntimeError("flutes already sit after the fillets - nothing to do")
+
+sigs = {}
+for fn in FILLETS:
+    f = boxdoc.getObject(fn)
+    src, subs = f.Base[0], list(f.Base[1])
+    ents = []
+    for en in subs:
+        e = src.Shape.getElement(en)
+        com = e.CenterOfMass
+        ents.append({"pt": V(com.x, com.y, com.z), "curve": type(e.Curve).__name__,
+                     "len": e.Length, "name": en})
+    sigs[fn] = {"base": src.Name, "edges": ents}
+log.append("recorded %d edge signatures across %d fillets"
+           % (sum(len(sigs[f]["edges"]) for f in FILLETS), len(FILLETS)))
+
+base_before = {fn: (boxdoc.getObject(fn).Base[0].Name, list(boxdoc.getObject(fn).Base[1]))
+               for fn in FILLETS}
+basefeat_before = {o.Name: (o.BaseFeature.Name if getattr(o, "BaseFeature", None) else None)
+                   for o in body.Group if "BaseFeature" in o.PropertiesList}
+
+
+def restore(why):
+    for fn in FILLETS:
+        f = boxdoc.getObject(fn)
+        f.Base = (boxdoc.getObject(base_before[fn][0]), base_before[fn][1])
+    for name, bf in basefeat_before.items():
+        o = boxdoc.getObject(name)
+        o.BaseFeature = boxdoc.getObject(bf) if bf else None
+    body.Group = [boxdoc.getObject(n) for n in order_before]
+    body.Tip = boxdoc.getObject(tip_before)
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+    raise RuntimeError("%s - original feature order restored" % why)
+
+
+def find_edge(shape, pt, curve, want_len):
+    """The recorded midpoint still lies ON the right edge even when its extent changed."""
+    vtx = Part.Vertex(pt)
+    hits = []
+    for i, e in enumerate(shape.Edges):
+        if type(e.Curve).__name__ != curve:
+            continue
+        if e.distToShape(vtx)[0] < 1e-5:
+            hits.append((i + 1, e.Length))
+    if not hits:
+        return None, "no edge passes through %s" % (pt,)
+    if len(hits) > 1:
+        hits.sort(key=lambda h: abs(h[1] - want_len))
+    return "Edge%d" % hits[0][0], None
+
+
+# ---------------------------------------------------------------- rewire the chain
+flute_pk = boxdoc.getObject(FLUTE_PK)
+first_fillet = boxdoc.getObject("Fillet")
+before_flutes = boxdoc.getObject(basefeat_before[FLUTE_PK])      # Mirrored002
+last_feature = boxdoc.getObject(tip_before)                       # MirroredNeckClip
+
+first_fillet.BaseFeature = before_flutes
+flute_pk.BaseFeature = last_feature
+log.append("BaseFeature: Fillet -> %s ; %s -> %s"
+           % (before_flutes.Name, FLUTE_PK, last_feature.Name))
+
+new_order = [n for n in order_before if n not in (FLUTE_SK, FLUTE_PK)] + [FLUTE_SK, FLUTE_PK]
+body.Group = [boxdoc.getObject(n) for n in new_order]
+body.Tip = flute_pk
+log.append("Group reordered, Tip -> %s" % FLUTE_PK)
+
+# ---------------------------------------------------------------- re-pick, one at a time
+# Each fillet must compute before the next one's base shape exists, so recompute between.
+for fn in FILLETS:
+    f = boxdoc.getObject(fn)
+    src = before_flutes if fn == "Fillet" else boxdoc.getObject(sigs[fn]["base"])
+    boxdoc.recompute(None, True, True)
+    if src.Shape.isNull():
+        restore("%s has no shape to re-pick against" % src.Name)
+    picked, problems = [], []
+    for ent in sigs[fn]["edges"]:
+        name, err = find_edge(src.Shape, ent["pt"], ent["curve"], ent["len"])
+        if err:
+            problems.append("%s (was %s): %s" % (fn, ent["name"], err))
+        else:
+            picked.append(name)
+    if problems:
+        restore("could not re-pick edges: " + "; ".join(problems))
+    if len(set(picked)) != len(picked):
+        restore("%s re-picked the same edge twice: %s" % (fn, picked))
+    f.Base = (src, picked)
+    log.append("%s.Base -> %s %s" % (fn, src.Name, picked))
+    boxdoc.recompute(None, True, True)
+    if any(s in (list(getattr(f, "State", []) or [])) for s in ("Invalid", "Error")):
+        restore("%s went invalid after re-picking" % fn)
+
+for n in DOCS:
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+# ---------------------------------------------------------------- verify
+bad = [("%s/%s" % (n, o.Name)) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    restore("invalid features: " + ", ".join(bad))
+
+shp = body.Tip.Shape
+if not (shp.isValid() and shp.isClosed() and len(shp.Solids) == 1):
+    restore("box is not a single closed valid solid")
+drift = abs(shp.Volume - vol_before)
+if drift > 50.0:
+    restore("box volume moved %.2f mm3 (%.2f -> %.2f)" % (drift, vol_before, shp.Volume))
+
+print("=== 24-flutes_last ===")
+for line in log:
+    print("  " + line)
+print("  order: ... %s" % " -> ".join([o.Name for o in body.Group][-6:]))
+print("  box volume %.2f -> %.2f  (drift %.2f mm3)" % (vol_before, shp.Volume, drift))
+print("  valid=%s closed=%s solids=%d" % (shp.isValid(), shp.isClosed(), len(shp.Solids)))
+print("  flutes are now last and suppressible - verify by toggling Pocket009.Suppressed")
+print("NOT SAVED.")

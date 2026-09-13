@@ -1,0 +1,270 @@
+# -*- coding: utf-8 -*-
+"""
+19-magnet_closure.FCMacro — MagicCardBox
+
+Adds a magnetic lid closure: two pairs of Ø4 x 2 disc magnets, one pair per thick side
+wall, MagnetFromFront (8 mm) back from the front face. Each pair is one magnet in the
+box rim and one directly above it in the lid's top plate, so they meet face-to-face on
+the parting plane at z = Height.
+
+WHY LidTopThickness EXISTS (project rule 5, one knob one concern)
+-----------------------------------------------------------------
+The lid's top plate was WallThickness = 2.0 mm, measured solid z 65..67. A 2 mm magnet
+pocket in a 2 mm plate is a through hole — the magnet would show on the outside.
+
+`WallThickness` could NOT simply be raised, because in this project it already means four
+unrelated things at once:
+
+    Lid/Pad.Length            the lid top plate          <- what we actually want thicker
+    Lid/Pad001.Length         the lid's rear panel
+    MagicCardBox/Sketch003    the box front/rear walls
+    Params.Depth              = CardWidth + 2*CardClearance + 2*WallThickness
+
+Raising it to 3.0 would have grown the box's Depth by 2 mm and thickened three unrelated
+walls, to fix a lid. So the plate gets its own knob, `LidTopThickness`, and only the plate
+is rebound to it. Everything else keeps `WallThickness`.
+
+KNOCK-ON: THE LID FLUTES MOVE WITH THE PLATE
+---------------------------------------------
+`Lid/Sketch012` (LidTopFlutes) positions all 24 flute circles off the plate's TOP face as
+`Height + WallThickness + FluteRadius - FluteDepth`. If the plate thickens and those stay
+on WallThickness, the flutes stay at the old height and end up cut into the middle of the
+plate instead of its surface. This macro rewrites those 24 expressions to LidTopThickness.
+The magnets themselves sit at x = +/-50, outside the fluted band (flutes stop at
+FluteMargin, x = +/-47), so no flute crosses a magnet pocket.
+
+GEOMETRY (measured before building)
+------------------------------------
+    front outer face      y = -Depth/2            = -36
+    magnet centre         y = -Depth/2 + 8        = -28
+    thick side wall       x = 47 .. 53  (SideWallThickness 6)
+    magnet centre         x = +/-(Width/2 - SideWallThickness/2) = +/-50
+    box rim               z = Height              = 65,  solid well below
+    lid plate             z = Height .. Height + LidTopThickness
+
+    box pocket   z Height-MagnetThickness .. Height   magnet flush with the rim
+    lid pocket   z Height .. Height+MagnetThickness   MagnetSkin left above it
+
+Magnet faces therefore touch on the parting plane with no plastic between them.
+
+`MagnetFit` is its own clearance knob — magnet-to-plastic is a different interface from
+every hinge clearance (project rule 4). It is applied per side to the RADIUS, so the hole
+diameter is MagnetDia + 2*MagnetFit. Default 0.05 (Ø4.1) is a press fit; open it up after
+a test print if they will not seat, tighten if they fall out.
+
+Idempotent: rebuilds its own sketches, never overwrites an existing Param value.
+
+Run: Macro -> Macros... -> 19-magnet_closure -> Execute
+"""
+
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+boxbody = boxdoc.getObject("Body")          # "Box"
+lidbody = liddoc.getObject("Body")          # "Lid001", the top plate
+log = []
+
+# ---------------------------------------------------------------- Params
+NEW_VARS = [
+    ("LidTopThickness", "App::PropertyLength", 3.0, "Geometry",
+     "Thickness of the lid's TOP PLATE only. Deliberately NOT WallThickness: that knob also "
+     "drives the box front/rear walls, the lid's rear panel and Params.Depth, so raising it "
+     "to host a magnet would have grown the whole box. Must be >= MagnetThickness + "
+     "MagnetSkin or the magnet pocket breaks through the outer face."),
+    ("MagnetDia", "App::PropertyLength", 4.0, "Magnets",
+     "Nominal magnet diameter. Stock disc magnets here are 4 x 2 mm."),
+    ("MagnetThickness", "App::PropertyLength", 2.0, "Magnets",
+     "Nominal magnet thickness. Pocket depth equals this on both sides, so the two magnets "
+     "meet face-to-face on the parting plane with no plastic between them."),
+    ("MagnetFromFront", "App::PropertyLength", 8.0, "Magnets",
+     "Distance from the box's front outer face to the magnet centre. Must exceed the hole "
+     "radius or the pocket breaks out through the front."),
+    ("MagnetSkin", "App::PropertyLength", 1.0, "Magnets",
+     "Plastic left over the magnet on the lid's OUTER face, so nothing shows on top."),
+    ("MagnetFit", "App::PropertyLength", 0.05, "Clearances",
+     "Press-fit allowance, per side, on the hole RADIUS: hole dia = MagnetDia + 2*MagnetFit. "
+     "Its own knob - magnet-to-plastic is a different interface from any hinge clearance "
+     "(rule 4). 0.05 is a press fit; open it after a test print if they will not seat."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+    else:
+        log.append("Param %s already present (%s) - left alone" % (name, getattr(vs, name)))
+
+W = vs.Width.Value
+D = vs.Depth.Value
+H = vs.Height.Value
+SW = vs.SideWallThickness.Value
+LTT = vs.LidTopThickness.Value
+MD = vs.MagnetDia.Value
+MT = vs.MagnetThickness.Value
+MFF = vs.MagnetFromFront.Value
+MSK = vs.MagnetSkin.Value
+MFIT = vs.MagnetFit.Value
+r_hole = MD / 2.0 + MFIT
+x_mag = W / 2.0 - SW / 2.0
+y_mag = -D / 2.0 + MFF
+
+errs = []
+if MT + MSK > LTT + 1e-9:
+    errs.append("MagnetThickness %.2f + MagnetSkin %.2f > LidTopThickness %.2f "
+                "(pocket would break through the lid's outer face)" % (MT, MSK, LTT))
+if 2 * r_hole >= SW:
+    errs.append("hole dia %.2f >= SideWallThickness %.2f (would break out of the side wall)"
+                % (2 * r_hole, SW))
+if MFF <= r_hole:
+    errs.append("MagnetFromFront %.2f <= hole radius %.2f (would break out of the front)"
+                % (MFF, r_hole))
+if x_mag - r_hole <= W / 2.0 - SW or x_mag + r_hole >= W / 2.0:
+    errs.append("hole at x=%.2f r=%.2f does not fit inside the side wall %.2f..%.2f"
+                % (x_mag, r_hole, W / 2.0 - SW, W / 2.0))
+if MT >= H:
+    errs.append("MagnetThickness %.2f >= Height %.2f" % (MT, H))
+if errs:
+    raise RuntimeError("magnet geometry is inconsistent: " + "; ".join(errs))
+
+# ---------------------------------------------------------------- lid plate thickness
+lidpad = liddoc.getObject("Pad")
+prev_pad = dict(lidpad.ExpressionEngine).get("Length")
+lidpad.setExpression("Length", P + "LidTopThickness")
+log.append("Lid/Pad.Length -> %sLidTopThickness (was %s)" % (P, prev_pad))
+
+# The 24 flute Z expressions reference the plate's TOP face. They must follow the plate.
+flutes = liddoc.getObject("Sketch012")
+OLD = P + "Height + " + P + "WallThickness"
+NEW = P + "Height + " + P + "LidTopThickness"
+n_moved = 0
+if flutes is not None:
+    for path, expr in list(flutes.ExpressionEngine):
+        if expr and OLD in expr:
+            flutes.setExpression(path, expr.replace(OLD, NEW))
+            n_moved += 1
+log.append("Lid/Sketch012: %d flute expressions moved to LidTopThickness" % n_moved)
+
+# ---------------------------------------------------------------- expressions
+E_XR = P + "Width / 2 - " + P + "SideWallThickness / 2"
+E_XL = "-(" + E_XR + ")"
+E_Y = "-" + P + "Depth / 2 + " + P + "MagnetFromFront"
+E_R = P + "MagnetDia / 2 + " + P + "MagnetFit"
+E_Z = P + "Height"
+E_DEPTH = P + "MagnetThickness"
+
+
+def origin_plane(body, role):
+    for f in body.Origin.OriginFeatures:
+        if f.Role == role:
+            return f
+    raise RuntimeError("body %s has no %s" % (body.Name, role))
+
+
+def build(doc, body, sk_name, pk_name, label, reversed_cut):
+    """Two bound circles on XY at z=Height, pocketed MagnetThickness deep."""
+    sk = doc.getObject(sk_name)
+    if sk is None:
+        sk = body.newObject("Sketcher::SketchObject", sk_name)
+        sk.AttachmentSupport = [(origin_plane(body, "XY_Plane"), "")]
+        sk.MapMode = "FlatFace"
+        sk.Label = label
+        log.append("%s/%s created" % (doc.Name, sk_name))
+    else:
+        for path, _ in list(sk.ExpressionEngine):
+            if re.match(r"\.?Constraints\[\d+\]$", path):
+                sk.setExpression(path, None)
+        sk.deleteAllConstraints()
+        sk.deleteAllGeometry()
+        log.append("%s/%s rebuilt" % (doc.Name, sk_name))
+    sk.setExpression(".AttachmentOffset.Base.z", E_Z)
+
+    sk.addGeometry(Part.Circle(V(x_mag, y_mag, 0), V(0, 0, 1), r_hole), False)    # 0 right
+    sk.addGeometry(Part.Circle(V(-x_mag, y_mag, 0), V(0, 0, 1), r_hole), False)   # 1 left
+    binds = []
+    binds.append((sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, x_mag)), E_XR))
+    binds.append((sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, y_mag)), E_Y))
+    binds.append((sk.addConstraint(Sketcher.Constraint("Radius", 0, r_hole)), E_R))
+    binds.append((sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 3, -x_mag)), E_XL))
+    binds.append((sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 1, 3, y_mag)), E_Y))
+    binds.append((sk.addConstraint(Sketcher.Constraint("Radius", 1, r_hole)), E_R))
+    for i, e in binds:
+        sk.setExpression("Constraints[%d]" % i, e)
+
+    pk = doc.getObject(pk_name)
+    if pk is None:
+        pk = body.newObject("PartDesign::Pocket", pk_name)
+        pk.Profile = sk
+        pk.Label = label
+        log.append("%s/%s created" % (doc.Name, pk_name))
+    pk.Type = "Length"
+    pk.Midplane = False          # clear the legacy flag FIRST - see CLAUDE.md
+    pk.SideType = "One side"
+    pk.Reversed = reversed_cut
+    pk.setExpression("Length", E_DEPTH)
+    sk.Visibility = False
+    body.Tip = pk
+    return sk, pk
+
+
+# box: sketch normal is +Z, default pocket cuts -Z -> down into the rim
+sk_b, pk_b = build(boxdoc, boxbody, "SketchMagnetBox", "PocketMagnetBox", "MagnetBox", False)
+# lid: must cut +Z, up into the plate from its underside
+sk_l, pk_l = build(liddoc, lidbody, "SketchMagnetLid", "PocketMagnetLid", "MagnetLid", True)
+
+for n in DOCS:
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+# ---------------------------------------------------------------- verify
+problems = []
+for n in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+if problems:
+    raise RuntimeError("magnet features left the model invalid: " + "; ".join(problems))
+
+boxshape = boxbody.Shape
+lidshape = lidbody.Shape
+rear = liddoc.getObject(liddoc.getObject("Body001").Tip.Name).Shape
+for nm, s in (("box", boxshape), ("lid top", lidshape), ("lid rear", rear)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        raise RuntimeError("%s is not a single closed valid solid" % nm)
+
+# the pockets must actually be holes, not surface scratches
+expect = 2 * 3.14159265 * r_hole ** 2 * MT
+print("=== 19-magnet_closure ===")
+for line in log:
+    print("  " + line)
+print("  magnet Ø%.2f x %.2f, hole Ø%.2f (fit %.2f/side)" % (MD, MT, 2 * r_hole, MFIT))
+print("  centres  x = +/-%.2f   y = %.2f   (side wall %.1f..%.1f, front face %.1f)"
+      % (x_mag, y_mag, W / 2 - SW, W / 2, -D / 2))
+print("  box  pocket z %.2f..%.2f  (flush with the rim)" % (H - MT, H))
+print("  lid  pocket z %.2f..%.2f  skin %.2f above, plate is %.2f thick"
+      % (H, H + MT, LTT - MT, LTT))
+print("  expected material removed per part: %.2f mm3" % expect)
+for nm, sk in (("SketchMagnetBox", sk_b), ("SketchMagnetLid", sk_l)):
+    print("  %s: DoF=%d fully=%s extLinks=%d"
+          % (nm, sk.solve(), sk.FullyConstrained, len(sk.ExternalGeometry)))
+print("  box  vol %.2f  valid=%s solids=%d" % (boxshape.Volume, boxshape.isValid(),
+                                               len(boxshape.Solids)))
+print("  lid  vol %.2f  valid=%s solids=%d" % (lidshape.Volume, lidshape.isValid(),
+                                               len(lidshape.Solids)))
+print("  static interference box^lidtop %.4f  box^lidrear %.4f mm3"
+      % (boxshape.common(lidshape).Volume, boxshape.common(rear).Volume))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")

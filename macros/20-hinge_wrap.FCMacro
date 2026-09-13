@@ -1,0 +1,312 @@
+# -*- coding: utf-8 -*-
+"""
+20-hinge_wrap.FCMacro — MagicCardBox
+
+Bradley's hinge enhancement (2026-09-13): carry the lid's rear panel down to the BOTTOM
+of the knuckle circle so it wraps the box's roll, and move the box's footer relief back
+to the FRONT of the circle so the longer panel can still swing 90 deg.
+
+WHY — the junction was the weak point, not the panel
+-----------------------------------------------------
+Measured cross-section of the lid going from the knuckle out to the panel:
+
+    y = 31 (knuckle centre)      63.2 mm2
+    y = 33                       67.3 mm2
+    y = 35                       82.6 mm2
+    y = 36.5 (panel)           6360.0 mm2
+
+and across the width at y = 33 there was material ONLY at x -53..-48 and 48..53 — two
+5 mm necks out of 106. The panel meets the knuckle on a TANGENT LINE (the circle touches
+the plane y = Depth/2 at exactly one point), so the junction section is ~1% of the panel's.
+Widening the panel earlier did not change this; the load still went through two necks.
+
+Extending the panel down to the bottom of the circle fills the wedge between the circle
+and the panel, and gives the lid a full-width bearing wrap around the box's roll instead
+of two point contacts.
+
+WHY THE FOOTER HAS TO MOVE, WITH THE ARITHMETIC
+-----------------------------------------------
+Corner paths, tracked over the 0-90 deg swing about the axis at (Depth/2 - HingeAxisFromRear,
+HingeAxisFromBottom) = (31, 5):
+
+    corner            radius   at 90 deg      lowest in swing
+    now  inner (36,5)  5.000   (31,  0)        0.000
+    now  outer (38,5)  7.000   (31, -2)       -2.000
+    NEW  inner (36,0)  7.071   (26,  0)       -2.071
+    NEW  outer (38,0)  8.602   (26, -2)       -3.602
+
+At 90 deg the new panel edge lands at y = 26.0, z = -2.0 — the front of the circle, flat on
+the bed. So the footer relief front edge moves 30.5 -> 25.5:
+
+    was:  Depth/2 - HingeAxisFromRear - HingeSwingClearance                   = 30.5
+    now:  Depth/2 - HingeAxisFromRear - HingeTabRadius - HingeSwingClearance  = 25.5
+
+That the panel edge lands exactly on the circle's front is NOT a coincidence and NOT
+robust: rotating 90 deg maps a closed-frame z-offset onto a y-offset, so a panel bottom
+`HingeAxisFromBottom` below the axis lands `HingeAxisFromBottom` in front of it, and that
+equals the circle front only while HingeAxisFromBottom == HingeTabRadius. If those two ever
+differ, the two edges stop lining up — the relief expression above is written to follow
+HingeTabRadius, which is the one that matters for clearing the circle.
+
+THE WRAP RELIEF — this is what finally fixes the zero-clearance defect
+----------------------------------------------------------------------
+The lid's inner face at y = Depth/2 is TANGENT to the box's HengeFilet roll: both sit at
+radius exactly 5.000 from the axis, so the lid rode on the box for the whole swing (a ~95 mm
+line contact that would weld in a print-in-place part). Extending the panel alone does not
+fix that — the tangent point is still there.
+
+So this macro also cuts a concentric relief in the lid: a cylinder of radius
+`HingeWrapRadius = HingeTabRadius + HingeSwingClearance` about the hinge axis, pocketed
+symmetrically across `Width - 2*HingeTabThickness` so it does NOT touch the knuckles at the
+ends. That sets the lid's wrap surface back to 5.5 against the box's 5.0 roll — 0.5 mm of
+clearance over the whole arc.
+
+Do NOT instead shrink HengeFilet: a fillet on that edge centres at (Depth/2 - R, R), which
+is on the hinge axis only at R = 5. R = 4.5 was measured to drive 18.086 mm3 of interference.
+
+A RULE-5 ACCIDENT FIXED ON THE WAY
+-----------------------------------
+Sketch001's Constraints[14]/[20] drove the panel's bottom as
+`HingeTabThickness + HingeTabClearance` = 5.4 below PanelBottomZ, landing on z = 5. That only
+hit the hinge axis because HingeTabThickness and HingeTabRadius both happen to be 5 — a tab
+THICKNESS was being used to set a vertical DROP. Rebound to `PanelBottomZ - PanelWrapZ`.
+
+Idempotent. Restores every expression it touched if the result is invalid or interferes.
+
+Run: Macro -> Macros... -> 20-hinge_wrap -> Execute
+"""
+
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+rearbody = liddoc.getObject("Body001")          # LidBack
+log = []
+
+# ---------------------------------------------------------------- Params
+NEW_VARS = [
+    ("PanelWrapZ", "App::PropertyLength", 0.0, "Hinge",
+     "Z at which the lid's rear panel stops. DERIVED as HingeAxisFromBottom - HingeTabRadius, "
+     "i.e. the BOTTOM of the knuckle circle, so the panel wraps the box's roll instead of "
+     "meeting it on a tangent line. Driving the footer relief with it is what keeps the 90 deg "
+     "swing legal."),
+    ("HingeWrapRadius", "App::PropertyLength", 5.5, "Hinge",
+     "Radius of the lid's concentric wrap relief. DERIVED as HingeTabRadius + "
+     "HingeSwingClearance. The box's roll sits at HingeTabRadius; without this the lid's inner "
+     "face is tangent to it at the SAME radius and rides on it for the whole swing."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+    else:
+        log.append("Param %s already present (%s) - left alone" % (name, getattr(vs, name)))
+
+vs.setExpression("PanelWrapZ", "HingeAxisFromBottom - HingeTabRadius")
+vs.setExpression("HingeWrapRadius", "HingeTabRadius + HingeSwingClearance")
+log.append("PanelWrapZ = HingeAxisFromBottom - HingeTabRadius = %s" % vs.PanelWrapZ)
+log.append("HingeWrapRadius = HingeTabRadius + HingeSwingClearance = %s" % vs.HingeWrapRadius)
+
+errs = []
+if vs.PanelWrapZ.Value < -1e-9:
+    errs.append("PanelWrapZ %.3f < 0: the panel would reach below the box floor"
+                % vs.PanelWrapZ.Value)
+if vs.HingeWrapRadius.Value <= vs.HingeTabRadius.Value:
+    errs.append("HingeWrapRadius %.3f must exceed HingeTabRadius %.3f"
+                % (vs.HingeWrapRadius.Value, vs.HingeTabRadius.Value))
+if vs.HingeWrapRadius.Value >= vs.HingeTabRadius.Value + vs.HingeTabClearance.Value + 1e-9:
+    pass  # wrap may exceed the socket clearance; the knuckles are excluded from the cut
+relief_front = (vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+                - vs.HingeTabRadius.Value - vs.HingeSwingClearance.Value)
+if relief_front <= -vs.Depth.Value / 2:
+    errs.append("footer relief would consume the whole footprint")
+if errs:
+    raise RuntimeError("hinge wrap is inconsistent: " + "; ".join(errs))
+
+# ---------------------------------------------------------------- remember, for rollback
+undo = []
+
+
+def set_expr(obj, path, expr):
+    undo.append((obj, path, dict(obj.ExpressionEngine).get(path)))
+    obj.setExpression(path, expr)
+
+
+def rollback(why):
+    for obj, path, old in reversed(undo):
+        obj.setExpression(path, old)
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+    raise RuntimeError("%s - expressions restored" % why)
+
+
+# ---------------------------------------------------------------- 1. panel down to the circle
+sk1 = liddoc.getObject("Sketch001")
+E_DROP = P + "PanelBottomZ - " + P + "PanelWrapZ"
+for idx in (14, 20):
+    set_expr(sk1, "Constraints[%d]" % idx, E_DROP)
+log.append("Lid/Sketch001 Constraints[14],[20] -> PanelBottomZ - PanelWrapZ (%.2f)"
+           % (vs.PanelBottomZ.Value - vs.PanelWrapZ.Value))
+
+# ---------------------------------------------------------------- 2. footer relief moves back
+sk6 = boxdoc.getObject("Sketch006")
+E_RELIEF = (P + "Depth / 2 - " + P + "HingeAxisFromRear - " + P + "HingeTabRadius - "
+            + P + "HingeSwingClearance")
+set_expr(sk6, "Constraints[8]", E_RELIEF)
+log.append("MagicCardBox/Sketch006 Constraints[8] -> front of the circle (%.2f)" % relief_front)
+
+# ---------------------------------------------------------------- 3. concentric wrap relief
+def origin_plane(body, role):
+    for f in body.Origin.OriginFeatures:
+        if f.Role == role:
+            return f
+    raise RuntimeError("body %s has no %s" % (body.Name, role))
+
+
+skw = liddoc.getObject("SketchHingeWrap")
+if skw is None:
+    skw = rearbody.newObject("Sketcher::SketchObject", "SketchHingeWrap")
+    skw.AttachmentSupport = [(origin_plane(rearbody, "YZ_Plane"), "")]
+    skw.MapMode = "FlatFace"
+    skw.Label = "HingeWrap"
+    log.append("Lid/SketchHingeWrap created")
+else:
+    for path, _ in list(skw.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            skw.setExpression(path, None)
+    skw.deleteAllConstraints()
+    skw.deleteAllGeometry()
+    log.append("Lid/SketchHingeWrap rebuilt")
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+rw = vs.HingeWrapRadius.Value
+
+# A RECTANGLE, not the r=HingeWrapRadius circle this first used.
+#
+# The circle relieved only where r < HingeWrapRadius, i.e. z 2.71..7.29. That cleared the
+# tangent-point ride, but at 90 deg open the panel's inner face (y = Depth/2) maps to
+# z_print = 0 and lay flat against the box's floor underside over y_print 26..28.71 —
+# measured contact at (+/-48, 26..28.71, 0), which in a print-in-place part welds.
+#
+# Raising the footer relief to clear it does NOT work: that makes the box's bottom-rear
+# edge CONCAVE, and HengeFilet then ADDS material there instead of rolling it away
+# (measured +7.56 mm3, contact restored). Fillets fill concave edges.
+#
+# So set the panel's INNER face back by HingeSwingClearance over the wrap region. The
+# outer face stays at Depth/2 + WallThickness, so the print-pose bed plane at z = -2 is
+# untouched. Panel is locally WallThickness - HingeSwingClearance thick.
+y_in = ay - vs.HingeTabRadius.Value          # well inside; no lid material lives here
+y_out = vs.Depth.Value / 2 + vs.HingeSwingClearance.Value
+z_lo = vs.PanelWrapZ.Value - vs.HingeSwingClearance.Value
+z_hi = vs.PanelBottomZ.Value
+pts = [V(y_in, z_lo, 0), V(y_out, z_lo, 0), V(y_out, z_hi, 0), V(y_in, z_hi, 0)]
+for i in range(4):
+    skw.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    skw.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+skw.addConstraint(Sketcher.Constraint("Horizontal", 0))
+skw.addConstraint(Sketcher.Constraint("Horizontal", 2))
+skw.addConstraint(Sketcher.Constraint("Vertical", 1))
+skw.addConstraint(Sketcher.Constraint("Vertical", 3))
+i_x0 = skw.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 1, y_in))
+i_x1 = skw.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, y_out))
+i_y0 = skw.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, z_lo))
+i_y1 = skw.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, z_hi))
+skw.setExpression("Constraints[%d]" % i_x0, P + "Depth / 2 - " + P + "HingeAxisFromRear - "
+                  + P + "HingeTabRadius")
+skw.setExpression("Constraints[%d]" % i_x1, P + "Depth / 2 + " + P + "HingeSwingClearance")
+skw.setExpression("Constraints[%d]" % i_y0, P + "PanelWrapZ - " + P + "HingeSwingClearance")
+skw.setExpression("Constraints[%d]" % i_y1, P + "PanelBottomZ")
+
+pkw = liddoc.getObject("PocketHingeWrap")
+if pkw is None:
+    pkw = rearbody.newObject("PartDesign::Pocket", "PocketHingeWrap")
+    pkw.Profile = skw
+    pkw.Label = "HingeWrap"
+    log.append("Lid/PocketHingeWrap created")
+pkw.Type = "Length"
+pkw.Midplane = False          # clear the legacy flag FIRST - see CLAUDE.md
+pkw.SideType = "Symmetric"
+pkw.setExpression("Length", P + "Width - 2 * " + P + "HingeTabThickness")
+skw.Visibility = False
+rearbody.Tip = pkw
+log.append("PocketHingeWrap: r %.2f, symmetric %.1f wide (knuckles at |x|>%.1f untouched)"
+           % (rw, vs.Width.Value - 2 * vs.HingeTabThickness.Value,
+              vs.Width.Value / 2 - vs.HingeTabThickness.Value))
+
+for n in DOCS:
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+# ---------------------------------------------------------------- verify
+bad = []
+for n in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(n).Objects:
+        if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error")):
+            bad.append("%s/%s" % (n, o.Name))
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Tip.Shape
+rear = liddoc.getObject(rearbody.Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+if rear.distToShape(top)[0] > 1e-6:
+    rollback("lid bodies no longer touch - would export as two meshes")
+
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 15, 30, 45, 60, 75, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+worst = max(v for _, v, _ in sweep)
+if worst > 1.0:
+    rollback("swing interferes by %.3f mm3" % worst)
+
+# print-pose bed check: box, panel and top plate must still share the lowest plane
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+float_by = box.BoundBox.ZMin - lowest
+
+print("=== 20-hinge_wrap ===")
+for line in log:
+    print("  " + line)
+print("  panel bottom  z %.2f -> %.2f   (circle spans z %.2f..%.2f)"
+      % (az, vs.PanelWrapZ.Value, az - vs.HingeTabRadius.Value, az + vs.HingeTabRadius.Value))
+print("  footer relief front edge y -> %.2f  (circle front y = %.2f)"
+      % (relief_front, ay - vs.HingeTabRadius.Value))
+print("  wrap relief r %.2f vs box roll r %.2f  -> %.2f mm clearance"
+      % (rw, vs.HingeTabRadius.Value, rw - vs.HingeTabRadius.Value))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  SketchHingeWrap: DoF=%d fully=%s" % (skw.solve(), skw.FullyConstrained))
+print("  box vol %.2f   lid rear vol %.2f   lid top vol %.2f"
+      % (box.Volume, rear.Volume, top.Volume))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")
