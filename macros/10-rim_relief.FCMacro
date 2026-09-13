@@ -1,0 +1,133 @@
+# -*- coding: utf-8 -*-
+"""
+10-rim_relief.FCMacro — MagicCardBox  (last piece of the D7 fix)
+
+Run AFTER 07 and 08.
+
+After the knuckle rebuild the lid rotates essentially free, but one small collision remains:
+the lid's TOP PLATE grazes the box's rear top rim as it starts to lift. It is a separate
+defect from the hinge — it exists because the plate's underside rests exactly on the box
+rim at Z = Height, and the plate pivots about an axis ~62 mm below, so its rear underside
+dips slightly before swinging clear.
+
+Swept 0..90 deg in 1 deg steps and intersected with the box:
+
+    envelope  vol 26.27 mm^3   Y 30.041..34.500   Z 66.799..67.000
+              i.e. 4.459 mm in from the rear face, 0.201 mm down from the top
+
+So the relief is cut across the rear rim, full width (the plate is full width):
+
+    Y from  Depth/2 - HingeAxisFromRear - HingeSwingClearance   (= 29.0, covers 4.459 + margin)
+    Z from  Height - RimRelief                                  (= 66.0, covers 0.201 + margin)
+
+The Y extent is tied to HingeAxisFromRear because the dip is a consequence of where the
+axis sits relative to the rear face; RimRelief is an explicit knob for the Z depth.
+
+Note this is NOT a print-in-place fusing concern: the part prints with the lid open ~90 deg,
+where the plate stands clear of the rim entirely. It only matters for closing the lid after
+printing.
+
+Run: Macro -> Macros... -> 10-rim_relief -> Execute
+"""
+
+import FreeCAD
+import Part
+import Sketcher
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject("Body")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+if "RimRelief" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "RimRelief", "Hinge",
+                   "Depth of the relief cut into the box's rear top rim so the lid's top "
+                   "plate can swing without grazing it. Measured need 0.201 mm; 1.0 leaves "
+                   "margin over HingeSwingClearance.")
+    vs.RimRelief = 1.0
+    log.append("Param RimRelief = 1.0 added")
+
+E_Y0 = P + "Depth / 2 - " + P + "HingeAxisFromRear - " + P + "HingeSwingClearance"
+E_Y1 = P + "Depth"
+E_Z0 = P + "Height - " + P + "RimRelief"
+E_Z1 = P + "Height + " + P + "WallThickness"
+
+y0 = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value - vs.HingeSwingClearance.Value
+y1 = vs.Depth.Value
+z0 = vs.Height.Value - vs.RimRelief.Value
+z1 = vs.Height.Value + vs.WallThickness.Value
+V = FreeCAD.Vector
+
+sk = doc.getObject("Sketch009")
+if sk is None:
+    yz = None
+    for f in body.Origin.OriginFeatures:
+        if f.Role == "YZ_Plane":
+            yz = f
+            break
+    sk = body.newObject("Sketcher::SketchObject", "Sketch009")
+    sk.AttachmentSupport = [(yz, "")]
+    sk.MapMode = "FlatFace"
+    pts = [V(y0, z0, 0), V(y1, z0, 0), V(y1, z1, 0), V(y0, z1, 0)]
+    for i in range(4):
+        sk.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+    for i in range(4):
+        sk.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 0))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 2))
+    sk.addConstraint(Sketcher.Constraint("Vertical", 1))
+    sk.addConstraint(Sketcher.Constraint("Vertical", 3))
+    a = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 1, y0))
+    b = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, y1))
+    c = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, z0))
+    d = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, z1))
+    log.append("Sketch009 created (rear rim relief)")
+else:
+    idx = {}
+    for i, cc in enumerate(sk.Constraints):
+        idx[(cc.Type, cc.First, cc.FirstPos, cc.Second, cc.SecondPos)] = i
+    a = idx[("DistanceX", -1, 1, 0, 1)]
+    b = idx[("DistanceX", -1, 1, 1, 1)]
+    c = idx[("DistanceY", -1, 1, 0, 1)]
+    d = idx[("DistanceY", -1, 1, 2, 1)]
+    log.append("Sketch009 exists - re-asserting expressions")
+for i, e in ((a, E_Y0), (b, E_Y1), (c, E_Z0), (d, E_Z1)):
+    sk.setExpression("Constraints[%d]" % i, e)
+
+pk = doc.getObject("Pocket006")
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", "Pocket006")
+    pk.Profile = sk
+    log.append("Pocket006 created")
+pk.Type = "ThroughAll"
+pk.Midplane = True
+sk.Visibility = False
+body.Tip = pk
+log.append("Body tip set to Pocket006")
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 10-rim_relief ===")
+for line in log:
+    print("  " + line)
+print("relief: Y %.2f..%.2f   Z %.2f..%.2f   (needed Y from 30.041, Z from 66.799)"
+      % (y0, y1, z0, z1))
+print("Sketch009: DoF=%d fully=%s" % (sk.solve(), sk.FullyConstrained))
+b_ = body.Shape.BoundBox
+print("Body: vol=%.2f valid=%s solids=%d  Y %.2f..%.2f Z %.2f..%.2f"
+      % (body.Shape.Volume, body.Shape.isValid(), len(body.Shape.Solids),
+         b_.YMin, b_.YMax, b_.ZMin, b_.ZMax))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")

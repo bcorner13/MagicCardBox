@@ -1,0 +1,179 @@
+# -*- coding: utf-8 -*-
+"""
+08-hinge_knuckle_lid.FCMacro — MagicCardBox  (lid side of the D7 fix)
+
+Run AFTER 07-hinge_knuckle_box.FCMacro.
+
+Rewrites two sketches in place. No new features, no reordering, no tree surgery:
+
+  Sketch001 (RearWall) : rectangle now spans Z = PanelBottomZ .. Height instead of 0..Height,
+                         re-dimensioned from the sketch origin. The old constraint [10]
+                         anchored a corner to GeoId -5 — an orphaned cached projection
+                         (ExternalGeometry empty, ExternalGeo populated), the same construct
+                         that silently relocated the box's hinge pin.
+  Sketch002 (HingeTab) : was an R10 SECTOR closed by straight edges. Now one closed outline:
+                         a 270 deg arc of radius HingeTabRadius about the hinge axis, plus a
+                         rectangular NECK reaching out to the rear panel.
+  Sketch003 (pin hole) : untouched — already bound to HingePinDia + HingePinClearance*2, so
+                         it follows the new 0.4 mm clearance by itself (6.0 -> 6.8).
+
+WHY ONE PROFILE AND NOT TWO PADS
+---------------------------------
+The disc alone will not do: it must reach the panel, and the nearest panel point is
+sqrt(HingeAxisFromRear^2 + (PanelBottomZ - HingeAxisFromBottom)^2) = 7.43 mm from the axis,
+while the knuckle is capped at 5 mm by the side wall (min(Depth/2 - HingeAxisFromRear,
+HingeAxisFromBottom)). So a neck is structural.
+
+Padding the neck as a SEPARATE feature fails: a new feature lands at the body tip, i.e.
+after the disc, so the disc pads as a disconnected solid and PartDesign rejects it. All
+three routes out of that hit "The graph must be a DAG":
+  * Body.insertObject to move the neck earlier
+  * reassigning Pad002.Profile to the later sketch (a feature may not profile a sketch that
+    follows it)
+  * rebuilding the tail around a swapped Tip
+Putting both shapes in ONE closed outline sidesteps the ordering problem entirely.
+
+WHY A DISC AT ALL
+-----------------
+A sector is not a surface of revolution, so rotating it sweeps outside its own outline and
+digs into the box — 372.73 mm^3 at 45 deg, starting at 5 deg of opening (defect D7). Only
+the part of the tab within HingeTabRadius of the axis is swept-safe, because the box's
+socket (macro 07) is a full disc of HingeTabRadius + HingeTabClearance. The neck is the one
+piece that does sweep, and macro 07's Sketch007 slot is cut to receive it.
+
+FRAMES, verified via getGlobalPlacement rather than assumed
+  Sketch001: local x -> global X, local y -> global Z, origin at global (0, 34.5, 0)
+  Sketch002: local x -> global Y, local y -> global Z, origin at global (48.5, 0, 67),
+             so the hinge axis is local (Depth/2 - HingeAxisFromRear,
+             HingeAxisFromBottom - Height).
+
+Run: Macro -> Macros... -> 08-hinge_knuckle_lid -> Execute
+"""
+
+import math
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+W = vs.Width.Value
+H = vs.Height.Value
+D = vs.Depth.Value
+WT = vs.WallThickness.Value
+PB = vs.PanelBottomZ.Value
+aY = D / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+R = vs.HingeTabRadius.Value
+V = FreeCAD.Vector
+
+E_HALF_W = P + "Width / 2"
+E_PB = P + "PanelBottomZ"
+E_H = P + "Height"
+E_AXIS_Y = P + "Depth / 2 - " + P + "HingeAxisFromRear"
+E_AXIS_Z_LOCAL = P + "HingeAxisFromBottom - " + P + "Height"
+E_R = P + "HingeTabRadius"
+E_NECK_REAR = P + "Depth / 2 + " + P + "WallThickness"
+E_NECK_TOP = P + "PanelBottomZ - " + P + "Height"
+
+
+def wipe(sk):
+    for path, _ in list(sk.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            sk.setExpression(path, None)
+    sk.deleteAllConstraints()
+    sk.deleteAllGeometry()
+    n = len(sk.ExternalGeometry)
+    while len(sk.ExternalGeometry) > 0:
+        sk.delExternal(0)
+    return n
+
+
+# ---- 1. RearWall: raise the bottom to PanelBottomZ --------------------------
+sk1 = ld.getObject("Sketch001")
+wipe(sk1)
+pts = [V(-W / 2, PB, 0), V(W / 2, PB, 0), V(W / 2, H, 0), V(-W / 2, H, 0)]
+for i in range(4):
+    sk1.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    sk1.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+sk1.addConstraint(Sketcher.Constraint("Horizontal", 0))
+sk1.addConstraint(Sketcher.Constraint("Horizontal", 2))
+sk1.addConstraint(Sketcher.Constraint("Vertical", 1))
+sk1.addConstraint(Sketcher.Constraint("Vertical", 3))
+a = sk1.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 1, W / 2))
+b = sk1.addConstraint(Sketcher.Constraint("DistanceX", 3, 1, -1, 1, W / 2))
+c = sk1.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 1, PB))
+d = sk1.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 2, 1, H))
+for i, e in ((a, E_HALF_W), (b, E_HALF_W), (c, E_PB), (d, E_H)):
+    sk1.setExpression("Constraints[%d]" % i, e)
+log.append("Sketch001: panel now Z %.2f..%.2f, centred from the sketch origin" % (PB, H))
+
+# ---- 2. HingeTab: one closed outline = 270 deg arc + neck ------------------
+sk2 = ld.getObject("Sketch002")
+n_ext = wipe(sk2)
+cx, cy = aY, aZ - H
+x1, y1 = D / 2 + WT, PB - H
+A = V(cx, cy + R, 0)          # top of the disc      - arc start
+B = V(cx + R, cy, 0)          # right of the disc    - arc end
+C = V(x1, cy, 0)
+E = V(x1, y1, 0)
+F = V(cx, y1, 0)
+circ = Part.Circle(V(cx, cy, 0), V(0, 0, 1), R)
+sk2.addGeometry(Part.ArcOfCircle(circ, math.pi / 2, 2 * math.pi), False)   # 0: 270 deg
+sk2.addGeometry(Part.LineSegment(B, C), False)                             # 1
+sk2.addGeometry(Part.LineSegment(C, E), False)                             # 2
+sk2.addGeometry(Part.LineSegment(E, F), False)                             # 3
+sk2.addGeometry(Part.LineSegment(F, A), False)                             # 4
+sk2.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+sk2.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+sk2.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+sk2.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 4, 1))
+sk2.addConstraint(Sketcher.Constraint("Coincident", 4, 2, 0, 1))
+sk2.addConstraint(Sketcher.Constraint("Horizontal", 1))
+sk2.addConstraint(Sketcher.Constraint("Vertical", 2))
+sk2.addConstraint(Sketcher.Constraint("Horizontal", 3))
+sk2.addConstraint(Sketcher.Constraint("Vertical", 4))
+g1 = sk2.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, cx))   # arc centre X
+g2 = sk2.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, cy))   # arc centre Y
+g3 = sk2.addConstraint(Sketcher.Constraint("Radius", 0, R))
+g4 = sk2.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 2, 1, x1))   # neck rear edge
+g5 = sk2.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 3, 1, y1))   # neck top edge
+g6 = sk2.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 4, 1, cx))   # neck front edge
+g7 = sk2.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 1, 1, cy))   # neck bottom edge
+for i, e in ((g1, E_AXIS_Y), (g2, E_AXIS_Z_LOCAL), (g3, E_R), (g4, E_NECK_REAR),
+             (g5, E_NECK_TOP), (g6, E_AXIS_Y), (g7, E_AXIS_Z_LOCAL)):
+    sk2.setExpression("Constraints[%d]" % i, e)
+log.append("Sketch002: disc R=%.2f + neck to the panel; dropped %d external link(s)"
+           % (R, n_ext))
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 08-hinge_knuckle_lid ===")
+for line in log:
+    print("  " + line)
+for nm in ("Sketch001", "Sketch002"):
+    s = ld.getObject(nm)
+    print("%s: DoF=%d fully=%s extLinks=%d" % (nm, s.solve(), s.FullyConstrained,
+                                               len(s.ExternalGeometry)))
+for nm in ("Body", "Body001"):
+    sh = ld.getObject(nm).Shape
+    bb = sh.BoundBox
+    print("%s: vol=%.2f valid=%s solids=%d  Y %.2f..%.2f  Z %.2f..%.2f"
+          % (nm, sh.Volume, sh.isValid(), len(sh.Solids), bb.YMin, bb.YMax, bb.ZMin, bb.ZMax))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- sweep-test before saving.")

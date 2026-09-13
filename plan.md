@@ -150,7 +150,7 @@ reloaded document:
 
 | **D6** ⛔ **OPEN — blocks Depth** | `Depth` 69 → 80 | The lid's **rear wall does not move with Depth**. Box rear goes to Y=40 while the rear wall stays at Y 19.52…36.50 — floating inside the box, detached from the hinge. The lid *top plate* tracks correctly (overhang stays 2.00). | `Lid/Sketch001` has **`AttachmentSupport = []`** — no attachment at all. Its `.AttachmentOffset.Base.z = -Depth` expression is bound but **completely inert**, because with no support the attachment engine never applies the offset. The real position is a hard-coded `Placement` of Y = 34.5, correct only at Depth 69. Invisible to the audit, which does not check Placements — a bound-but-inert expression looks like compliance. |
 
-| **D7** ⛔ **OPEN — blocks the whole design** | opening the lid at all | The lid **cannot rotate**, footer or no footer. Two pre-existing collisions with the box, both present before the footer existed: (a) the rear panel's inner face vs the box **rear wall and floor** — starts at 5°, peaks at 372.7 mm³ at 45°, spanning X −43.5…43.5 (i.e. *between* the hinge tabs), Y 31.6…34.5, Z 0…2.9; (b) the top plate's underside vs the box **rear top rim**, 22 mm³ at 5°, Z 66.8…67. Total relief needed over 0–90° = **487.7 mm³**. | The hinge axis sits **5 mm inside the rear face and 5 mm above the floor**, so the rear panel's inner face is only 5 mm from the axis and sweeps a cylinder spanning Y 24.5…34.5 — straight through the rear wall. That cylinder is **tangent to the rear outer face**, so any relief large enough to clear the panel removes the 2 mm rear wall entirely at axis height. The assembly's Revolute joint rotates happily because assembly joints do no collision detection. |
+| **D7** ✅ **FIXED 2026-09-13** | opening the lid at all | The lid **cannot rotate**, footer or no footer. Two pre-existing collisions with the box, both present before the footer existed: (a) the rear panel's inner face vs the box **rear wall and floor** — starts at 5°, peaks at 372.7 mm³ at 45°, spanning X −43.5…43.5 (i.e. *between* the hinge tabs), Y 31.6…34.5, Z 0…2.9; (b) the top plate's underside vs the box **rear top rim**, 22 mm³ at 5°, Z 66.8…67. Total relief needed over 0–90° = **487.7 mm³**. | The hinge axis sits **5 mm inside the rear face and 5 mm above the floor**, so the rear panel's inner face is only 5 mm from the axis and sweeps a cylinder spanning Y 24.5…34.5 — straight through the rear wall. That cylinder is **tangent to the rear outer face**, so any relief large enough to clear the panel removes the 2 mm rear wall entirely at axis height. The assembly's Revolute joint rotates happily because assembly joints do no collision detection. |
 
 ---
 
@@ -253,3 +253,63 @@ restructure and needs its own approved plan.
 
 **Until then:** changing `Depth` gives you a correct box with a rear wall in the wrong
 place. `Width` and `Height` remain unsafe for the separate reasons D2/D3.
+
+---
+
+## D7 fixed — knuckle hinge (2026-09-13)
+
+`macros/07-hinge_knuckle_box` + `08-hinge_knuckle_lid` + `10-rim_relief`.
+
+**Why the old hinge could never rotate.** The tab/recess was a SECTOR (an R10 arc closed by
+straight edges). A sector is not a surface of revolution, so rotating it sweeps outside its
+own outline and digs into the box. A full disc in a disc socket rotates with zero
+interference at any angle — that is the whole fix.
+
+**Two constraints, both measured, both forced:**
+
+1. `HingeTabRadius` had to come DOWN from 10 to 5. The largest full knuckle that fits inside
+   the side wall is `min(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom)` = 5 mm. The old
+   10 mm is exactly why the sector burst out of the side wall.
+2. The lid's rear panel cannot reach the bottom. Sweeping the real panel against the real
+   box, interference only stops once the panel starts at Z = 10:
+
+   | panel bottom | Z=0 | Z=5 | Z=8 | **Z=10** | Z=12 |
+   |---|---|---|---|---|---|
+   | interference | 372.73 | 291.36 | 69.01 | **21.99** | 21.99 mm³ |
+
+   It flattens at 10 (the residual is the separate rim nick). That matches the derivation
+   `panel bottom >= HingeAxisFromBottom + HingeAxisFromRear`. `PanelBottomZ` is therefore
+   BOUND, not free — it is now tied to the top of the socket circle
+   (`HingeAxisFromBottom + HingeTabRadius + HingeTabClearance` = 10.4), which satisfies the
+   law and makes the neck slot close exactly on the arc.
+
+**Result: zero interference across 0–95°**, from 372.73 mm³. All three solids valid, closed,
+single. Every print-in-place gap is **0.4 mm**, one full nozzle width, verified from the
+solids and not just the Params:
+
+| interface | box | lid | gap |
+|---|---|---|---|
+| pin / hole | r 3.000 | r 3.400 | 0.400 radial |
+| tab / socket | r 5.400 | r 5.000 | 0.400 radial |
+| tab thickness / socket depth | 5.4 deep | 5.0 thick | 0.400 axial |
+
+### Three traps hit while building this — all encoded in the macro headers
+
+* **PartDesign will not reorder features.** The neck must pad BEFORE the disc (the disc
+  alone does not touch the raised panel and pads as a disconnected solid). All three routes
+  out — `Body.insertObject`, reassigning `Pad.Profile` to a later sketch, and rebuilding the
+  tail around a swapped `Tip` — fail with "The graph must be a DAG". The fix was to put both
+  shapes in ONE closed outline.
+* **`newObject` did not advance the Body tip** for the Mirrored created with empty
+  `Originals`, so the mirrored slot silently stayed out of the solid chain and only the +X
+  side was cut. `Body.Tip` must be set explicitly.
+* **The neck slot was eating half the pin.** A straight inner edge at the axis cut clean
+  through it — measured, the pin's end face came back a half-disc (area 14.137 =
+  π·3²/2) with its centroid pulled off-axis to Y 28.23. The slot's inner boundary must be
+  the socket ARC, which leaves everything inside 5.4 mm untouched.
+* Bonus: `a - b + c` is not `a - (b + c)`. Missing parentheses put the slot floor at +0.4
+  instead of −0.4. And pinning an arc endpoint with `DistanceY = centre ± R` is degenerate
+  (DoF −2); a Vertical from centre to endpoint is the non-degenerate equivalent.
+
+**Still open:** D2 (`Width` — rear panel grows off-centre) and D3 (`Height`). D6 is now moot
+for the panel bottom but `Lid/Sketch001`'s attachment is still empty — see macro 03.

@@ -1,0 +1,244 @@
+# -*- coding: utf-8 -*-
+"""
+07-hinge_knuckle_box.FCMacro — MagicCardBox  (box side of the D7 fix)
+
+Rebuilds the box's hinge features as a KNUCKLE SOCKET: a full circular recess about the
+hinge axis with the pin standing at its centre, plus a slot through which the lid's neck
+passes. Run 08-hinge_knuckle_lid.FCMacro afterwards for the matching lid side.
+
+WHY THE OLD SHAPE COULD NOT WORK (defect D7)
+---------------------------------------------
+The old tab/recess was a SECTOR (an R10 arc closed by straight edges). A sector is not a
+surface of revolution, so rotating it sweeps outside its own outline and digs into the box.
+Measured: 372.73 mm^3 at 45 deg, starting at 5 deg of opening.
+
+A full disc IS a surface of revolution: rotating it changes nothing, so a disc tab in a
+disc socket rotates freely with zero interference at any angle. Only the NECK connecting
+the disc to the lid's panel sweeps, and that is handled by a slot.
+
+THE TWO HARD CONSTRAINTS, both measured
+----------------------------------------
+1. Largest full knuckle that fits inside the side wall at the current axis:
+   min(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom) = min(5, 5) = 5 mm.
+   With HingePinDia 6 and HingePinClearance 0.4 the hole needs r=3.4, leaving 1.6 mm of
+   knuckle wall. So HingeTabRadius must come DOWN from 10 to 5 — the old 10 was the reason
+   the sector burst out of the side wall in the first place.
+
+2. The lid's rear panel cannot reach the bottom. Sweeping the real panel against the real
+   box, the interference only stops once the panel starts at Z = 10:
+
+        panel bottom  Z=0    Z=5     Z=8    Z=10    Z=12
+        interference  372.73 291.36  69.01  21.99   21.99   mm^3
+
+   It flattens at Z=10 (the residual 21.99 is a separate top-plate/rim nick, not the
+   panel). That matches the derivation exactly:
+
+        panel bottom >= HingeAxisFromBottom + (Depth/2 - axisY)
+                     =  HingeAxisFromBottom + HingeAxisFromRear  =  5 + 5 = 10
+
+   `PanelBottomZ` is therefore BOUND to that law plus HingeSwingClearance, not left as a
+   free number — get it wrong and the failure is silent.
+
+CLEARANCES — 0.4 mm everywhere, for a 0.4 mm nozzle
+----------------------------------------------------
+HingePinClearance 0 -> 0.4 (radial, so the hole becomes Pin + 0.8 on diameter) and
+HingeTabClearance 0 -> 0.4. A full nozzle width on every print-in-place mating face so
+nothing fuses. The hinge will feel loose (0.8 mm diametral play); tighten after a test
+print by editing the Params, which now drive every affected feature.
+
+Run: Macro -> Macros... -> 07-hinge_knuckle_box -> Execute
+"""
+
+import math
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+
+# name -> new value (these already exist; macro 01 deliberately never overwrites, so the
+# change has to be explicit here)
+UPDATES = {
+    "HingeTabRadius": 5.0,
+    "HingePinClearance": 0.4,
+    "HingeTabClearance": 0.4,
+}
+NEW_VARS = [
+    ("PanelBottomZ", "App::PropertyLength", 10.5, "Hinge",
+     "Height at which the lid's rear panel starts. BOUND, not free: the panel must clear "
+     "the swept zone or it digs into the box rear wall. Law is "
+     "HingeAxisFromBottom + HingeAxisFromRear, plus HingeSwingClearance for margin."),
+]
+# Panel bottom must clear the swept zone: measured minimum is
+# HingeAxisFromBottom + HingeAxisFromRear = 10. Binding it instead to the TOP OF THE SOCKET
+# CIRCLE (HingeAxisFromBottom + HingeTabRadius + HingeTabClearance = 10.4) satisfies that and
+# makes the neck slot close exactly on the circle, so the slot profile needs no sliver segment.
+E_PANEL_BOTTOM = (P + "HingeAxisFromBottom + " + P + "HingeTabRadius + "
+                  + P + "HingeTabClearance")
+
+E_AXIS_Y = P + "Depth / 2 - " + P + "HingeAxisFromRear"
+E_AXIS_Z = P + "HingeAxisFromBottom"
+E_SOCKET_R = P + "HingeTabRadius + " + P + "HingeTabClearance"
+E_PIN_DIA = P + "HingePinDia"
+E_CUT_DEPTH = P + "HingeTabThickness + " + P + "HingeTabClearance"
+E_SLOT_REAR = P + "Depth"
+
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject("Body")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+# ---- 1. Params -------------------------------------------------------------
+for name, val in UPDATES.items():
+    old = getattr(vs, name)
+    setattr(vs, name, val)
+    log.append("Param %s: %s -> %s" % (name, old, getattr(vs, name)))
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s added" % name)
+vs.setExpression("PanelBottomZ", E_PANEL_BOTTOM)
+log.append("PanelBottomZ bound to HingeAxisFromBottom + HingeAxisFromRear + HingeSwingClearance")
+
+aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+R = vs.HingeTabRadius.Value + vs.HingeTabClearance.Value
+PIN_R = vs.HingePinDia.Value / 2.0
+PB = vs.PanelBottomZ.Value
+DEPTH = vs.Depth.Value
+V = FreeCAD.Vector
+
+# ---- 2. Sketch001: socket disc + pin, replacing the old sector --------------
+sk = doc.getObject("Sketch001")
+for path, _ in list(sk.ExpressionEngine):
+    if re.match(r"\.?Constraints\[\d+\]$", path):
+        sk.setExpression(path, None)
+sk.deleteAllConstraints()
+sk.deleteAllGeometry()
+sk.addGeometry(Part.Circle(V(aY, aZ, 0), V(0, 0, 1), R), False)        # 0 socket
+sk.addGeometry(Part.Circle(V(aY, aZ, 0), V(0, 0, 1), PIN_R), False)    # 1 pin
+i_cy = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, aY))
+i_cz = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, aZ))
+i_r = sk.addConstraint(Sketcher.Constraint("Radius", 0, R))
+sk.addConstraint(Sketcher.Constraint("Coincident", 1, 3, 0, 3))
+i_d = sk.addConstraint(Sketcher.Constraint("Diameter", 1, vs.HingePinDia.Value))
+for i, e in ((i_cy, E_AXIS_Y), (i_cz, E_AXIS_Z), (i_r, E_SOCKET_R), (i_d, E_PIN_DIA)):
+    sk.setExpression("Constraints[%d]" % i, e)
+log.append("Sketch001 rebuilt as socket disc R=%.2f with pin dia %.2f" % (R, 2 * PIN_R))
+
+# ---- 3. Sketch007 + Pocket005: the neck slot --------------------------------
+# The slot's INNER boundary must be the socket circle, not a straight edge at the axis.
+# A straight inner edge at x = aY cuts clean through the standing pin: measured, the pin's
+# end face came out as a half-disc (area 14.137 = pi*3^2 / 2) with its centroid pulled off
+# the axis to Y 28.23. Bounding the slot by the socket arc (radius HingeTabRadius +
+# HingeTabClearance = 5.4) leaves everything inside 5.4 mm untouched, and the pin at r=3.0
+# sits safely inside that.
+#
+# Profile: 180 deg arc (circle bottom -> right -> top) closed by three lines out to Depth.
+# PanelBottomZ is bound to the circle's top, so the slot closes exactly on the arc with no
+# sliver segment.
+E_SLOT_BOTTOM = E_AXIS_Z + " - (" + E_SOCKET_R + ")"
+E_SLOT_TOP = E_AXIS_Z + " + (" + E_SOCKET_R + ")"
+
+sl = doc.getObject("Sketch007")
+if sl is None:
+    sl = body.newObject("Sketcher::SketchObject", "Sketch007")
+    sl.AttachmentSupport = sk.AttachmentSupport
+    sl.MapMode = sk.MapMode
+    sl.AttachmentOffset = FreeCAD.Placement(sk.AttachmentOffset)
+    log.append("Sketch007 created (neck slot)")
+else:
+    for path, _ in list(sl.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            sl.setExpression(path, None)
+    sl.deleteAllConstraints()
+    sl.deleteAllGeometry()
+    log.append("Sketch007 rebuilt")
+
+A = V(aY, aZ - R, 0)          # circle bottom  - arc start
+Cc = V(aY, aZ + R, 0)         # circle top     - arc end
+Dd = V(DEPTH, aZ + R, 0)
+Ee = V(DEPTH, aZ - R, 0)
+sl.addGeometry(Part.ArcOfCircle(Part.Circle(V(aY, aZ, 0), V(0, 0, 1), R),
+                                -math.pi / 2, math.pi / 2), False)   # 0: 180 deg, rear half
+sl.addGeometry(Part.LineSegment(Cc, Dd), False)                       # 1
+sl.addGeometry(Part.LineSegment(Dd, Ee), False)                       # 2
+sl.addGeometry(Part.LineSegment(Ee, A), False)                        # 3
+sl.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+sl.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+sl.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+sl.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
+sl.addConstraint(Sketcher.Constraint("Horizontal", 1))
+sl.addConstraint(Sketcher.Constraint("Vertical", 2))
+sl.addConstraint(Sketcher.Constraint("Horizontal", 3))
+j_cx = sl.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, aY))
+j_cy = sl.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, aZ))
+j_r = sl.addConstraint(Sketcher.Constraint("Radius", 0, R))
+j_rear = sl.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 1, 2, DEPTH))
+# Pinning the arc endpoints with DistanceY = centre +/- R is DEGENERATE — it asks the solver
+# to place a point on a circle at exactly the circle's extremum, which reads as a tangency
+# and over-constrains (measured: DoF -2, sketch Invalid). A Vertical between the centre and
+# each endpoint removes exactly one DoF each and lands on the same two points.
+sl.addConstraint(Sketcher.Constraint("Vertical", 0, 3, 0, 2))   # centre - arc end  (top)
+sl.addConstraint(Sketcher.Constraint("Vertical", 0, 3, 0, 1))   # centre - arc start (bottom)
+for i, e in ((j_cx, E_AXIS_Y), (j_cy, E_AXIS_Z), (j_r, E_SOCKET_R),
+             (j_rear, E_SLOT_REAR)):
+    sl.setExpression("Constraints[%d]" % i, e)
+
+pk5 = doc.getObject("Pocket005")
+if pk5 is None:
+    pk5 = body.newObject("PartDesign::Pocket", "Pocket005")
+    pk5.Profile = sl
+    pk5.Type = "Length"
+    log.append("Pocket005 created")
+pk5.setExpression("Length", E_CUT_DEPTH)
+sl.Visibility = False
+
+mir = doc.getObject("Mirrored001")
+if mir is None:
+    mir = body.newObject("PartDesign::Mirrored", "Mirrored001")
+    log.append("Mirrored001 created (slot on both side walls)")
+# NB: the property is `Originals`, not `Transformed` (FreeCAD 1.1).
+mir.Originals = [pk5]
+yz = None
+for f in body.Origin.OriginFeatures:
+    if f.Role == "YZ_Plane":
+        yz = f
+        break
+if yz is None:
+    raise RuntimeError("Body origin has no YZ_Plane to mirror about")
+mir.MirrorPlane = (yz, [""])
+# newObject did NOT advance the tip here (the Mirrored was created with empty Originals),
+# so the mirrored slot stayed out of the solid chain entirely and only the +X side was cut.
+body.Tip = mir
+log.append("Body tip set to Mirrored001")
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 07-hinge_knuckle_box ===")
+for line in log:
+    print("  " + line)
+print("axis (Y,Z) = (%.2f, %.2f)   socket R = %.2f   pin dia = %.2f   cut depth = %s"
+      % (aY, aZ, R, 2 * PIN_R, doc.getObject("Pocket").Length))
+print("PanelBottomZ = %s" % vs.PanelBottomZ)
+print("Sketch001: DoF=%d fully=%s   Sketch007: DoF=%d fully=%s"
+      % (sk.solve(), sk.FullyConstrained, sl.solve(), sl.FullyConstrained))
+b = body.Shape.BoundBox
+print("Body: vol=%.2f  valid=%s solids=%d  bbox Y %.2f..%.2f Z %.2f..%.2f"
+      % (body.Shape.Volume, body.Shape.isValid(), len(body.Shape.Solids),
+         b.YMin, b.YMax, b.ZMin, b.ZMax))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (Lid will be wrong until macro 08 runs)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")
