@@ -174,8 +174,45 @@ the audit checks Length/Radius but **not TaperAngle**, so it passed while unboun
 
 New Params: `FooterHeight` 2.0, `FooterTaperAngle` 36°, `HingeSwingClearance` 0.5.
 
-**Verified: the footer no longer obstructs the lid at any angle.** What remains is D7,
-which is a hinge-geometry problem, not a footer problem.
+**Superseded the same day by `macros/06-footer_arc_relief.FCMacro`** — see below. Run 04
+first (it creates the Params and the pad bindings), then 06.
+
+### 06 — arc relief, replacing the straight slot
+
+The straight slot's front edge at 19.0 mm was the forward reach of the tab's
+`HingeTabRadius` circle *at axis height*. Within the 0–90° swing the tab never goes there
+— its far corner sweeps **rearward**, not forward — so the true forward limit is set by the
+rear panel's outer-bottom corner:
+
+```
+R_swing = sqrt((HingeAxisFromRear + WallThickness)² + HingeAxisFromBottom²)
+        = sqrt(7² + 5²) = 8.6023 mm
+```
+
+The swept envelope's forward boundary is a **cylinder about the hinge axis**, so the cut
+face should be that cylinder, not a plane. Sketch006 on `YZ_Plane`: arc of radius
+`R_swing + HingeSwingClearance` centred on the axis, closed by lines out to `Depth` and
+along `Z = 0` / `Z = -FooterHeight`, pocketed ThroughAll + Midplane.
+
+| | straight slot (04) | arc (06) |
+|---|---|---|
+| footer edge at Z=0 | 19.00 | 21.89 |
+| footer edge at Z=−2 | 19.00 | 23.68 |
+| gap to open lid at Z=0 | 5.50 mm | 2.59 mm |
+| gap to open lid at Z=−2 | 5.50 mm | **0.83 mm** |
+| footer volume | 98140.19 | 98869.38 (+729.19 mm³) |
+
+At zero clearance the arc reaches **Y = 24.500 at Z = −FooterHeight — exactly where the
+opened lid's rear-panel edge lands**, so the footer would meet the open lid flush along the
+bottom. The residual 0.83 mm *is* `HingeSwingClearance`, and it is also what keeps the two
+faces from fusing in a print-in-place part. It cannot be closed further without the lid
+binding; closing it properly means rounding the lid panel's end into a knuckle matching the
+arc, which is a lid change (see D7).
+
+Verified: zero footer interference across 0–115°, body a single valid closed solid,
+smallest face 5.27 mm² (no slivers), no material anywhere rearward of the arc.
+
+**What remains is D7** — a hinge-geometry problem, not a footer problem.
 
 ---
 

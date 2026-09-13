@@ -1,0 +1,183 @@
+# -*- coding: utf-8 -*-
+"""
+06-footer_arc_relief.FCMacro — MagicCardBox
+
+SUPERSEDES the straight-slot relief cut by macro 04. Run this after 04; it deletes 04's
+Sketch005/Pocket003 and replaces them with an arc-profile cut.
+
+THE PROBLEM WITH THE STRAIGHT SLOT
+-----------------------------------
+Macro 04 cut a flat-walled slot with its front edge at
+
+    Depth/2 - HingeAxisFromRear - HingeTabRadius - HingeSwingClearance  =  19.0 mm
+
+That bound is the forward reach of the hinge tab's radius-HingeTabRadius circle *at axis
+height*. Within the 0..90 deg swing the tab never actually goes there — its far corner
+sweeps rearward, not forward — so the real forward limit is set by the rear panel's
+outer-bottom corner, at radius
+
+    R_swing = sqrt((HingeAxisFromRear + WallThickness)^2 + HingeAxisFromBottom^2)
+            = sqrt(7^2 + 5^2) = 8.6023 mm
+
+The straight slot therefore removed ~5.5 mm of footer for nothing, leaving a visible gap
+between the footer and the lid when open.
+
+THE FIX: cut to the arc, not to a plane
+----------------------------------------
+The swept envelope's forward boundary is a CYLINDER about the hinge axis, so the footer's
+cut face should be that cylinder. Where the flat wall sat at a single Y, the arc follows
+the swing:
+
+    at Z = 0              arc front edge = 22.500   (flat slot was at 19.0)
+    at Z = -FooterHeight  arc front edge = 24.500
+
+and 24.500 is EXACTLY where the opened lid's rear-panel edge lands at 90 deg. So with zero
+clearance the footer would meet the open lid flush along the bottom. With
+HingeSwingClearance = 0.5 the arc sits at 21.894 / 23.682, leaving 0.82 mm at the bottom —
+that residual IS the swing clearance, and it is also what stops the two faces fusing in a
+print-in-place part. It cannot be closed further without the lid binding.
+
+Sketch is on YZ_Plane (local x = global Y, local y = global Z), profile closed by:
+  arc (radius R_swing + HingeSwingClearance, centred on the hinge axis)
+  -> horizontal line rearward at Z = -FooterHeight
+  -> vertical line up at Y = Depth (well clear of the taper flare)
+  -> horizontal line back along Z = 0
+Pocketed ThroughAll + Midplane so it cuts the full width in one feature.
+
+NOTE: this renumbers faces again, so the assembly Revolute joint will go Invalid.
+Re-run 05-repair_hinge_joint afterwards.
+
+Idempotent: re-running finds the existing sketch/pocket and only re-asserts expressions.
+
+Run: Macro -> Macros... -> 06-footer_arc_relief -> Execute
+"""
+
+import math
+import FreeCAD
+import Part
+import Sketcher
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+
+E_CY = P + "Depth / 2 - " + P + "HingeAxisFromRear"          # arc centre, local x
+E_CZ = P + "HingeAxisFromBottom"                              # arc centre, local y
+E_R = ("sqrt((" + P + "HingeAxisFromRear + " + P + "WallThickness)^2 + "
+       + P + "HingeAxisFromBottom^2) + " + P + "HingeSwingClearance")
+E_BOT = "-" + P + "FooterHeight"
+E_REAR = P + "Depth"
+
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject("Body")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+D = vs.Depth.Value
+aY = D / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+R = math.hypot(vs.HingeAxisFromRear.Value + vs.WallThickness.Value,
+               vs.HingeAxisFromBottom.Value) + vs.HingeSwingClearance.Value
+BOT = -vs.FooterHeight.Value
+
+# ---- remove macro 04's straight slot ---------------------------------------
+for name in ("Pocket003", "Sketch005"):
+    o = doc.getObject(name)
+    if o is not None:
+        doc.removeObject(name)
+        log.append("removed %s (straight slot from macro 04)" % name)
+
+# ---- arc-profile sketch ----------------------------------------------------
+sk = doc.getObject("Sketch006")
+fresh = sk is None
+if fresh:
+    yz = None
+    for f in body.Origin.OriginFeatures:
+        if f.Role == "YZ_Plane":
+            yz = f
+            break
+    if yz is None:
+        raise RuntimeError("Body origin has no YZ_Plane")
+    sk = body.newObject("Sketcher::SketchObject", "Sketch006")
+    sk.AttachmentSupport = [(yz, "")]
+    sk.MapMode = "FlatFace"
+
+    V = FreeCAD.Vector
+    ax = V(aY, aZ, 0)
+    # arc endpoints: on Z=0 and on Z=BOT, both on the forward side of the axis
+    A = V(aY - math.sqrt(R * R - aZ * aZ), 0.0, 0)
+    B = V(aY - math.sqrt(R * R - (BOT - aZ) ** 2), BOT, 0)
+    C = V(D, BOT, 0)
+    Dp = V(D, 0.0, 0)
+    a0 = math.atan2(A.y - aZ, A.x - aY)
+    a1 = math.atan2(B.y - aZ, B.x - aY)
+    sk.addGeometry(Part.ArcOfCircle(Part.Circle(ax, V(0, 0, 1), R), a0, a1), False)  # 0
+    sk.addGeometry(Part.LineSegment(B, C), False)                                    # 1
+    sk.addGeometry(Part.LineSegment(C, Dp), False)                                   # 2
+    sk.addGeometry(Part.LineSegment(Dp, A), False)                                   # 3
+
+    sk.addConstraint(Sketcher.Constraint("Coincident", 0, 2, 1, 1))
+    sk.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
+    sk.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
+    sk.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 1))
+    sk.addConstraint(Sketcher.Constraint("Vertical", 2))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", 3))
+    sk.addConstraint(Sketcher.Constraint("PointOnObject", 3, 1, -1))   # D on the X axis
+    i_cy = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 0, 3, aY))
+    i_cz = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 0, 3, aZ))
+    i_r = sk.addConstraint(Sketcher.Constraint("Radius", 0, R))
+    i_bot = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, 1, 1, BOT))
+    i_rear = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, 2, 1, D))
+    log.append("created Sketch006 (arc + 3 lines)")
+else:
+    idx = {}
+    for i, c in enumerate(sk.Constraints):
+        idx[(c.Type, c.First, c.FirstPos, c.Second, c.SecondPos)] = i
+    i_cy = idx[("DistanceX", -1, 1, 0, 3)]
+    i_cz = idx[("DistanceY", -1, 1, 0, 3)]
+    i_r = idx[("Radius", 0, 0, -2000, 0)]
+    i_bot = idx[("DistanceY", -1, 1, 1, 1)]
+    i_rear = idx[("DistanceX", -1, 1, 2, 1)]
+    log.append("Sketch006 already exists — re-asserting expressions")
+
+for i, e in ((i_cy, E_CY), (i_cz, E_CZ), (i_r, E_R), (i_bot, E_BOT), (i_rear, E_REAR)):
+    sk.setExpression("Constraints[%d]" % i, e)
+
+# ---- pocket through the full width -----------------------------------------
+pk = doc.getObject("Pocket004")
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", "Pocket004")
+    pk.Profile = sk
+    log.append("created Pocket004")
+pk.Type = "ThroughAll"
+pk.Midplane = True
+sk.Visibility = False
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 06-footer_arc_relief ===")
+for line in log:
+    print("  " + line)
+print("Sketch006: DoF=%d fullyConstrained=%s extLinks=%d OutList=%s"
+      % (sk.solve(), sk.FullyConstrained, len(sk.ExternalGeometry),
+         sorted({o.Name for o in sk.OutList})))
+print("arc radius = %.4f mm (R_swing %.4f + clearance %.2f)"
+      % (R, R - vs.HingeSwingClearance.Value, vs.HingeSwingClearance.Value))
+print("arc front edge: Z=0 -> Y=%.3f   Z=%.1f -> Y=%.3f"
+      % (aY - math.sqrt(R*R - aZ*aZ), BOT, aY - math.sqrt(R*R - (BOT-aZ)**2)))
+b = body.Shape.BoundBox
+print("Body: vol=%.3f  bbox Y %.2f..%.2f  Z %.2f..%.2f  valid=%s solids=%d"
+      % (body.Shape.Volume, b.YMin, b.YMax, b.ZMin, b.ZMax,
+         body.Shape.isValid(), len(body.Shape.Solids)))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (the assembly Joint is expected - re-run macro 05)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED -- verify the swing, then save.")

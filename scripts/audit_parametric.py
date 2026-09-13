@@ -51,12 +51,23 @@ DIMENSIONAL_TYPES = {
 # they are geometric, not design dimensions. Exempt (matches the Weight exemption).
 RIGHT_ANGLE_RAD = 1.5707963267948966
 
-# PartDesign Pad/Pocket Type enum: 0 Length, 1 TwoLengths, 2 UpToLast, 3 UpToFirst,
-# 4 UpToFace, 5 ThroughAll. Length is only active for Length/TwoLengths; Length2 only
-# for TwoLengths. Anything else makes those numeric props inert (binding them would be
-# noise), so the audit must not flag inactive feature dims.
-LENGTH_ACTIVE_TYPES = {0, 1}
-LENGTH2_ACTIVE_TYPES = {1}
+# PartDesign Pad/Pocket Type enum. The inherited table here was WRONG and produced a
+# false positive the moment a feature used Type index 1. Verified empirically against
+# FreeCAD 1.1.3 on 2026-09-13 via getEnumerationsOfProperty("Type"):
+#
+#   Pad:    0 Length, 1 UpToLast,   2 UpToFirst, 3 UpToFace, 4 TwoLengths, 5 UpToShape
+#   Pocket: 0 Length, 1 ThroughAll, 2 UpToFirst, 3 UpToFace, 4 TwoLengths, 5 UpToShape
+#
+# Two errors in the old table: it claimed TwoLengths was index 1 (it is 4), and it
+# assumed Pad and Pocket share an enum (they differ at index 1 — UpToLast vs ThroughAll).
+# Effect: a Pocket with Type=ThroughAll (index 1) was read as TwoLengths, so its inert
+# Length/Length2 were reported as unbound dimensions. Same family of defect as the
+# DIMENSIONAL_TYPES bug — see the reference_audit_parametric_type_bug memory.
+#
+# Length is only active for Length(0) and TwoLengths(4); Length2 only for TwoLengths(4).
+# Conveniently the active sets coincide for Pad and Pocket, so one pair still suffices.
+LENGTH_ACTIVE_TYPES = {0, 4}
+LENGTH2_ACTIVE_TYPES = {4}
 
 
 def extract_xml(fcstd_path):

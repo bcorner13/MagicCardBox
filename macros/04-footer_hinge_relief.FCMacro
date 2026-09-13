@@ -2,6 +2,16 @@
 """
 04-footer_hinge_relief.FCMacro — MagicCardBox
 
+!!! SUPERSEDED by 06-footer_arc_relief.FCMacro. !!!
+The straight-walled slot this macro cuts has its front edge at
+`Depth/2 - HingeAxisFromRear - HingeTabRadius - HingeSwingClearance` = 19.0 mm, which is
+the forward reach of the tab's radius-HingeTabRadius circle at axis height. Within the
+0..90 deg swing the tab never goes there, so this removed ~5.5 mm of footer for nothing
+and left a visible gap to the opened lid. Macro 06 replaces the slot with an arc about the
+hinge axis and recovers 729 mm^3 of footer. This macro is kept because the Params work and
+the swept-interference measurement in the header are still the record of how the relief
+was derived; run it first, then 06.
+
 Cuts the hinge relief in the footer (Pad001) so the lid can actually swing.
 
 WHAT THE MEASUREMENT SAID — read this before assuming small notches would do

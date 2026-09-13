@@ -259,6 +259,23 @@ change made things worse.
   enum that reports geometric constraints (Tangent, Perpendicular, Block) as unbound
   dimensions and misses real `Radius`. Do not replace `scripts/audit_parametric.py` with
   the canonical copy. See the `reference_audit_parametric_type_bug` memory.
+- **Second enum bug, found and fixed here 2026-09-13** — present in the Clocks copy too,
+  so it is still live in every other project. The Pad/Pocket `Type` table was wrong:
+  it claimed `TwoLengths` was index 1 (it is **4**) and assumed Pad and Pocket share an
+  enum (they differ at index 1). Verified against FreeCAD 1.1.3 via
+  `getEnumerationsOfProperty("Type")`:
+
+  ```
+  Pad:    0 Length, 1 UpToLast,   2 UpToFirst, 3 UpToFace, 4 TwoLengths, 5 UpToShape
+  Pocket: 0 Length, 1 ThroughAll, 2 UpToFirst, 3 UpToFace, 4 TwoLengths, 5 UpToShape
+  ```
+
+  Effect: a Pocket with `Type=ThroughAll` was read as TwoLengths, so its **inert**
+  `Length`/`Length2` were reported as unbound dimensions. It stayed dormant until
+  `Pocket004` became the project's first ThroughAll feature. Corrected to
+  `LENGTH_ACTIVE_TYPES = {0, 4}`, `LENGTH2_ACTIVE_TYPES = {4}`.
+- **`TaperAngle` is not checked at all.** The footer's 36° taper sat unbound through a
+  clean audit until it was bound by hand. Treat a clean audit as necessary, not sufficient.
 
 ---
 
