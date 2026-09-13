@@ -146,7 +146,15 @@ log.append("BaseFeature: Fillet -> %s ; %s -> %s"
 new_order = [n for n in order_before if n not in (FLUTE_SK, FLUTE_PK)] + [FLUTE_SK, FLUTE_PK]
 body.Group = [boxdoc.getObject(n) for n in new_order]
 body.Tip = flute_pk
-log.append("Group reordered, Tip -> %s" % FLUTE_PK)
+
+# Moving the Tip does NOT move the visibility flag. Leave it and the 3D view keeps drawing
+# the OLD tip - which here is the un-fluted shape, so the box renders smooth while the Tip,
+# the exports and every measurement are correctly fluted. Caught only by eye, 2026-09-13.
+for o in body.Group:
+    if getattr(o, "Visibility", False) and o.Name != flute_pk.Name:
+        o.Visibility = False
+flute_pk.Visibility = True
+log.append("Group reordered, Tip and visibility -> %s" % FLUTE_PK)
 
 # ---------------------------------------------------------------- re-pick, one at a time
 # Each fillet must compute before the next one's base shape exists, so recompute between.
