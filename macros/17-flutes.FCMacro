@@ -1,0 +1,214 @@
+# -*- coding: utf-8 -*-
+"""
+17-flutes.FCMacro — MagicCardBox
+
+Vertical fluting on the box's front and side walls. The lid's top plate is deliberately
+left plain — see ORIENTATION.
+
+HOW A FLUTE IS MADE
+-------------------
+Each flute is a cylinder subtracted from the wall. The cylinder's centre sits OUTSIDE the
+face by (FluteRadius - FluteDepth), so the groove bites exactly FluteDepth deep:
+
+    centre offset from the face = FluteRadius - FluteDepth
+    groove width at the surface = 2*sqrt(FluteRadius^2 - (FluteRadius - FluteDepth)^2)
+
+At the defaults (R 2.5, depth 0.7) that is a 3.47 mm wide groove on a ~4.0 mm pitch, so the
+flats between flutes are ~0.5 mm — reeded, not sparse.
+
+Circles, deliberately. After the tab's 270 deg arc flipped solver branch at W85 D55 H55 and
+two arc profiles came out at DoF -2, nothing in this model uses an arc where a full circle
+will do. A circle has no branch ambiguity and no endpoint to pin.
+
+ORIENTATION — why this prints clean
+------------------------------------
+The part prints with the lid open 90 deg, box upright.
+  * Box walls stand vertical, so wall flutes run ALONG the extrusion direction: no
+    overhangs, no supports, and silk filament catches each groove separately.
+  * The lid's TOP PLATE is NOT fluted: in the print pose it lies against the build plate,
+    so grooves there would be cut into the first layer.
+
+WHERE FLUTES MUST NOT GO
+------------------------
+  * `FluteStartZ` (12.0) keeps them above the hinge socket, whose top is at
+    HingeAxisFromBottom + HingeTabRadius + HingeTabClearance = 10.4. Behind that socket the
+    side wall is only SideWallThickness - (HingeTabThickness + HingeTabClearance) = 0.6 mm
+    thick — a 0.7 mm flute there would cut straight through. The plain band below reads as
+    a base course against the footer taper.
+  * The REAR gets no box flutes: the lid's rear panel covers Z PanelBottomZ..Height, so
+    fluting the box's rear wall would only weaken a hidden surface.
+  * `FluteMargin` keeps them off the vertical corners.
+  * The finger slot simply interrupts the front flutes — intended.
+
+The macro refuses rather than building something that breaches a wall.
+
+Run: Macro -> Macros... -> 17-flutes -> Execute
+"""
+
+import re
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+mb = FreeCAD.getDocument("MagicCardBox")
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+V = FreeCAD.Vector
+log = []
+
+NEW_VARS = [
+    ("FluteRadius", "App::PropertyLength", 2.5, "Flutes",
+     "Radius of the cylinder that cuts each flute. With FluteDepth it sets the groove's "
+     "width at the surface: 2*sqrt(R^2 - (R-depth)^2)."),
+    ("FluteDepth", "App::PropertyLength", 0.7, "Flutes",
+     "How deep each flute bites into the wall. Must leave at least two perimeters "
+     "(0.8 mm) of wall behind it."),
+    ("FluteStartZ", "App::PropertyLength", 12.0, "Flutes",
+     "Height at which fluting begins. Must clear the hinge socket top, because the side "
+     "wall is only 0.6 mm thick behind the socket."),
+    ("FluteMargin", "App::PropertyLength", 6.0, "Flutes",
+     "Keep-off distance from each vertical corner, so corners stay crisp."),
+    ("FluteCountFront", "App::PropertyInteger", 24, "Flutes",
+     "Flutes across the front wall. Changing a COUNT needs this macro re-run; "
+     "radius/depth/start/margin are live."),
+    ("FluteCountSide", "App::PropertyInteger", 15, "Flutes",
+     "Flutes along each side wall."),
+]
+for name, typ, default, group, docstr in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, group, docstr)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+
+W = vs.Width.Value
+D = vs.Depth.Value
+H = vs.Height.Value
+WT = vs.WallThickness.Value
+R = vs.FluteRadius.Value
+DP = vs.FluteDepth.Value
+MG = vs.FluteMargin.Value
+NF = int(vs.FluteCountFront)
+NS = int(vs.FluteCountSide)
+SOCKET_TOP = (vs.HingeAxisFromBottom.Value + vs.HingeTabRadius.Value
+              + vs.HingeTabClearance.Value)
+
+if DP > WT - 0.8:
+    raise RuntimeError("FluteDepth %.2f leaves less than two perimeters in a %.2f wall"
+                       % (DP, WT))
+if DP >= R:
+    raise RuntimeError("FluteDepth %.2f must be less than FluteRadius %.2f" % (DP, R))
+if vs.FluteStartZ.Value <= SOCKET_TOP:
+    raise RuntimeError("FluteStartZ %.2f must clear the socket top %.2f (side wall is only "
+                       "%.2f mm behind it)" % (vs.FluteStartZ.Value, SOCKET_TOP,
+                                               vs.SideWallThickness.Value
+                                               - (vs.HingeTabThickness.Value
+                                                  + vs.HingeTabClearance.Value)))
+if NF < 2 or NS < 2:
+    raise RuntimeError("flute counts must be >= 2")
+
+E_OFF = P + "FluteRadius - " + P + "FluteDepth"          # centre offset outside the face
+E_R = P + "FluteRadius"
+
+
+def pos_expr(axis, i, count):
+    """i-th flute position along `axis` ('Width' or 'Depth'), spread between the margins."""
+    span = "(" + P + axis + " - 2 * " + P + "FluteMargin)"
+    start = "-(" + P + axis + " / 2 - " + P + "FluteMargin)"
+    return "%s + %d * %s / %d" % (start, i, span, count - 1)
+
+
+def wipe(sk):
+    for path, _ in list(sk.ExpressionEngine):
+        if re.match(r"\.?Constraints\[\d+\]$", path):
+            sk.setExpression(path, None)
+    sk.deleteAllConstraints()
+    sk.deleteAllGeometry()
+
+
+def add_circle(sk, cx, cy, ex, ey):
+    g = sk.addGeometry(Part.Circle(V(cx, cy, 0), V(0, 0, 1), R), False)
+    a = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, g, 3, cx))
+    b = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, g, 3, cy))
+    c = sk.addConstraint(Sketcher.Constraint("Radius", g, R))
+    sk.setExpression("Constraints[%d]" % a, ex)
+    sk.setExpression("Constraints[%d]" % b, ey)
+    sk.setExpression("Constraints[%d]" % c, E_R)
+
+
+# ============ BOX: front + both sides, one sketch, one pocket ==================
+body = mb.getObject("Body")
+sk = mb.getObject("Sketch012")
+if sk is None:
+    xy = None
+    for f in body.Origin.OriginFeatures:
+        if f.Role == "XY_Plane":
+            xy = f
+            break
+    sk = body.newObject("Sketcher::SketchObject", "Sketch012")
+    sk.AttachmentSupport = [(xy, "")]
+    sk.MapMode = "FlatFace"
+    sk.Label = "Flutes"
+    log.append("Sketch012 created")
+else:
+    wipe(sk)
+    log.append("Sketch012 rebuilt")
+sk.setExpression(".AttachmentOffset.Base.z", P + "Height")
+
+front_y = -D / 2 - (R - DP)
+E_FRONT_Y = "-(" + P + "Depth / 2) - (" + E_OFF + ")"
+for i in range(NF):
+    add_circle(sk, -(W / 2 - MG) + i * (W - 2 * MG) / (NF - 1), front_y,
+               pos_expr("Width", i, NF), E_FRONT_Y)
+for sgn, tag in ((1, "+X"), (-1, "-X")):
+    cx = sgn * (W / 2 + (R - DP))
+    ex = ("%s(" % ("" if sgn > 0 else "-")) + P + "Width / 2 + (" + E_OFF + ")" + ")"
+    for i in range(NS):
+        add_circle(sk, cx, -(D / 2 - MG) + i * (D - 2 * MG) / (NS - 1),
+                   ex, pos_expr("Depth", i, NS))
+log.append("Sketch012: %d front + %d x2 side flutes" % (NF, NS))
+
+pk = mb.getObject("Pocket009")
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", "Pocket009")
+    pk.Profile = sk
+    pk.Label = "Flutes"
+    log.append("Pocket009 created")
+pk.Type = "Length"
+pk.setExpression("Length", P + "Height - " + P + "FluteStartZ")
+sk.Visibility = False
+body.Tip = pk
+
+# ============ LID TOP: deliberately NOT fluted =================================
+# Bradley's call, and he is right. In the print pose the lid's TOP PLATE ends up lying
+# against the build plate, so flutes there would be cut into the first layer — fighting
+# first-layer squish and adhesion for no visual gain. Box walls only.
+
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+import math
+width_at_surface = 2 * math.sqrt(R * R - (R - DP) ** 2)
+print("=== 17-flutes ===")
+for line in log:
+    print("  " + line)
+print("  groove: %.2f mm wide x %.2f deep, pitch front %.2f / side %.2f (flat between %.2f)"
+      % (width_at_surface, DP, (W - 2 * MG) / (NF - 1), (D - 2 * MG) / (NS - 1),
+         (W - 2 * MG) / (NF - 1) - width_at_surface))
+print("  flutes run Z %.1f..%.1f ; socket top %.1f" % (vs.FluteStartZ.Value, H, SOCKET_TOP))
+for tag, o in (("box", body), ("lid plate", ld.getObject("Body")),
+               ("lid back", ld.getObject("Body001"))):
+    s = o.Shape
+    print("  %-10s vol=%.1f valid=%s solids=%d closed=%s"
+          % (tag, s.Volume, s.isValid(), len(s.Solids), s.isClosed()))
+problems = []
+for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")
