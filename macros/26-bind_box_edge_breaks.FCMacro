@@ -1,0 +1,140 @@
+# -*- coding: utf-8 -*-
+"""
+26-bind_box_edge_breaks.FCMacro — MagicCardBox
+
+Binds the two edge-break features Bradley added to the box, which the audit flags:
+
+    UNBOUND FEATURE DIM: Chamfer.Size      = 1.0   has no expression binding
+    UNBOUND FEATURE DIM: Fillet004.Radius  = 0.7   has no expression binding
+
+Two Params, not one, and neither reuses an existing knob - they are different interfaces
+(project rule 5, one knob one concern):
+
+  FooterReliefChamfer 1.0   Box/Chamfer, on the full-width underside edge at
+                            (0, 25.5, 0), 107 mm long - the front edge of the footer
+                            relief. Chamfered to break the overhang the slicer was
+                            warning about there.
+
+  SocketFlatFillet    0.7   Box/Fillet004, on the 5.4 mm edge at (50.8, 27.49, 0) -
+                            the front edge of the socket flat cut by macro 23, inside
+                            the side wall. Eases that edge; NOT clearance-critical, but
+                            it sits next to the swept region, so if it is ever enlarged
+                            re-check the 90 deg gap. Filleting a concave edge ADDS
+                            material - that is how raising the footer relief silently
+                            restored a contact earlier (+7.56 mm3).
+
+Deliberately NOT reused here:
+  * EdgeBreakRadius 0.6 and RimFilletRadius 0.8 are top-rim cosmetics on a different
+    face of the part.
+  * HingeFilletRadius is derived and geometry-critical - see the concentricity rule.
+
+Idempotent: never overwrites an existing Param value. Restores the literals if the
+result is invalid or the swing regresses.
+
+Run: Macro -> Macros... -> 26-bind_box_edge_breaks -> Execute
+"""
+
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+log = []
+
+NEW_VARS = [
+    ("FooterReliefChamfer", 1.0, "Footer",
+     "Chamfer on the box's full-width underside edge at the front of the footer relief. "
+     "Breaks the overhang the slicer warned about. Its own knob: this is a print-overhang "
+     "break on the underside, not a rim cosmetic."),
+    ("SocketFlatFillet", 0.7, "Hinge",
+     "Fillet on the front edge of the hinge socket's bottom flat, inside the side wall. "
+     "Eases that edge. Not clearance-critical at 0.7, but it sits beside the region the "
+     "neck sweeps - filleting a CONCAVE edge adds material, so re-check the 90 deg gap if "
+     "this is enlarged."),
+]
+for name, default, group, doc in NEW_VARS:
+    if name not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", name, group, doc)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+    else:
+        log.append("Param %s already present (%s) - left alone" % (name, getattr(vs, name)))
+FreeCAD.getDocument("Params").recompute(None, True, True)
+
+BINDINGS = [("Chamfer", "Size", "FooterReliefChamfer"),
+            ("Fillet004", "Radius", "SocketFlatFillet")]
+
+missing = [n for n, _, _ in BINDINGS if boxdoc.getObject(n) is None]
+if missing:
+    raise RuntimeError("expected box features not found: %s" % ", ".join(missing))
+
+previous = {}
+for name, prop, var in BINDINGS:
+    o = boxdoc.getObject(name)
+    previous[name] = getattr(o, prop).Value
+    o.setExpression(prop, P + var)
+    log.append("%s.%s -> %s%s" % (name, prop, P, var))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    for name, prop, _ in BINDINGS:
+        o = boxdoc.getObject(name)
+        o.setExpression(prop, None)
+        setattr(o, prop, previous[name])
+    recompute_all()
+    raise RuntimeError("%s - literals restored (%s)" % (why, previous))
+
+
+recompute_all()
+
+bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Shape
+rear = liddoc.getObject(liddoc.getObject("Body001").Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 30, 60, 85, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+if max(v for _, v, _ in sweep) > 0.01:
+    rollback("swing interferes")
+if min(d for dg, _, d in sweep if dg >= 30) < 0.35:
+    rollback("running clearance dropped below 0.35 mm")
+
+print("=== 26-bind_box_edge_breaks ===")
+for line in log:
+    print("  " + line)
+print("  radii now: Chamfer %.2f, Fillet004 %.2f  (were %.2f, %.2f)"
+      % (boxdoc.getObject("Chamfer").Size.Value, boxdoc.getObject("Fillet004").Radius.Value,
+         previous["Chamfer"], previous["Fillet004"]))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  box vol %.2f  valid=%s closed=%s solids=%d"
+      % (box.Volume, box.isValid(), box.isClosed(), len(box.Solids)))
+print("NOT SAVED.")

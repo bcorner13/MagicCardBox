@@ -1,0 +1,263 @@
+# -*- coding: utf-8 -*-
+"""
+25-knuckle_relief_parametric.FCMacro — MagicCardBox
+
+Replaces Sketch013 / Pocket010 with an equivalent cut driven entirely by Params, removing
+the only external-geometry dependency left in either document.
+
+WHAT IT REPLACES, AND WHY
+-------------------------
+Bradley's Sketch013 did the right thing geometrically: `PocketHingeWrap` (the hinge wrap
+relief) stops at |x| = Width/2 - HingeTabThickness so it cannot cut the knuckles, but the
+rear panel now runs full width down to PanelWrapZ. That left the panel's inner face
+unrelieved in the two knuckle bands, sitting at radius HingeAxisFromRear = 5.000 from the
+hinge axis — exactly the zero-clearance ride macro 20 was written to remove. Measured: the
+print-pose gap at 90 deg fell from 0.4000 to 0.0000.
+
+Sketch013 fixed it by projecting two faces of PocketHingeWrap as external geometry. That
+works, but it is the one thing this project has banned twice over:
+
+  * hard rule #3 - it attaches to a FEATURE FACE (PocketHingeWrap Face1), not a datum
+  * defect D1    - it takes ExternalGeometry from feature faces (Face1, Face13)
+
+CLAUDE.md records why: a Depth change once took a referenced face from 6 bounding edges to
+8, every external GeoId shifted by two, and Pocket002 silently kept its old shape. Macros
+02/08/12 removed every such reference, and the file states plainly that ExternalGeometry is
+empty in both documents. Sketch013 was the only exception.
+
+The risk is not theoretical here. In the same session, a Width change 106 -> 107 left
+MagicCardBox/Fillet003 (2 of 12 edges) and MagicCardBox/Chamfer (1 edge) holding
+unresolvable "?Edge" references. Sketch013 is worse placed than either: it has ZERO own
+geometry and ZERO own constraints, so if Face1/Face13 renumber there is nothing left to
+hold its shape — and it reports "fully constrained" either way, because there is nothing
+to constrain. A solver check cannot warn you.
+
+WHAT THE CUT ACTUALLY IS (measured off Sketch013 before replacing it)
+----------------------------------------------------------------------
+    Face1    x  48.5 .. 53.5   y = 36   z 0 .. 2      area 10
+    Face13   x -53.5 ..-48.5   y = 36   z 0 .. 2      area 10
+    Pocket010  Length = PanelWrapZ - HingeSwingClearance = -0.5, Reversed
+    removes exactly 10.000 mm3  =  2 x (5 x 2 x 0.5)
+
+Every one of those numbers is already a Param:
+
+    x outer  =  Width/2
+    x inner  =  Width/2 - HingeTabThickness        (the knuckle band, 5 mm)
+    z lower  =  PanelWrapZ                          (0)
+    z upper  =  HingeAxisFromBottom - HingeNeckDrop (2, the neck's bottom)
+    depth    =  HingeSwingClearance                 (0.5)
+
+So the same cut is two bound rectangles on XZ_Plane offset to y = Depth/2. On XZ_Plane the
+sketch's local (u,v) maps to global (x,z) and AttachmentOffset.Base.z = -36 lands the plane
+at global y = +36 — verified empirically before writing this, hence the minus sign.
+
+The Chamfer that sat on Pocket010 is re-pointed at the new pocket, its edge re-found BY
+POSITION (the panel's full-width relieved bottom edge at y = Depth/2 + HingeSwingClearance,
+z = PanelWrapZ) rather than by name, and its Size expression normalised from the short
+`Params#VarSet...` form to the canonical `<<Params>>#VarSet...` per the workflow note.
+
+RECOVERY
+--------
+This macro DELETES Sketch013 and Pocket010, which is not undoable. The FCStd files on disk
+were saved immediately before it ran, in a verified-good state (0.4000 mm gap at 90 deg, no
+invalid features). If the result is wrong, close all four documents WITHOUT saving and
+reopen. The macro also restores the feature chain itself if the cut does not reproduce.
+
+Run: Macro -> Macros... -> 25-knuckle_relief_parametric -> Execute
+"""
+
+import FreeCAD
+import Part
+import Sketcher
+
+P = "<<Params>>#VarSet."
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+liddoc = FreeCAD.getDocument("Lid")
+body = liddoc.getObject("Body001")
+log = []
+
+OLD_SK, OLD_PK = "Sketch013", "Pocket010"
+NEW_SK, NEW_PK = "SketchKnuckleRelief", "PocketKnuckleRelief"
+
+old_pk = liddoc.getObject(OLD_PK)
+old_sk = liddoc.getObject(OLD_SK)
+cham = liddoc.getObject("Chamfer")
+if old_pk is None:
+    raise RuntimeError("%s not found - has this already run?" % OLD_PK)
+if cham is None or cham.Base[0].Name != OLD_PK:
+    raise RuntimeError("Chamfer is not based on %s; aborting rather than guessing" % OLD_PK)
+
+target_removed = old_pk.BaseFeature.Shape.Volume - old_pk.Shape.Volume
+prev_feature = old_pk.BaseFeature                 # PocketHingeWrap
+tip_before = body.Tip.Name
+log.append("%s removes %.3f mm3; rebuilding that from Params" % (OLD_PK, target_removed))
+
+# ---------------------------------------------------------------- geometry, from Params
+x_out = vs.Width.Value / 2.0
+x_in = x_out - vs.HingeTabThickness.Value
+z_lo = vs.PanelWrapZ.Value
+z_hi = vs.HingeAxisFromBottom.Value - vs.HingeNeckDrop.Value
+depth = vs.HingeSwingClearance.Value
+errs = []
+if z_hi <= z_lo:
+    errs.append("z span is empty: PanelWrapZ %.2f .. %.2f" % (z_lo, z_hi))
+if x_in <= 0:
+    errs.append("HingeTabThickness %.2f exceeds Width/2" % vs.HingeTabThickness.Value)
+if depth <= 0:
+    errs.append("HingeSwingClearance must be positive")
+if errs:
+    raise RuntimeError("cannot build the relief: " + "; ".join(errs))
+
+E_XOUT = P + "Width / 2"
+E_XIN = P + "Width / 2 - " + P + "HingeTabThickness"
+E_ZLO = P + "PanelWrapZ"
+E_ZHI = P + "HingeAxisFromBottom - " + P + "HingeNeckDrop"
+
+xz = [f for f in body.Origin.OriginFeatures if f.Role == "XZ_Plane"][0]
+sk = liddoc.getObject(NEW_SK)
+if sk is None:
+    sk = body.newObject("Sketcher::SketchObject", NEW_SK)
+    sk.AttachmentSupport = [(xz, "")]
+    sk.MapMode = "FlatFace"
+    sk.Label = "KnuckleRelief"
+    log.append("%s created on XZ_Plane" % NEW_SK)
+else:
+    sk.deleteAllConstraints()
+    sk.deleteAllGeometry()
+# minus: on XZ_Plane a +z offset lands at global -y. Verified, do not "tidy" the sign away.
+sk.setExpression(".AttachmentOffset.Base.z", "-" + P + "Depth / 2")
+
+for sign in (1, -1):
+    a, b = (x_in, x_out) if sign > 0 else (-x_out, -x_in)
+    i0 = len(sk.Geometry)
+    pts = [V(a, z_lo, 0), V(b, z_lo, 0), V(b, z_hi, 0), V(a, z_hi, 0)]
+    for k in range(4):
+        sk.addGeometry(Part.LineSegment(pts[k], pts[(k + 1) % 4]), False)
+    for k in range(4):
+        sk.addConstraint(Sketcher.Constraint("Coincident", i0 + k, 2, i0 + (k + 1) % 4, 1))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", i0 + 0))
+    sk.addConstraint(Sketcher.Constraint("Horizontal", i0 + 2))
+    sk.addConstraint(Sketcher.Constraint("Vertical", i0 + 1))
+    sk.addConstraint(Sketcher.Constraint("Vertical", i0 + 3))
+    ia = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, i0 + 0, 1, a))
+    ib = sk.addConstraint(Sketcher.Constraint("DistanceX", -1, 1, i0 + 1, 1, b))
+    il = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, i0 + 0, 1, z_lo))
+    ih = sk.addConstraint(Sketcher.Constraint("DistanceY", -1, 1, i0 + 2, 1, z_hi))
+    sk.setExpression("Constraints[%d]" % ia, E_XIN if sign > 0 else "-(" + E_XOUT + ")")
+    sk.setExpression("Constraints[%d]" % ib, E_XOUT if sign > 0 else "-(" + E_XIN + ")")
+    sk.setExpression("Constraints[%d]" % il, E_ZLO)
+    sk.setExpression("Constraints[%d]" % ih, E_ZHI)
+log.append("two bound rectangles: x +/-%.2f..%.2f, z %.2f..%.2f" % (x_in, x_out, z_lo, z_hi))
+
+pk = liddoc.getObject(NEW_PK)
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", NEW_PK)
+    pk.Profile = sk
+    pk.Label = "KnuckleRelief"
+    log.append("%s created" % NEW_PK)
+pk.Type = "Length"
+pk.Midplane = False            # legacy flag first - see CLAUDE.md
+pk.SideType = "One side"
+pk.setExpression("Length", P + "HingeSwingClearance")
+pk.BaseFeature = prev_feature
+sk.Visibility = False
+
+# ---------------------------------------------------------------- splice into the chain
+cham.BaseFeature = pk
+body.Tip = cham
+liddoc.recompute(None, True, True)
+
+# direction: whichever Reversed actually removes the material
+best = None
+for rev in (False, True):
+    pk.Reversed = rev
+    liddoc.recompute(None, True, True)
+    if pk.Shape.isNull():
+        continue
+    removed = prev_feature.Shape.Volume - pk.Shape.Volume
+    if best is None or abs(removed - target_removed) < abs(best[1] - target_removed):
+        best = (rev, removed)
+pk.Reversed = best[0]
+liddoc.recompute(None, True, True)
+log.append("Reversed=%s removes %.3f mm3 (target %.3f)" % (best[0], best[1], target_removed))
+
+# ---------------------------------------------------------------- re-point the Chamfer
+want = V(0.0, vs.Depth.Value / 2.0 + depth, z_lo)
+found = None
+for i, e in enumerate(pk.Shape.Edges):
+    if type(e.Curve).__name__ != "Line":
+        continue
+    if e.distToShape(Part.Vertex(want))[0] < 1e-5 and e.Length > vs.Width.Value - 1e-3:
+        found = "Edge%d" % (i + 1)
+        break
+if found is None:
+    raise RuntimeError("could not re-find the chamfer edge at %s" % (want,))
+cham.Base = (pk, [found])
+cham.setExpression("Size", P + "RimFilletRadius")   # canonical form, was Params#VarSet...
+log.append("Chamfer -> %s [%s], Size bound to %sRimFilletRadius" % (NEW_PK, found, P))
+
+# ---------------------------------------------------------------- drop the old features
+for n in (OLD_PK, OLD_SK):
+    o = liddoc.getObject(n)
+    if o:
+        liddoc.removeObject(n)
+log.append("removed %s and %s (the external-geometry pair)" % (OLD_PK, OLD_SK))
+
+for n in DOCS:
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+# ---------------------------------------------------------------- verify
+bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    raise RuntimeError("invalid features: %s - close all docs WITHOUT saving and reopen"
+                       % ", ".join(bad))
+
+ext = [(o.Name, len(o.ExternalGeometry)) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if o.TypeId == "Sketcher::SketchObject" and o.ExternalGeometry]
+
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+box = boxdoc.getObject("Body").Shape
+rear = liddoc.getObject(body.Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 30, 60, 85, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+
+print("=== 25-knuckle_relief_parametric ===")
+for line in log:
+    print("  " + line)
+print("  %s: DoF=%d fully=%s  geometry=%d  external=%d"
+      % (NEW_SK, sk.solve(), sk.FullyConstrained, len(sk.Geometry), len(sk.ExternalGeometry)))
+print("  sketches still holding ExternalGeometry: %s" % (ext if ext else "NONE"))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin,
+         box.BoundBox.ZMin - lowest))
+print("  lid bodies touch %.4f mm" % rear.distToShape(top)[0])
+print("  solids  box %s  rear %s  top %s"
+      % ((box.isValid(), box.isClosed(), len(box.Solids)),
+         (rear.isValid(), rear.isClosed(), len(rear.Solids)),
+         (top.isValid(), top.isClosed(), len(top.Solids))))
+print("NOT SAVED.")
