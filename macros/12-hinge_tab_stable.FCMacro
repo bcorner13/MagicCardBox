@@ -77,7 +77,7 @@ dp2_before = FreeCAD.Placement(ld.getObject("DatumPlane002").Placement)
 
 old_pocket = ld.getObject("Pocket")
 pocket_cfg = {"Type": str(old_pocket.Type), "Reversed": bool(old_pocket.Reversed),
-              "Midplane": bool(old_pocket.Midplane), "Length": old_pocket.Length}
+              "SideType": str(old_pocket.SideType), "Length": old_pocket.Length}
 mirror_plane = ld.getObject("Mirrored").MirrorPlane
 pad2_len_expr = dict(pad2.ExpressionEngine).get("Length", P + "HingeTabThickness")
 
@@ -129,7 +129,11 @@ pad4 = body1.newObject("PartDesign::Pad", "Pad004")
 pad4.Profile = sk10
 pad4.Type = "Length"
 pad4.Reversed = pad2.Reversed
-pad4.Midplane = pad2.Midplane
+# FreeCAD 1.1 deprecates `Midplane` in favour of `SideType` on FeatureExtrude:
+#   "The 'Midplane' property ... is deprecated and has been replaced by the 'SideType'
+#    property in FeatureExtrude ... this property will be removed in a future version."
+# SideType enum is ["One side", "Two sides", "Symmetric"]; Midplane=True == "Symmetric".
+pad4.SideType = pad2.SideType
 pad4.setExpression("Length", pad2_len_expr)
 pad4.Label = "HingeTab"
 sk10.Visibility = False
@@ -141,7 +145,7 @@ pk = body1.newObject("PartDesign::Pocket", "Pocket")
 pk.Profile = sk3
 pk.Type = pocket_cfg["Type"]
 pk.Reversed = pocket_cfg["Reversed"]
-pk.Midplane = pocket_cfg["Midplane"]
+pk.SideType = pocket_cfg["SideType"]
 pk.Length = pocket_cfg["Length"]
 log.append("Pocket (pin hole) rebuilt at the tip")
 mir = body1.newObject("PartDesign::Mirrored", "Mirrored")

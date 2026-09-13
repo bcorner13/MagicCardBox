@@ -102,7 +102,19 @@ if pk is None:
     pk.Profile = sk
     log.append("Pocket006 created")
 pk.Type = "ThroughAll"
-pk.Midplane = True
+# FreeCAD 1.1 deprecates `Midplane` in favour of `SideType` on FeatureExtrude:
+#   "The 'Midplane' property ... is deprecated and has been replaced by the 'SideType'
+#    property in FeatureExtrude ... this property will be removed in a future version."
+# SideType enum is ["One side", "Two sides", "Symmetric"]; Midplane=True == "Symmetric".
+#
+# The two are LINKED, and clearing the legacy flag is not free: writing Midplane=False also
+# resets SideType to "One side", which un-does the symmetric cut (measured: box volume moved
+# 100836.58 -> 100954.58). So clear the legacy flag FIRST, then set SideType — never the
+# other way round.
+if getattr(pk, "Midplane", False):
+    pk.Midplane = False          # emits the deprecation once, then the stored flag is gone
+    log.append("cleared legacy Midplane flag on Pocket006")
+pk.SideType = "Symmetric"
 sk.Visibility = False
 body.Tip = pk
 log.append("Body tip set to Pocket006")

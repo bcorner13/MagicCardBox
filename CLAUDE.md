@@ -319,6 +319,16 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
 
 **Project-specific:**
 
+- **`Midplane` is deprecated — use `SideType`.** FreeCAD 1.1 replaced `Midplane` on
+  `FeatureExtrude` (Pad/Pocket) with `SideType`, enum
+  `["One side", "Two sides", "Symmetric"]`; `Midplane=True` == `"Symmetric"`. Writing
+  `Midplane` at all emits a deprecation warning to the Report View, and the property is
+  slated for removal. All project macros now set `SideType`.
+  **The two are linked, and clearing the legacy flag is not free:** writing
+  `Midplane = False` also resets `SideType` to `"One side"`, silently undoing a symmetric
+  cut (measured: box volume moved 100836.58 -> 100954.58 mm3). Clear the legacy flag FIRST,
+  then set `SideType` — never the other way round.
+
 - `inspect_object` and `get_sketch_info` **throw on every shape-bearing object here**
   (sketches, Pads, Bodies) on FreeCAD 1.1.3 — a known unpatched upstream gap, not a stale
   install. Read sketch internals (`sk.Geometry`, `sk.Constraints`, `sk.ExpressionEngine`,

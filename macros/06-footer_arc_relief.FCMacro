@@ -42,7 +42,7 @@ Sketch is on YZ_Plane (local x = global Y, local y = global Z), profile closed b
   -> horizontal line rearward at Z = -FooterHeight
   -> vertical line up at Y = Depth (well clear of the taper flare)
   -> horizontal line back along Z = 0
-Pocketed ThroughAll + Midplane so it cuts the full width in one feature.
+Pocketed ThroughAll + SideType "Symmetric" so it cuts the full width in one feature.
 
 NOTE: this renumbers faces again, so the assembly Revolute joint will go Invalid.
 Re-run 05-repair_hinge_joint afterwards.
@@ -150,7 +150,11 @@ if pk is None:
     pk.Profile = sk
     log.append("created Pocket004")
 pk.Type = "ThroughAll"
-pk.Midplane = True
+# FreeCAD 1.1 deprecates `Midplane` in favour of `SideType` on FeatureExtrude:
+#   "The 'Midplane' property ... is deprecated and has been replaced by the 'SideType'
+#    property in FeatureExtrude ... this property will be removed in a future version."
+# SideType enum is ["One side", "Two sides", "Symmetric"]; Midplane=True == "Symmetric".
+pk.SideType = "Symmetric"
 sk.Visibility = False
 
 for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
