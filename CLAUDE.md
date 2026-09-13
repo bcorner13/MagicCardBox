@@ -1,35 +1,39 @@
 # Project rules — MagicCardBox
 
-This model was built **manually, before the project was bootstrapped**. The 19 unbound
-dimensional literals it carried were bound on 2026-09-13, the audit is clean, and the
-**box** is now fully `Depth`-safe. The **lid is not**, and neither `Width` nor `Height` is
-safe on either part. See "Parameter safety" in `plan.md` for the measured detail; the
-short version:
+This model was built **manually, before the project was bootstrapped**, and has since been
+rebuilt into a parametric knuckle hinge. As of 2026-09-13 the audit is clean and **all three
+main dimensions sweep safely**, verified by measurement across W 80-130, D 50-100, H 50-95
+(9 cases): every dimension tracks, lid-vs-box swing interference is **0.0000 mm3** over
+0-90 deg, and every solid is valid, closed and single.
 
-| Parameter | Box | Lid |
-|---|---|---|
-| `Depth` | ✅ safe — swept 55/69/80/100, walls, floor, pin inset and trim all hold | ⛔ **D6** — top plate tracks, but the **rear wall stays put** and detaches from the hinge |
-| `Width` | ⚠️ untested since the fix | ⛔ **D2** — rear wall grows off-centre |
-| `Height` | ⚠️ untested since the fix | ⛔ **D3** — rear wall grows downward, below the floor |
+| Defect | Status |
+|---|---|
+| D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
+| D2 — `Width`, panel grew off-centre | ✅ fixed (side effect of the D7 rebuild) |
+| D3 — `Height`, panel grew downward | ✅ fixed (same) |
+| D4 — assembly joint dies on face renumbering | ⚠️ recurs by design; re-run macro 05 |
+| D5 — failed recompute does not roll back | ⚠️ still true in general — reload from disk |
+| D6 — `Depth`, panel did not track | ✅ fixed (macro 11) |
+| D7 — lid could not rotate at all | ✅ fixed (macros 07/08/10/12) |
 
-**So: do not change any of the three yet.** `Depth` will give you a correct box with a
-rear wall in the wrong place.
+Three things to know before touching anything:
 
-Two further things to know before you touch anything:
-
-- **The hinge has zero clearance.** `HingePinClearance` and `HingeTabClearance` exist as
-  knobs but default to **0.0 mm** — the as-modelled interference fit. They must be set
-  before any print or the lid will seize on its pin.
-- **A failed recompute does not roll back.** If an edit puts a feature into an Invalid
-  state, the geometry does *not* return when you restore the parameter (D5). Recover by
-  closing all four documents **without saving** and reopening from disk. (For `Depth` this
-  is now fixed — restoring returns exactly 87461.942 mm³ — because D5 was a consequence of
-  D1/D1b, not a separate fault. It still applies to `Width`/`Height`.)
-- **A bound expression is not proof of anything.** `Lid/Sketch001` carries
-  `.AttachmentOffset.Base.z = -Depth` and has carried it all along — but with
-  `AttachmentSupport = []` the attachment engine never runs and the offset is never
-  applied. The audit sees a bound expression and passes it. Check `Placement` and
-  `AttachmentSupport`, not just `ExpressionEngine`.
+- **The hinge is a knuckle, not a sector.** A disc in a disc socket rotates freely at any
+  angle; the old R10 sector swept outside its own outline and dug into the box (372.73 mm3
+  at 45 deg). `HingeTabRadius` is capped at
+  `min(Depth/2 - HingeAxisFromRear, HingeAxisFromBottom)` = 5 mm by the side wall — do not
+  raise it without re-checking that bound.
+- **`PanelBottomZ` is BOUND, not free.** The lid's rear panel cannot reach the bottom; it
+  must start at or above `HingeAxisFromBottom + HingeAxisFromRear` or it digs into the box
+  rear wall, and the failure is silent. It is bound to the socket circle's top.
+- **A failed recompute does not roll back** (D5). If an edit puts a feature Invalid, the
+  geometry does *not* return when you restore the parameter. Recover by closing all four
+  documents **without saving** and reopening from disk.
+- **A bound expression is not proof of anything.** `Lid/Sketch001` carried
+  `.AttachmentOffset.Base.z = -Depth` all along — but with `AttachmentSupport = []` the
+  attachment engine never runs and the offset is never applied. Its position is now bound
+  via `.Placement.Base.y` instead. Check `Placement` and `AttachmentSupport`, not just
+  `ExpressionEngine`.
 
 Do not "fix" any of this by nudging coordinates. Read the rules below before touching
 geometry.
@@ -88,9 +92,18 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    renumbering. Attachment discipline does not protect against this; only removing the
    external-geometry dependency does (dimension the cavity from Params instead).
 
+   **Status 2026-09-13:** the external-geometry dependencies are GONE. Macro 02 removed them
+   from all three `MagicCardBox` sketches; macros 08/12 removed the `Binder002` link from
+   `Lid/Sketch002`. Every sketch in both documents now has `ExternalGeometry` empty and
+   depends only on `Origin` + `VarSet`. `DatumPlane001` (→ `Fillet.Face6`) and
+   `DatumPlane002` (→ `Pad002`, MapMode `ObjectYZ`) still reference features — they have not
+   misbehaved, but treat them as the remaining fragility.
+
    **Audit blind spots — the script catches none of the above.** It checks *sketch*
    `AttachmentSupport` only: not datum-plane attachment, not `ExternalGeometry`, not
-   binder supports, not `AttachmentOffset`. Check those by hand via `execute_python`.
+   binder supports, not `AttachmentOffset`, not object `Placement`, not `TaperAngle`.
+   Check those by hand via `execute_python`. Two real defects hid in exactly those gaps:
+   the footer's unbound 36° `TaperAngle`, and `Lid/Sketch001`'s hard-coded `Placement`.
 
    *(Housekeeping: `Binder001` has an empty `Support` — it is orphaned and appears to be
    dead. Confirm before deleting.)*
@@ -102,9 +115,12 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    - `HingeTabClearance` — lid hinge tab ↔ its socket recess in the box side wall. Drives
      `MagicCardBox/Pocket.Length` as `HingeTabThickness + HingeTabClearance`.
 
-   **Both default to 0.0 mm** — the binding pass was deliberately geometry-neutral, so
-   these are wired but not yet dialled in. That is the as-modelled interference fit and it
-   will not open. Never collapse them into one knob and never reuse `WallThickness`.
+   **Both are set to 0.4 mm** — one full 0.4 mm nozzle width — plus `HingeSwingClearance`
+   0.5 mm for the lid-vs-footer faces. Verified from the solids, not the Params: box pin
+   r 3.000 in lid hole r 3.400, lid tab r 5.000 in box socket r 5.400, tab 5.0 thick in a
+   socket 5.4 deep. The hinge will feel loose (0.8 mm diametral play); tighten after a test
+   print by editing the Params, which now drive every affected feature. Never collapse them
+   into one knob and never reuse `WallThickness`.
 
    **These are print-in-place clearances, not assembly clearances.** The box and lid are
    printed as **one part with the lid open** (see Design direction below), so the pin and
@@ -123,7 +139,22 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
 
 ## Assembly architecture
 
-Two printed parts, no fasteners, no separate hinge component.
+**One printed part** (print-in-place hinge, lid open ~90 deg), no fasteners, no separate
+hinge component. The Lid document holds two PartDesign bodies that touch — `Body` (top
+plate) and `Body001` (rear panel + hinge) — so they export as one connected mesh.
+
+Current hinge, after the 2026-09-13 rebuild:
+- **Box side:** a disc socket of `HingeTabRadius + HingeTabClearance` about the hinge axis,
+  cut `HingeTabThickness + HingeTabClearance` deep into each side wall, with a full Ø
+  `HingePinDia` pin standing `HingePinLength` proud of the socket floor, plus a slot whose
+  inner boundary is the socket ARC so it never cuts the pin.
+- **Lid side:** a neck rectangle (`Pad002`, bridges to the panel) plus a disc
+  (`Pad004`, `HingeTabRadius`) that fuses into it, with a blind hole
+  `HingePinDia + HingePinClearance*2`. Two pads, not one outline — a single 270 deg arc
+  profile has two valid solver solutions and flips.
+- **Rear panel** starts at `PanelBottomZ`, not at Z=0; the box's own rear wall shows below
+  it. That is forced, not cosmetic.
+
 
 - **Box** (`MagicCardBox.FCStd` → `Part` "Box001" → `Body` "Box") is the tub: a padded
   rectangular solid, `Width` × `Depth` × `Height` (97 × 69 × 67 mm today), hollowed from
