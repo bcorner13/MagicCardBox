@@ -36,24 +36,49 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    constrained (DoF 0, `FullyConstrained == True`, verified 2026-09-13), so any urge to
    move a vertex means a missing *Param*, not a missing coordinate edit.
 
-3. **Attach sketches to datum planes, not feature faces.** This project **has** the
-   condition the rule exists to prevent, and it has already caused a real failure:
-   **`MagicCardBox/Sketch003` draws its cavity profile from external geometry
-   `Mirrored.Face3`** — a feature face. Changing `Depth` renumbers that face, the
-   reference re-binds wrongly, and `Pocket002` goes Invalid while the body silently keeps
-   its old shape (defect D1 in `plan.md`). `Lid/Sketch002` has the same shape of problem
-   via `Binder002.Face1`.
+3. **Attach sketches to datum planes, not feature faces.**
 
-   Also in `Lid.FCStd`:
-   - `DatumPlane001` → attached to `Fillet.Face6` (a PartDesign::Fillet face). `Sketch002`
-     (the hinge tab profile) sits on it, so the tab inherits topological-naming fragility.
-   - `DatumPlane002` → attached to the `Pad` object with MapMode `ObjectYZ`. `Sketch003`
-     (the hinge pin hole) sits on it.
+   **What is already right here — do not "fix" it.** Verified 2026-09-13 by enumerating
+   every `AttachmentSupport` and `ExternalGeometry` in both documents:
+   - **There are zero cross-document geometry references.** `MagicCardBox` and `Lid` are
+     coupled *only* through `<<Params>>#VarSet` expressions. `Binder002` binds
+     `Lid/Pad001` — same document. That is cleaner than binders-across-documents and it
+     is the reason a `Depth` change never corrupts the Lid document.
+   - **All four `MagicCardBox` sketches attach to Origin planes** (`XY_Plane`, `YZ_Plane`).
+     Textbook correct.
+   - **`Lid/LidSketch` → `LidPlane` → `XY_Plane001`** — a datum on an origin plane, also
+     correct.
 
-   No DAG-cycle error has fired yet, but both are feature references and both must be
-   retargeted to `PartDesign::Plane` datums offset from principal planes. **Note the audit
-   script does not catch these** — it only checks *sketch* attachment, not datum-plane
-   attachment. Check datum planes by hand via `execute_python`.
+   **Where the fragility actually lives.** The datum-and-binder discipline was applied
+   consistently; the problem is what three of those datums/binders are *anchored to*. A
+   datum plane attached to a feature face does not remove topological-naming fragility —
+   it relays it:
+   - `DatumPlane001` → `Fillet.Face6`, carrying `Sketch002` (hinge tab profile)
+   - `DatumPlane002` → the `Pad002` object, carrying `Sketch003` (hinge pin hole)
+   - `Binder002` → `Pad001.Face3`, feeding external geometry into `Sketch002`
+
+   **And a third mechanism that is neither attachment nor cross-document** — this is what
+   actually breaks the model (defect D1), so read it before assuming the datum work covers
+   you. `MagicCardBox/Sketch003` is correctly *attached* to `YZ_Plane`, but it takes
+   **external geometry** from `Mirrored` (Face3, the side-wall outer face) and dimensions
+   against those projected edges by index. Measured at `Depth` 69 → 80:
+
+   > The referenced face goes from 6 bounding edges to 8, because the hinge cut-out stops
+   > coinciding with the rear face and becomes an interior notch. Every external GeoId
+   > shifts by two — the top edge moves from `-7` to `-9`, the left edge from `-8` to
+   > `-10` — while the constraints still point at `-7`/`-8`. `Sketch003` goes **Invalid**,
+   > `Pocket002` cannot rebuild, and the body silently keeps its previous shape.
+
+   So the trigger is **the edge count of the referenced face changing**, not face
+   renumbering. Attachment discipline does not protect against this; only removing the
+   external-geometry dependency does (dimension the cavity from Params instead).
+
+   **Audit blind spots — the script catches none of the above.** It checks *sketch*
+   `AttachmentSupport` only: not datum-plane attachment, not `ExternalGeometry`, not
+   binder supports, not `AttachmentOffset`. Check those by hand via `execute_python`.
+
+   *(Housekeeping: `Binder001` has an empty `Support` — it is orphaned and appears to be
+   dead. Confirm before deleting.)*
 
 4. **Clearance concepts stay decoupled.** Two clearance Params now exist, deliberately
    separate because they are different physical interfaces:
