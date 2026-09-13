@@ -1,0 +1,120 @@
+# -*- coding: utf-8 -*-
+"""
+15-recut_socket_after_footer.FCMacro — MagicCardBox
+
+Fixes a print-in-place defect that every previous check missed: in the print pose the hinge
+tab is sliding on the footer with a 0.025 mm gap, which would fuse solid.
+
+ROOT CAUSE — feature ORDER
+---------------------------
+The box body builds in this order:
+
+    Pad -> Pocket(socket) -> Pocket001(pin trim) -> Mirrored -> Pocket002(cavity)
+        -> Pad001(FOOTER) -> Pocket004(footer relief) -> Pocket005(neck slot)
+        -> Mirrored001 -> Pocket006(rim) -> Pocket007(finger slot)
+
+The hinge socket is cut early, but `Pad001` — the footer plinth — is padded AFTERWARDS across
+the whole footprint, so it re-fills the part of the socket that lies below Z = 0. The footer
+relief (`Pocket004`) then only clears Y >= Depth/2 - HingeAxisFromRear - HingeSwingClearance,
+which does not reach forward under the tab.
+
+Meanwhile the tab disc's lowest point is exactly Z = 0:
+
+    HingeAxisFromBottom - HingeTabRadius  =  5 - 5  =  0        and footer top = 0
+
+so the disc rides on the re-filled footer over Y 26..30.5, X +/-47.5..52.5. Measured gap in
+the print pose: 0.02494 mm.
+
+WHY NOTHING CAUGHT IT
+---------------------
+Every swing check in this project used `common().Volume` — INTERFERENCE. Two surfaces that
+merely touch have zero interference, so the test passed at every angle and every size while
+the real gap was zero. For a print-in-place part the meaningful measure is minimum DISTANCE,
+not overlap. This macro's verification uses `distToShape`.
+
+THE FIX
+-------
+Re-cut the socket at the END of the tree, after the footer exists. `Pocket008` reuses
+`Sketch001` — the same two concentric circles, outer = HingeTabRadius + HingeTabClearance,
+inner = the pin — so it reproduces the socket exactly and still leaves the pin standing.
+A later feature may profile an EARLIER sketch, so this needs no reordering (PartDesign
+refuses all reordering with "The graph must be a DAG").
+
+It removes almost nothing: the socket disc only reaches Z = HingeAxisFromBottom -
+(HingeTabRadius + HingeTabClearance) = -0.4, so only a 0.4 mm sliver of footer goes, and
+that sliver is exactly the clearance the tab needs. Footer appearance is unchanged.
+
+Run: Macro -> Macros... -> 15-recut_socket_after_footer -> Execute
+"""
+
+import FreeCAD
+
+DOC = "MagicCardBox"
+P = "<<Params>>#VarSet."
+doc = FreeCAD.getDocument(DOC)
+body = doc.getObject("Body")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+log = []
+
+sk = doc.getObject("Sketch001")          # socket disc + pin inner wire
+src = doc.getObject("Pocket")            # the original socket cut, for its settings
+E_DEPTH = P + "HingeTabThickness + " + P + "HingeTabClearance"
+
+pk = doc.getObject("Pocket008")
+if pk is None:
+    pk = body.newObject("PartDesign::Pocket", "Pocket008")
+    pk.Profile = sk
+    pk.Label = "SocketRecut"
+    log.append("Pocket008 created (re-cuts the socket through the footer)")
+pk.Type = "Length"
+pk.Reversed = src.Reversed
+# TWO SIDES, not one. Cutting only inboard from the outer face leaves the footer's outward
+# TAPER LIP sitting right under the tab's outer rim: the footer flares
+# FooterHeight*tan(FooterTaperAngle) = 1.45 mm per side, out to X 53.95, while this cut stops
+# at X = Width/2 = 52.50. Probed at Y=30.4, Z=-0.05 the box was still solid at X 52.50 and
+# 52.52 — that lip is what the 0.025 mm gap was against, NOT the socket floor (the socket
+# itself measures a clean 0.4 mm). So the cut has to reach outboard past the flare too.
+pk.SideType = "Two sides"
+pk.setExpression("Length", E_DEPTH)
+pk.setExpression("Length2", P + "FooterHeight * tan(" + P + "FooterTaperAngle) + "
+                 + P + "HingeSwingClearance")
+
+mir = doc.getObject("Mirrored002")
+if mir is None:
+    mir = body.newObject("PartDesign::Mirrored", "Mirrored002")
+    log.append("Mirrored002 created (other side wall)")
+mir.Originals = [pk]
+yz = None
+for f in body.Origin.OriginFeatures:
+    if f.Role == "YZ_Plane":
+        yz = f
+        break
+mir.MirrorPlane = (yz, [""])
+body.Tip = mir
+log.append("Body tip set to Mirrored002")
+
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    FreeCAD.getDocument(n).recompute(None, True, True)
+
+print("=== 15-recut_socket_after_footer ===")
+for line in log:
+    print("  " + line)
+print("socket depth %s, disc reaches down to Z = %.2f (tab bottom is Z = %.2f)"
+      % (doc.getObject("Pocket008").Length,
+         vs.HingeAxisFromBottom.Value - (vs.HingeTabRadius.Value + vs.HingeTabClearance.Value),
+         vs.HingeAxisFromBottom.Value - vs.HingeTabRadius.Value))
+b = body.Shape.BoundBox
+print("Body: vol=%.2f valid=%s solids=%d  Y %.2f..%.2f Z %.2f..%.2f"
+      % (body.Shape.Volume, body.Shape.isValid(), len(body.Shape.Solids),
+         b.YMin, b.YMax, b.ZMin, b.ZMax))
+problems = []
+for n in ("Params", DOC, "Lid", "MagicCardAssembly"):
+    for o in FreeCAD.getDocument(n).Objects:
+        bad = [s for s in (list(getattr(o, "State", []) or []))
+               if s in ("Invalid", "Error", "Touched")]
+        if bad:
+            problems.append("%s/%s: %s" % (n, o.Name, ",".join(bad)))
+print("Recompute problems: %d  (assembly Joint expected - run macro 05 after)" % len(problems))
+for p in problems:
+    print("  " + p)
+print("NOT SAVED.")

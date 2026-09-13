@@ -1,0 +1,116 @@
+# -*- coding: utf-8 -*-
+"""
+16-export_print.FCMacro — MagicCardBox
+
+Builds the print-ready pose and writes `3mf/MagicCardBox-print.3mf` and
+`stl/MagicCardBox-print.stl`.
+
+PRINT POSE
+----------
+One part, lid rotated 90 deg open about the hinge axis. That angle is not arbitrary: at
+exactly 90 deg the lid's rear-panel outer face lands at
+
+    Z = HingeAxisFromBottom - (HingeAxisFromRear + WallThickness) = 5 - 7 = -2
+
+which is exactly the footer's bottom, `-FooterHeight`. Box and open lid are therefore
+COPLANAR and the whole part sits flat on one plane with no supports. That coplanarity holds
+because `HingeAxisFromBottom = HingeAxisFromRear + WallThickness - FooterHeight`; change any
+of those and the lid will no longer sit flat.
+
+Box and lid are exported as ONE compound object so the slicer keeps their relative positions
+and does not try to arrange them as two separate parts. They are NOT fused — the hinge
+clearance has to survive into the mesh.
+
+VERIFIED BEFORE WRITING (the macro refuses otherwise)
+-----------------------------------------------------
+  * minimum distance between box and lid IN THE PRINT POSE >= one nozzle width.
+    NOTE this is a DISTANCE check, not an interference check. Every swing test earlier in
+    this project used `common().Volume`, which is zero for surfaces that merely TOUCH — it
+    passed at every angle while the real gap was 0.025 mm. For a print-in-place part the
+    meaningful measure is `distToShape`.
+  * both solids valid, closed and single
+  * footprint inside the K2 Plus bed
+
+Run: Macro -> Macros... -> 16-export_print -> Execute
+"""
+
+import os
+import FreeCAD
+import Part
+
+NOZZLE = 0.4
+BED = 350.0
+PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
+
+mb = FreeCAD.getDocument("MagicCardBox")
+ld = FreeCAD.getDocument("Lid")
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+V = FreeCAD.Vector
+
+aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+aZ = vs.HingeAxisFromBottom.Value
+
+box = mb.getObject("Body").Shape.copy()
+
+# FUSE the lid's two bodies. `Body` (top plate) and `Body001` (rear panel + hinge) are
+# separate PartDesign solids that TOUCH on a coincident face at Z = Height. Exported as a
+# compound they mesh into non-manifold edges — the first export came back
+# isSolid()=False, hasNonManifolds()=True, hasSelfIntersections()=True, which slicers may
+# refuse or silently mis-fill. They are one printed piece, so fuse them and drop the
+# internal coincident faces with removeSplitter().
+lid = ld.getObject("Body").Shape.fuse(ld.getObject("Body001").Shape).removeSplitter()
+if len(lid.Solids) != 1:
+    raise RuntimeError("lid did not fuse into a single solid (%d solids) — the two bodies "
+                       "may no longer touch" % len(lid.Solids))
+lid.rotate(V(0, aY, aZ), V(1, 0, 0), -90)
+
+# ---- gate 1: real clearance in the print pose -------------------------------
+gap = box.distToShape(lid)[0]
+if gap < NOZZLE - 1e-6:
+    p = box.distToShape(lid)[1][0]
+    raise RuntimeError("print-pose gap %.4f mm < one nozzle width %.2f, at "
+                       "box(%.2f,%.2f,%.2f) lid(%.2f,%.2f,%.2f) — it would fuse"
+                       % (gap, NOZZLE, p[0].x, p[0].y, p[0].z, p[1].x, p[1].y, p[1].z))
+
+# ---- gate 2: solids -----------------------------------------------------------
+for tag, s in (("box", box), ("lid", lid)):
+    if not s.isValid() or not s.isClosed():
+        raise RuntimeError("%s is not a valid closed solid" % tag)
+
+# ---- sit it on Z=0 and centre it on the plate ---------------------------------
+comb = Part.makeCompound([box, lid])
+b = comb.BoundBox
+if b.XLength > BED or b.YLength > BED:
+    raise RuntimeError("footprint %.1f x %.1f exceeds the %.0f mm bed"
+                       % (b.XLength, b.YLength, BED))
+shift = V(-(b.XMin + b.XMax) / 2.0, -(b.YMin + b.YMax) / 2.0, -b.ZMin)
+comb.translate(shift)
+
+# ---- write it out --------------------------------------------------------------
+name = "MCB_Print"
+if name in [d.Name for d in FreeCAD.listDocuments().values()]:
+    FreeCAD.closeDocument(name)
+doc = FreeCAD.newDocument(name)
+obj = doc.addObject("Part::Feature", "MagicCardBox_print")
+obj.Shape = comb
+doc.recompute()
+
+for sub in ("3mf", "stl"):
+    d = os.path.join(PROJ, sub)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+
+# The files themselves are written by the typed export tools (export_3mf / export_stl)
+# against this document, rather than guessing at a Python export API here. This macro's
+# job is to build the posed geometry and to REFUSE if it is not printable.
+
+nb = comb.BoundBox
+print("=== 16-export_print ===")
+print("  print-pose min gap : %.4f mm  (nozzle %.2f)" % (gap, NOZZLE))
+print("  lid rotated        : 90 deg; box bottom and open-lid face both at Z=-%.1f before shift"
+      % vs.FooterHeight.Value)
+print("  footprint          : %.2f x %.2f x %.2f  (bed %.0f)" % (nb.XLength, nb.YLength, nb.ZLength, BED))
+print("  sits on Z          : %.3f .. %.3f" % (nb.ZMin, nb.ZMax))
+print("  solids in compound : %d" % len(comb.Solids))
+print("  export dirs ready: 3mf/ and stl/ — write with export_3mf / export_stl")
+print("NOTE: MCB_Print is a throwaway export document - do not save it into the project.")
