@@ -501,17 +501,39 @@ To go back to free knobs, clear those three expressions.
   This is the same correction `CardLength` and `CardStackHeight` already needed after print 1
   — card dimensions have been wrong every single time they were inferred rather than measured.
 
-  **TWO UNBOUND LITERALS ENCODE A RELATIONSHIP TO `Height` AND WILL NOT TRACK IT.** Verified
-  2026-09-14: neither has an expression.
-  - `FingerSlotDepth` **61.0** was hand-set against the current 63 mm interior
-    (`Height - FloorThickness`). At `Height` 44.4 the interior is 42.4 and a 61 mm slot runs
-    about 20 mm past the rim. **Bind it before changing `Height`** — read `Sketch011`'s
-    constraints first, since the sketch spans z 4..67 and the 61 is not simply its length.
-  - `FluteStartZ` **12.0** is absolute, so a shorter box gets proportionally chunkier
-    fluting (53 mm of flute becomes 32 mm). Cosmetic, not a defect — decide deliberately.
+  **`FingerSlotDepth` IS NOW BOUND** (macro 30). It was a free literal, 61.0, hand-computed
+  as `65 - 2 - 2`. Read from `Sketch011` rather than guessed, the constraints are
 
-  This is the same family as the defects in the third-print section: a number that is correct
-  today because someone computed it by hand, with nothing recording what it was computed from.
+  ```
+  Constraints[8]  DistanceY 19 = Height - FingerSlotDepth + FingerSlotWidth / 2   arc centre
+  Constraints[9]  Radius    15 = FingerSlotWidth / 2
+  Constraints[10] DistanceY 67 = Height + WallThickness                           slot top
+  ```
+
+  so the profile's lowest point is `centre - radius`, i.e. **`slot bottom = Height -
+  FingerSlotDepth`** — the depth is measured DOWN FROM THE RIM, not up from the floor. Now:
+
+  ```
+  FingerSlotFloorLip = 2.0                                        (new Param)
+  FingerSlotDepth    = Height - FloorThickness - FingerSlotFloorLip
+  slot bottom        = FloorThickness + FingerSlotFloorLip = 4    constant in Height
+  ```
+
+  `FingerSlotFloorLip` is the strip of rear wall left continuous across the bottom of the
+  slot. It equals `WallThickness` today AND equals `FloorThickness` today and is neither —
+  the same coincidence trap as the third-print defects, so it gets its own knob.
+
+  **BLOCKER FOR THE 60-CARD VARIANT, measured 2026-09-14: `Fillet003` goes Invalid at
+  `Height` 40.** Macro 30's dry run drove `CardStackHeight` to 37 and the R 0.6 top-rim
+  fillet died — its edges do not survive the rim moving 25 mm. **So the 60-card version is
+  NOT a parameter change**; it needs the edge re-pick by position that macros 24 and 29 use.
+  Worse, defect D5 applies: restoring `CardStackHeight` left `Fillet003` dead while every
+  parameter read correct, and recovery meant closing all four documents without saving and
+  reopening. Macro 30's `DRY_RUN` is therefore False by default.
+
+  `FluteStartZ` **12.0 is still absolute**, so a shorter box gets proportionally chunkier
+  fluting (53 mm of flute becomes 28 mm at `Height` 40). Cosmetic, not a defect — but decide
+  it deliberately when the variant is built.
 - **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
   `SideWallThickness` **8.0** (was 6.0; raised by macro 27 — hinge web 0.60 → 2.60 mm and
   magnet wall margins 0.95 → 1.95 mm. Grows the box OUTWARD only; interior is unchanged),

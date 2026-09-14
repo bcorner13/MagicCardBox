@@ -1,0 +1,208 @@
+# -*- coding: utf-8 -*-
+"""
+30-bind_finger_slot_depth.FCMacro — MagicCardBox
+
+Binds `FingerSlotDepth`, which is a free literal encoding a relationship to `Height`, so the
+slot tracks the box instead of having to be re-derived by hand for every variant.
+
+WHY NOW
+-------
+A 60-card variant takes `Height` 65 -> ~40. `FingerSlotDepth` 61 has no expression, so it
+would stay 61 and the slot would reach `Height - FingerSlotDepth` = -21: below the floor,
+through the footer, out of the bottom of the box. Nothing would flag it.
+
+WHAT THE 61 ACTUALLY MEANS — read from Sketch011, not assumed
+--------------------------------------------------------------
+    Constraints[8]  DistanceY 19 = Height - FingerSlotDepth + FingerSlotWidth / 2   arc centre
+    Constraints[9]  Radius    15 = FingerSlotWidth / 2
+    Constraints[10] DistanceY 67 = Height + WallThickness                           slot top
+
+The profile is a U: a半-circle of `FingerSlotWidth/2` closed by two verticals and a top edge.
+Its lowest point is the arc's bottom, `centre - radius`, which reduces to
+
+    slot bottom z = Height - FingerSlotDepth
+
+so `FingerSlotDepth` is measured DOWN FROM THE RIM, not up from the floor. At Height 65 it
+puts the slot bottom at z = 4, and the interior floor is at `FloorThickness` = 2. The 61 was
+hand-computed as 65 - 2 - 2.
+
+THE NEW PARAM, AND WHY IT IS NOT WallThickness
+-----------------------------------------------
+That remaining 2 mm between the slot's bottom and the interior floor is a real feature: it is
+the strip of rear wall that stays continuous across the bottom of the slot, tying the two
+sides together and giving the floor an edge to bond to. It EQUALS `WallThickness` today, and
+it equals `FloorThickness` today, and it is neither of them — exactly the coincidence this
+project keeps getting bitten by (see the third-print section). So it gets its own knob:
+
+    FingerSlotFloorLip = 2.0
+    FingerSlotDepth    = Height - FloorThickness - FingerSlotFloorLip
+
+At Height 65 that is 65 - 2 - 2 = 61, IDENTICAL to the literal, so this macro must not move
+any geometry — the box volume is asserted unchanged. The useful property is what happens
+afterwards:
+
+    slot bottom = Height - FingerSlotDepth = FloorThickness + FingerSlotFloorLip = 4
+
+constant, whatever `Height` becomes. The slot top is already bound to `Height + WallThickness`
+and follows on its own.
+
+THE 60-CARD DRY RUN IS OFF BY DEFAULT — IT FOUND SOMETHING AND THEN COST A RELOAD
+----------------------------------------------------------------------------------
+This macro originally drove `CardStackHeight` to 37 (the 60-card case) to prove the slot
+tracks. It does track — but `MagicCardBox/Fillet003` goes **Invalid** at `Height` 40, so the
+run aborted, and defect D5 bit: restoring the parameter does NOT bring the feature back.
+Height and FingerSlotDepth read correct afterwards while Fillet003 stayed dead, and recovery
+meant closing all four documents without saving and reopening from disk.
+
+**So the 60-card variant is not a parameter change.** It needs the edge re-pick treatment that
+macros 24 and 29 use, because R 0.6 top-rim edges do not survive the rim moving 25 mm. That
+is recorded; re-running the dry run only re-breaks the model, so `DRY_RUN` defaults False.
+Turn it on only if you are prepared to reload from disk afterwards.
+
+Idempotent. Restores the literal if anything fails.
+
+Run: Macro -> Macros... -> 30-bind_finger_slot_depth -> Execute
+"""
+
+import FreeCAD
+import Part
+
+DRY_RUN = False             # see the header - True trips D5 and needs a reload from disk
+DRY_RUN_STACK = 37.0        # the 60-card case: 60 x ~0.62 mm/card
+V = FreeCAD.Vector
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+log = []
+
+before = {n: float(getattr(vs, n)) for n in
+          ("FingerSlotDepth", "Height", "CardStackHeight", "FloorThickness")}
+prev_expr = dict(vs.ExpressionEngine).get("FingerSlotDepth")
+vol_before = boxdoc.getObject("Body").Tip.Shape.Volume
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def slot_z_extent():
+    """The void in the rear wall at x=0: (bottom, top) of the finger slot, from the solid.
+
+    ONE boolean against a line, NOT a point sweep. A 0.1 mm isInside scan over the height is
+    ~690 calls per invocation on a ~500-face solid; four invocations pegged FreeCAD for
+    minutes. Part.makeLine + common() answers the same question in a single operation, and
+    exactly, rather than to the sample spacing.
+    """
+    box = boxdoc.getObject("Body").Tip.Shape
+    y = vs.Depth.Value / 2 - vs.WallThickness.Value / 2
+    top = vs.Height.Value + 4.0
+    cs = box.common(Part.makeLine(V(0.0, y, -1.0), V(0.0, y, top)))
+    segs = sorted((min(v.Point.z for v in e.Vertexes), max(v.Point.z for v in e.Vertexes))
+                  for e in cs.Edges)
+    if not segs:
+        return None
+    gaps = [(round(segs[i][1], 2), round(segs[i + 1][0], 2)) for i in range(len(segs) - 1)]
+    gaps.append((round(segs[-1][1], 2), round(top, 2)))
+    return max(gaps, key=lambda g: g[1] - g[0])
+
+
+def rollback(why):
+    vs.setExpression("FingerSlotDepth", prev_expr)
+    if prev_expr is None:
+        vs.FingerSlotDepth = before["FingerSlotDepth"]
+    vs.CardStackHeight = before["CardStackHeight"]
+    recompute_all()
+    raise RuntimeError("%s - FingerSlotDepth restored to %.2f"
+                       % (why, before["FingerSlotDepth"]))
+
+
+slot_before = slot_z_extent()
+
+# ------------------------------------------------------------------ the new knob
+if "FingerSlotFloorLip" not in vs.PropertiesList:
+    vs.addProperty("App::PropertyLength", "FingerSlotFloorLip", "Finger slot",
+                   "Material left between the BOTTOM of the finger slot and the interior "
+                   "floor. The strip of rear wall that stays continuous across the slot, "
+                   "tying its two sides together and giving the floor an edge to bond to. "
+                   "It equals WallThickness today and equals FloorThickness today and is "
+                   "NEITHER - do not merge it into either.")
+    vs.FingerSlotFloorLip = 2.0
+    log.append("Param FingerSlotFloorLip = 2.0 added")
+else:
+    log.append("Param FingerSlotFloorLip already present (%s) - left alone"
+               % vs.FingerSlotFloorLip)
+FreeCAD.getDocument("Params").recompute(None, True, True)
+
+target = (before["Height"] - vs.FloorThickness.Value - vs.FingerSlotFloorLip.Value)
+if abs(target - before["FingerSlotDepth"]) > 1e-6:
+    raise RuntimeError("the expression would change FingerSlotDepth %.3f -> %.3f; that is a "
+                       "geometry change, not a binding. Check FingerSlotFloorLip."
+                       % (before["FingerSlotDepth"], target))
+
+vs.setExpression("FingerSlotDepth", "Height - FloorThickness - FingerSlotFloorLip")
+log.append("FingerSlotDepth -> Height - FloorThickness - FingerSlotFloorLip (= %.2f)" % target)
+recompute_all()
+
+# ------------------------------------------------------------------ nothing may have moved
+bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+vol_after = boxdoc.getObject("Body").Tip.Shape.Volume
+if abs(vol_after - vol_before) > 1e-6:
+    rollback("box volume moved %.4f mm3 - a binding must not change geometry"
+             % (vol_after - vol_before))
+slot_after = slot_z_extent()
+if slot_after != slot_before:
+    rollback("slot extent moved %s -> %s" % (slot_before, slot_after))
+
+# ------------------------------------------------------------------ dry-run the 60-card box
+dry = None
+if DRY_RUN:
+  vs.CardStackHeight = DRY_RUN_STACK
+  recompute_all()
+  bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+         for o in FreeCAD.getDocument(n).Objects
+         if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+  dry = {"Height": vs.Height.Value, "FingerSlotDepth": vs.FingerSlotDepth.Value,
+         "slot": slot_z_extent(), "invalid": bad,
+         "expect_bottom": vs.FloorThickness.Value + vs.FingerSlotFloorLip.Value}
+  vs.CardStackHeight = before["CardStackHeight"]
+  recompute_all()
+  if bad:
+      raise RuntimeError("60-card dry run went invalid (%s). D5: restoring the parameter "
+                         "does NOT restore the feature. Close all four documents WITHOUT "
+                         "saving and reopen from disk." % ", ".join(bad))
+
+vol_restored = boxdoc.getObject("Body").Tip.Shape.Volume
+if abs(vol_restored - vol_before) > 1e-6:
+    rollback("volume drifted: %.4f != %.4f" % (vol_restored, vol_before))
+if slot_z_extent() != slot_before:
+    rollback("the slot moved")
+
+print("=== 30-bind_finger_slot_depth ===")
+for line in log:
+    print("  " + line)
+print("  slot bottom = Height - FingerSlotDepth = FloorThickness + FingerSlotFloorLip")
+print("  at Height %.2f : FingerSlotDepth %.2f, slot z %s  (unchanged: %s)"
+      % (before["Height"], vs.FingerSlotDepth.Value, slot_before, slot_after == slot_before))
+if dry:
+    print("  DRY RUN, 60-card height (CardStackHeight %.1f):" % DRY_RUN_STACK)
+    print("     Height %.2f  FingerSlotDepth %.2f  slot z %s  (bottom should be %.2f)"
+          % (dry["Height"], dry["FingerSlotDepth"], dry["slot"], dry["expect_bottom"]))
+else:
+    print("  DRY RUN skipped (DRY_RUN=False). Known: Fillet003 goes Invalid at Height 40;")
+    print("    the 60-card variant needs a macro-24/29 style edge re-pick, not a param edit.")
+print("  restored: box volume %.2f (was %.2f), slot %s"
+      % (vol_restored, vol_before, slot_z_extent()))
+print("  NOTE FluteStartZ %.1f is still absolute - a shorter box gets proportionally"
+      % vs.FluteStartZ.Value)
+print("       chunkier fluting. Cosmetic; decide it deliberately, do not let it surprise you.")
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("NOT SAVED.")
