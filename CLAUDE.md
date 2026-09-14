@@ -523,13 +523,30 @@ To go back to free knobs, clear those three expressions.
   slot. It equals `WallThickness` today AND equals `FloorThickness` today and is neither —
   the same coincidence trap as the third-print defects, so it gets its own knob.
 
-  **BLOCKER FOR THE 60-CARD VARIANT, measured 2026-09-14: `Fillet003` goes Invalid at
-  `Height` 40.** Macro 30's dry run drove `CardStackHeight` to 37 and the R 0.6 top-rim
-  fillet died — its edges do not survive the rim moving 25 mm. **So the 60-card version is
-  NOT a parameter change**; it needs the edge re-pick by position that macros 24 and 29 use.
-  Worse, defect D5 applies: restoring `CardStackHeight` left `Fillet003` dead while every
-  parameter read correct, and recovery meant closing all four documents without saving and
-  reopening. Macro 30's `DRY_RUN` is therefore False by default.
+  **THE 60-CARD BLOCKER IS FIXED (macro 31), and the box now sweeps to `Height` 40.**
+  `Fillet003` went Invalid at `Height` 40 with `Invalid edge link: ;#d585:da;:H231,E.Edge24`.
+  Diagnosed rather than assumed: **exactly one of its eleven references had died.** The other
+  ten resolved and had tracked the rim down correctly (z 65→40, 64→39), and `Edge24` was still
+  present *at the same index*, 95 mm at `(0, -34, Height)` — the front inner rim. So it was a
+  stale element-map entry, **not** a missing edge and not a geometry failure.
+
+  That edge was the one **macro 29 created** when it closed the front finger slot and merged
+  two 32.5 mm segments into one. The reference it was given had a thin map history and did not
+  carry through a dimensional change. Stripping the `?` and re-assigning fixed it **for good**,
+  not as a patch: the box has since round-tripped **65 → 40 → 65 → 40** with no dead references
+  and nothing Invalid (81 996.97 mm³ at Height 40, 116 541.35 at 65).
+
+  **General lesson: a feature re-pointed by a macro deserves one more re-assignment after the
+  next clean recompute.** The weak entry came from being written immediately after a merge.
+
+  `macros/31-repair_dead_edge_refs` does this, and encodes the distinction that matters: a `?`
+  says the MAP entry is stale, not whether the edge still exists. If the bare name resolves,
+  strip and re-assign. If it does not, the edge is genuinely gone and must be re-picked BY
+  POSITION (macros 24, 29) — stripping there would silently bind the fillet to whatever edge
+  happens to hold that index. The macro repairs the first case and reports the second.
+
+  (Macro 30's `DRY_RUN` stays False: it is no longer needed, and re-running a height sweep for
+  its own sake only risks D5 again.)
 
   `FluteStartZ` **12.0 is still absolute**, so a shorter box gets proportionally chunkier
   fluting (53 mm of flute becomes 28 mm at `Height` 40). Cosmetic, not a defect — but decide

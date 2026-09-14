@@ -1,0 +1,112 @@
+# -*- coding: utf-8 -*-
+"""
+31-repair_dead_edge_refs.FCMacro — MagicCardBox
+
+Repairs dress-up features (Fillet / Chamfer) whose stored edge references have gone stale,
+which FreeCAD marks by rewriting the subelement with a '?' prefix: `?Edge24`.
+
+THE DISTINCTION THIS MACRO EXISTS TO MAKE
+------------------------------------------
+A '?' means the stored ELEMENT MAP entry no longer resolves. It does NOT say whether the edge
+still exists, and those two cases need opposite fixes:
+
+  stale map, edge still there  -> strip the '?' and re-assign. FreeCAD re-derives the map
+                                  entry from the current shape. Cheap and safe.
+  edge genuinely gone          -> the geometry changed topologically and the reference must be
+                                  re-picked BY POSITION against the new shape (macros 24, 29).
+                                  Stripping here would bind the fillet to whatever edge happens
+                                  to hold that index, which is silently wrong.
+
+So this macro strips ONLY when the bare name resolves to an edge on the base shape, and
+REPORTS the rest rather than guessing at them.
+
+WHERE IT CAME FROM
+------------------
+Macro 30's dry run at the 60-card height (`Height` 65 -> 40) put `Fillet003` Invalid with
+
+    Invalid edge link: ;#d585:da;:H231,E.Edge24
+
+Exactly one of its eleven references had died. The other ten resolved and had tracked the
+rim down correctly (z 65 -> 40, 64 -> 39), and `Edge24` was still present at the same index,
+95 mm at (0, -34, Height) — the front inner rim. It was the edge **macro 29 created** when it
+closed the front finger slot and merged two 32.5 mm segments into one; the reference it was
+given had a thin element-map history and did not carry through a dimensional change.
+
+Re-assigning it once was permanent, not a patch: the box has since round-tripped
+65 -> 40 -> 65 -> 40 with no dead references and nothing Invalid. A freshly assigned
+reference gets a proper map entry; the weak one came from being written immediately after a
+merge.
+
+**A feature re-pointed by a macro is worth re-assigning once more after the next clean
+recompute.** That is the general lesson, and it is cheap insurance.
+
+Idempotent — reports "nothing to repair" when the references are healthy.
+
+Run: Macro -> Macros... -> 31-repair_dead_edge_refs -> Execute
+"""
+
+import FreeCAD
+
+DOCS = ("MagicCardBox", "Lid")
+DRESSUP = ("PartDesign::Fillet", "PartDesign::Chamfer")
+log, unresolved, repaired = [], [], []
+
+for dn in DOCS:
+    doc = FreeCAD.getDocument(dn)
+    for o in doc.Objects:
+        if o.TypeId not in DRESSUP:
+            continue
+        try:
+            src, subs = o.Base[0], list(o.Base[1])
+        except Exception:
+            continue
+        dead = [r for r in subs if "?" in r]
+        if not dead:
+            continue
+        if src.Shape.isNull():
+            unresolved.append("%s/%s: base %s has no shape" % (dn, o.Name, src.Name))
+            continue
+        fixed, lost = [], []
+        for r in subs:
+            bare = r.lstrip("?")
+            if "?" not in r:
+                fixed.append(r)
+                continue
+            try:
+                src.Shape.getElement(bare)          # does the bare name resolve?
+                fixed.append(bare)
+            except Exception:
+                lost.append(r)
+        if lost:
+            unresolved.append("%s/%s: %s do not resolve by name — these need a re-pick BY "
+                              "POSITION (see macros 24 and 29), not a strip"
+                              % (dn, o.Name, ", ".join(lost)))
+            continue
+        o.Base = (src, fixed)
+        repaired.append("%s/%s: %s -> %s" % (dn, o.Name, dead,
+                                             [f for f in fixed if f in
+                                              [d.lstrip("?") for d in dead]]))
+
+if not repaired and not unresolved:
+    print("=== 31-repair_dead_edge_refs ===")
+    print("  nothing to repair — no '?' references in any Fillet or Chamfer.")
+else:
+    for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
+        FreeCAD.getDocument(n).recompute(None, True, True)
+    bad = ["%s/%s :: %s" % (n, o.Name, o.getStatusString())
+           for n in DOCS for o in FreeCAD.getDocument(n).Objects
+           if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+    print("=== 31-repair_dead_edge_refs ===")
+    for line in repaired:
+        print("  REPAIRED %s" % line)
+    for line in unresolved:
+        print("  NEEDS RE-PICK %s" % line)
+    print("  still invalid after repair: %d %s" % (len(bad), bad if bad else ""))
+    for dn in DOCS:
+        for o in FreeCAD.getDocument(dn).Objects:
+            if o.TypeId in DRESSUP and any("?" in r for r in list(o.Base[1])):
+                print("  STILL DEAD %s/%s %s" % (dn, o.Name, list(o.Base[1])))
+    box = FreeCAD.getDocument("MagicCardBox").getObject("Body").Tip.Shape
+    print("  box valid=%s closed=%s solids=%d vol=%.2f"
+          % (box.isValid(), box.isClosed(), len(box.Solids), box.Volume))
+print("NOT SAVED.")
