@@ -1,0 +1,268 @@
+# -*- coding: utf-8 -*-
+"""
+32-card_count_variant.FCMacro — MagicCardBox
+
+Makes CARD COUNT the driving parameter, so a 60-card box and a 100-card box are the same
+model with one integer changed — and verifies the result against the full print-in-place
+battery, not just "it recomputed".
+
+WHY CARD COUNT AND NOT A HEIGHT
+--------------------------------
+`CardStackHeight` was a free literal, 62.0, measured off a stack. Card count is the unit the
+product is actually sold in and the unit Bradley's son asked in, and the conversion between
+them is a measured constant:
+
+    the printed box holds 101 sleeved cards in 62 mm  ->  ~0.62 mm/card
+
+    CardCount = 100                    (integer; the product name)
+    CardPitch = 0.62                   (mm per sleeved card, measured)
+    CardStackHeight = CardCount * CardPitch
+
+At `CardCount` 100 that is 62.0 — IDENTICAL to the literal — so introducing it must not move
+any geometry, and this macro asserts exactly that before going further.
+
+    100 cards -> CardStackHeight 62.0, Height 65.0
+     60 cards -> CardStackHeight 37.2, Height 40.2
+
+CAUTION ON THE PITCH, STATED RATHER THAN HIDDEN
+------------------------------------------------
+0.62 mm/card was derived from a FULL box — 101 cards under their own weight. A 60-card stack
+carries less load and compresses less, so its true pitch is somewhat HIGHER; the caliper
+readings bracket it at 0.58 (fully compressed, in a 100-count box) to 0.69 (one card, loose).
+`CardClearance` 1.0 sits on top of the stack and absorbs part of that.
+
+**Measure a real sleeved 60-stack and set `CardPitch` from it before selling the 60 variant.**
+Under-sizing is the bad direction: the deck does not fit. Over-sizing costs height and nothing
+else. If in doubt raise `CardPitch`, which moves both variants — or accept that one pitch
+cannot be exactly right for two stack heights and keep the 60 box slightly generous.
+
+FluteStartZ IS DELIBERATELY LEFT ABSOLUTE
+------------------------------------------
+It is 12.0 and does not scale with `Height`, so the fluted band runs 12..40.2 on the 60 box
+(28 mm) against 12..65 on the 100 box (53 mm). That is correct, not an oversight: `FluteStartZ`
+is tied to the HINGE, not to the box height — `PanelBottomZ` is 10.0 and the flutes start 2 mm
+above it, clearing the knuckle step. Scaling it would push the flutes down into the hinge on a
+short box. The two variants share a design language and the short one simply has a shorter
+band.
+
+Set SET_CARD_COUNT to switch variants; leave it None to only install the binding.
+
+Run: Macro -> Macros... -> 32-card_count_variant -> Execute
+"""
+
+import FreeCAD
+import Part
+
+# ------------------------------------------------------------------ the dials
+SET_CARD_COUNT = 60         # None = install the binding only, change nothing
+DEFAULT_PITCH = 0.62
+MIN_GAP = 0.35
+MIN_SKIN = 0.95
+BED = 350.0
+# ------------------------------------------------------------------
+
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+log = []
+
+before_stack = float(vs.CardStackHeight)
+before_vol = boxdoc.getObject("Body").Tip.Shape.Volume
+prev_expr = dict(vs.ExpressionEngine).get("CardStackHeight")
+prev_count = int(getattr(vs, "CardCount", 0))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    if "CardCount" in vs.PropertiesList and prev_count:
+        vs.CardCount = prev_count
+    vs.setExpression("CardStackHeight", prev_expr)
+    if prev_expr is None:
+        vs.CardStackHeight = before_stack
+    recompute_all()
+    raise RuntimeError("%s - CardStackHeight restored to %.2f" % (why, before_stack))
+
+
+# ------------------------------------------------------------------ the new knobs
+for name, typ, default, doc in (
+    ("CardCount", "App::PropertyInteger", 100,
+     "How many sleeved cards the box is sold to hold. THE driving parameter: "
+     "CardStackHeight = CardCount * CardPitch, and Height follows from that. 100 and 60 are "
+     "the two published variants."),
+    ("CardPitch", "App::PropertyLength", DEFAULT_PITCH,
+     "Millimetres per sleeved card, IN A STACK. Measured: the printed box takes 101 cards in "
+     "62 mm. A single card measured loose reads 0.69 and a full 100-count box gives 0.58 - "
+     "both are wrong for this purpose. A short stack compresses less than a tall one, so "
+     "re-measure against a real 60-stack before trusting the 60 variant."),
+):
+    if name not in vs.PropertiesList:
+        vs.addProperty(typ, name, "Cards", doc)
+        setattr(vs, name, default)
+        log.append("Param %s = %s added" % (name, default))
+    else:
+        log.append("Param %s already present (%s)" % (name, getattr(vs, name)))
+FreeCAD.getDocument("Params").recompute(None, True, True)
+
+# ------------------------------------------------------------------ install the binding
+target = vs.CardCount * vs.CardPitch.Value
+if prev_expr is None and abs(target - before_stack) > 1e-6:
+    raise RuntimeError("CardCount %d x CardPitch %.3f = %.3f but CardStackHeight is %.3f. "
+                       "Installing the binding would MOVE geometry; fix the Params first."
+                       % (vs.CardCount, vs.CardPitch.Value, target, before_stack))
+vs.setExpression("CardStackHeight", "CardCount * CardPitch")
+log.append("CardStackHeight -> CardCount * CardPitch (= %.2f)" % target)
+recompute_all()
+if abs(boxdoc.getObject("Body").Tip.Shape.Volume - before_vol) > 1e-6:
+    rollback("installing the binding moved geometry")
+log.append("binding is geometry-neutral: box volume %.2f unchanged" % before_vol)
+
+# ------------------------------------------------------------------ switch variant
+if SET_CARD_COUNT is not None:
+    vs.CardCount = int(SET_CARD_COUNT)
+    recompute_all()
+    log.append("CardCount %d -> %d  (CardStackHeight %.2f, Height %.2f)"
+               % (prev_count or 100, vs.CardCount, vs.CardStackHeight.Value, vs.Height.Value))
+
+# ------------------------------------------------------------------ verify
+bad = ["%s/%s :: %s" % (n, o.Name, o.getStatusString())
+       for n in ("MagicCardBox", "Lid") for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    rollback("invalid features: " + "; ".join(bad))
+
+dead = []
+for dn in ("MagicCardBox", "Lid"):
+    for o in FreeCAD.getDocument(dn).Objects:
+        if o.TypeId in ("PartDesign::Fillet", "PartDesign::Chamfer"):
+            dead += ["%s/%s %s" % (dn, o.Name, r) for r in list(o.Base[1]) if "?" in r]
+if dead:
+    rollback("dead edge references: %s (run macro 31)" % ", ".join(dead))
+
+box = boxdoc.getObject("Body").Tip.Shape
+rear = liddoc.getObject(liddoc.getObject("Body001").Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+if rear.distToShape(top)[0] > 1e-6:
+    rollback("lid bodies no longer touch - would export as two meshes")
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr, ax = V(0, ay, az), V(1, 0, 0)
+
+approach = []
+for deg in (0.0, 2.0, 4.0):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    approach.append((deg, round(box.distToShape(a)[0], 4)))
+if approach[0][1] < MIN_GAP:
+    rollback("closed-position gap %.4f < %.2f - the lid would graze" % (approach[0][1], MIN_GAP))
+
+BOX_REAR_Y = vs.Depth.Value / 2
+
+
+def panel_inner_y(x, z):
+    cs = rear.common(Part.makeLine(V(x, BOX_REAR_Y - 6.0, z), V(x, BOX_REAR_Y + 6.0, z)))
+    ys = [v.Point.y for e in cs.Edges for v in e.Vertexes]
+    return min(ys) if ys else None
+
+
+zs = [vs.PanelBottomZ.Value + 4.0, vs.Height.Value * 0.5, vs.Height.Value - 2.0]
+face = [(round(x, 1), round(z, 1), panel_inner_y(x, z))
+        for x in (0.0, vs.Width.Value / 2 - 1.0) for z in zs]
+if any(y is None for _x, _z, y in face):
+    rollback("panel probe found no material: %s" % face)
+worst_face = min(y - BOX_REAR_Y for _x, _z, y in face)
+if worst_face < 0.45:
+    rollback("panel-to-box face clearance %.4f mm" % worst_face)
+
+sweep = []
+for deg in (0, 30, 60, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+if max(v for _, v, _ in sweep) > 0.5:
+    rollback("swing interferes")
+if min(d for dg, _, d in sweep if dg >= 30) < MIN_GAP:
+    rollback("running clearance below %.2f mm" % MIN_GAP)
+
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+float_by = box.BoundBox.ZMin - min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+if float_by > 1e-6:
+    rollback("box floats %.3f mm above the bed in the print pose" % float_by)
+
+ymag = -vs.Depth.Value / 2 + vs.MagnetFromFront.Value
+hole_c = vs.Width.Value / 2 - vs.SideWallThickness.Value / 2
+r_hole = vs.MagnetDia.Value / 2 + vs.MagnetFit.Value
+pocket_top = vs.Height.Value + vs.LidTopThickness.Value - vs.MagnetSkin.Value
+
+
+def skin_at(x):
+    cs = top.common(Part.makeLine(V(x, ymag, vs.Height.Value - 1.0),
+                                  V(x, ymag, vs.Height.Value + vs.LidTopThickness.Value + 1.0)))
+    zz = [v.Point.z for e in cs.Edges for v in e.Vertexes]
+    above = [z for z in zz if z > pocket_top + 1e-6]
+    return (max(above) - pocket_top) if above else 0.0
+
+
+skins = [round(skin_at(hole_c - r_hole + i * (2 * r_hole) / 6.0), 3) for i in range(7)]
+if min(skins) < MIN_SKIN:
+    rollback("magnet skin %.3f mm, under %.2f; profile %s" % (min(skins), MIN_SKIN, skins))
+
+slot = None
+cs = box.common(Part.makeLine(V(0.0, vs.Depth.Value / 2 - vs.WallThickness.Value / 2, -1.0),
+                              V(0.0, vs.Depth.Value / 2 - vs.WallThickness.Value / 2,
+                                vs.Height.Value + 4.0)))
+segs = sorted((min(v.Point.z for v in e.Vertexes), max(v.Point.z for v in e.Vertexes))
+              for e in cs.Edges)
+if segs:
+    slot = round(segs[-1][1], 2)
+expect_slot_bottom = vs.FloorThickness.Value + vs.FingerSlotFloorLip.Value
+if slot is None or abs(slot - expect_slot_bottom) > 0.15:
+    rollback("rear finger slot starts at %s, expected %.2f" % (slot, expect_slot_bottom))
+
+comb = Part.makeCompound([box, r90, t90])
+bb = comb.BoundBox
+if bb.XLength > BED or bb.YLength > BED:
+    rollback("print footprint %.1f x %.1f exceeds the bed" % (bb.XLength, bb.YLength))
+
+print("=== 32-card_count_variant ===")
+for line in log:
+    print("  " + line)
+print("  CardCount %d x CardPitch %.3f -> CardStackHeight %.2f, Height %.2f"
+      % (vs.CardCount, vs.CardPitch.Value, vs.CardStackHeight.Value, vs.Height.Value))
+print("  interior  %.1f x %.1f x %.1f"
+      % (vs.Width.Value - 2 * vs.SideWallThickness.Value,
+         vs.Depth.Value - 2 * vs.WallThickness.Value,
+         vs.Height.Value - vs.FloorThickness.Value))
+print("  closing approach (must be flat, ~0.40): %s" % approach)
+print("  panel face clearance worst %.4f mm" % worst_face)
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin box %.3f panel %.3f top %.3f  floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  magnet skin across pocket %s  (min %.3f)" % (skins, min(skins)))
+print("  rear finger slot bottom z %.2f (expected %.2f)" % (slot, expect_slot_bottom))
+print("  print footprint %.2f x %.2f x %.2f" % (bb.XLength, bb.YLength, bb.ZLength))
+print("  flutes run z %.1f..%.1f (%.1f mm band) - FluteStartZ is hinge-tied, not scaled"
+      % (vs.FluteStartZ.Value, vs.Height.Value, vs.Height.Value - vs.FluteStartZ.Value))
+print("  box vol %.2f   lid rear %.2f   lid top %.2f" % (box.Volume, rear.Volume, top.Volume))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("NOT SAVED.  Set CardCount back to 100 for the standard box.")

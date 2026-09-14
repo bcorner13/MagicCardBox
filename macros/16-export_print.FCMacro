@@ -164,15 +164,19 @@ _expect_bb = (round(nb.XLength, 2), round(nb.YLength, 2), round(nb.ZLength, 2))
 #
 # It can only be checked against the variant the model is CURRENTLY in, since the other one's
 # geometry is not loaded. The flutes decide which that is.
-_cur_variant = "plain" if mb.getObject("Pocket009").Suppressed else "fluted"
+# Four published files now: card count x surface. The model can only be ONE of them at a
+# time, so only that one gets its volume checked; the others get the structural checks.
+_counts = (100, 60)
+_cur_variant = "%d-%s" % (vs.CardCount,
+                          "plain" if mb.getObject("Pocket009").Suppressed else "fluted")
 _expect_vol = comb.Volume
 _VOL_TOL = 0.01          # 1%: tessellation of the flutes and fillets loses a little volume
 _problems = []
-for _variant in ("plain", "fluted"):
+for _variant in ["%d-%s" % (_c, _f) for _c in _counts for _f in ("plain", "fluted")]:
     _3mf = os.path.join(PROJ, "3mf", "MagicCardBox-%s.3mf" % _variant)
     _stl = os.path.join(PROJ, "stl", "MagicCardBox-%s.stl" % _variant)
     if not (os.path.isfile(_3mf) and os.path.isfile(_stl)):
-        print("  %-7s not exported yet" % _variant)
+        print("  %-11s not exported yet" % _variant)
         continue
     _t, _err = _tris_in_3mf(_3mf)
     import Mesh as _Mesh
@@ -194,20 +198,26 @@ for _variant in ("plain", "fluted"):
         _bad.append("stl self-intersecting")
     if _m.countComponents() != 2:
         _bad.append("stl has %d components, expected 2 (box + fused lid)" % _m.countComponents())
-    if _got_bb != _expect_bb:
-        _bad.append("stl bbox %s != posed %s - stale geometry" % (_got_bb, _expect_bb))
+    # DIMENSIONAL checks only against the variant the model is currently in. The others are
+    # different boxes on purpose - the 60-card pose is 113.91 x 107.35 against the 100's
+    # 113.91 x 132.15 - and comparing them to the loaded geometry reports correct files as
+    # stale. Structural checks (triangles, watertight, manifold, components) apply to all four.
     if _variant == _cur_variant:
+        if _got_bb != _expect_bb:
+            _bad.append("stl bbox %s != posed %s - stale geometry" % (_got_bb, _expect_bb))
         _dv = abs(_m.Volume - _expect_vol) / _expect_vol
         if _dv > _VOL_TOL:
             _bad.append("stl volume %.2f cm3 != posed %.2f cm3 (%.2f%% off) - stale geometry"
                         % (_m.Volume / 1000.0, _expect_vol / 1000.0, _dv * 100.0))
     if _bad:
         _problems.append("%s: %s" % (_variant, "; ".join(_bad)))
-        print("  %-7s FAIL  %s" % (_variant, "; ".join(_bad)))
+        print("  %-11s FAIL  %s" % (_variant, "; ".join(_bad)))
     else:
-        _note = ("vol %+.2f%% vs model" % ((_m.Volume - _expect_vol) / _expect_vol * 100.0)
-                 if _variant == _cur_variant else "vol unchecked (model is %s)" % _cur_variant)
-        print("  %-7s OK    %d tris, %.2f cm3, %s, on Z=%.1f  [%s]"
+        _note = ("dims checked, vol %+.2f%%"
+                 % ((_m.Volume - _expect_vol) / _expect_vol * 100.0)
+                 if _variant == _cur_variant
+                 else "structure only (model is %s)" % _cur_variant)
+        print("  %-11s OK    %d tris, %.2f cm3, %s, on Z=%.1f  [%s]"
               % (_variant, _m.CountFacets, _m.Volume / 1000.0, _got_bb, _bb.ZMin, _note))
 if _problems:
     raise RuntimeError("exports failed verification: " + " | ".join(_problems))

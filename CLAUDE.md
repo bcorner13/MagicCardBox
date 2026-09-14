@@ -474,6 +474,26 @@ To go back to free knobs, clear those three expressions.
   So the current design is effectively a **100-card box** (107 with the headroom), not a
   60-card one. A 60-card variant lands near `CardStackHeight` 35, taking `Height` 65 → 38.
 
+  **CARD COUNT IS NOW THE DRIVING PARAMETER** (macro 32). `CardStackHeight` was a free
+  literal; it is now derived, so a variant is one integer:
+
+  ```
+  CardCount = 100            (integer - the product name)
+  CardPitch = 0.62           (mm per sleeved card, in a stack - measured)
+  CardStackHeight = CardCount * CardPitch
+
+  100 cards -> CardStackHeight 62.0, Height 65.0     interior 95 x 68 x 63
+   60 cards -> CardStackHeight 37.2, Height 40.2     interior 95 x 68 x 38.2
+  ```
+
+  At `CardCount` 100 that evaluates to 62.0, identical to the old literal, so installing the
+  binding moved no geometry — macro 32 asserts it.
+
+  **`FluteStartZ` 12.0 is deliberately NOT scaled with `Height`.** It is tied to the HINGE:
+  `PanelBottomZ` is 10.0 and the flutes start 2 mm above it, clearing the knuckle step.
+  Scaling it would drive the flutes down into the hinge on a short box. So the 60 box has a
+  28.2 mm fluted band against the 100's 53 mm — same design language, shorter panel.
+
   **SUPERSEDED BY THE REAL BOX, 2026-09-14: the printed box holds 101 cards.** That is the
   authoritative pitch, because it is this sleeve in this box rather than a caliper on a
   sample:
@@ -870,15 +890,29 @@ SMALLER box; print 4 carries `SideWallThickness` 8, `LidTopThickness` 3.7, `Widt
 solid front, which is **94 555 → 116 541 mm³ of box, +23%**. The rise from 3h6m is that extra
 material, not a regression.
 
-**Exports current as of 2026-09-14, both variants, both from the same tree state:**
+**FOUR published variants as of 2026-09-14** — card count x surface, all from one model.
+`CardCount` 100/60 and `Pocket009.Suppressed` in BOTH documents are the only two switches:
 
-| | plain | fluted |
+| 100-card | plain | fluted |
 |---|---|---|
 | facets | 2 012 | 5 636 |
 | volume | 163.02 cm³ | 155.43 cm³ |
 | watertight / non-manifold / self-int. | ✓ / False / False | ✓ / False / False |
 | components | 2 (box + fused lid) | 2 |
 | footprint | 113.91 × 132.15 × 74.00 on Z=0 | identical |
+
+| 60-card | plain | fluted |
+|---|---|---|
+| facets | 2 012 | 5 636 |
+| volume | 122.39 cm³ | 116.99 cm³ |
+| footprint | 113.91 × 107.35 × 74.00 on Z=0 | identical |
+
+Triangle counts match across card counts because the topology is identical; the flute volume
+scales with height (7.59 cm³ removed on the 100, 5.40 cm³ on the 60).
+
+**Macro 16 dimension-checks only the variant the model is currently loaded as.** The other
+three are different boxes on purpose, so bbox and volume would report correct files as stale;
+they get the structural checks (triangle count, watertight, manifold, 2 components) instead.
 | print-pose hinge gap | 0.4000 mm | 0.4000 mm |
 
 Plain is produced by suppressing `Pocket009` in BOTH documents (box flutes and lid top
