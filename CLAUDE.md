@@ -65,6 +65,67 @@ Two things that do NOT work here, both measured:
   `HengeFilet` then ADDS material there instead of rolling it away (+7.56 mm3, contact
   restored). Fillets fill concave edges.
 
+## THIRD TEST PRINT — 2026-09-14 — "the lid doesn't close all the way"
+
+The hinge **held** this time and the box is usable. Three complaints, all now fixed by
+`macros/27-panel_relief_and_walls` and `macros/28-magnet_skin`.
+
+The lid not closing was **three separate coincident-surface defects stacked on one another**,
+and they had to be peeled off one at a time because each one hid the next.
+
+| # | Two surfaces driven to the same place | Fix |
+|---|---|---|
+| A | lid panel inner face `y = 36` vs box rear face `y = 36` | `PocketPanelRelief`, full width, → 0.5 mm |
+| B | `PanelBottomZ` == socket bore top, both `HingeAxisFromBottom + HingeTabRadius + HingeTabClearance` | rebind `PanelBottomZ` to the **knuckle** top |
+| C | outer lid flute at `x = Width/2 - FluteMargin` vs magnet pocket edge | `MagnetSkin` 1.0 → 1.7, `LidTopThickness` derived |
+
+**The measurement that identified the jam.** A grazing contact between near-parallel
+surfaces opens as `gap ≈ r(1 - cos θ)`, i.e. as θ², so it reads ZERO at closed and stays
+microscopic for many degrees:
+
+```
+deg     gap_mm          deg     gap_mm  (after)
+0.0     0.0000          0.0     0.4000
+1.0     0.0008          1.0     0.4000
+2.0     0.0033          2.0     0.4000
+4.0     0.0132          4.0     0.4000
+```
+
+Before, the panel was within 0.1 mm of the box for the last **11 degrees** of travel and
+within 0.3 mm for the last **19**. Printed roughness is ±0.05–0.1 mm, so the whole final
+approach was a rub — "I can force it" is exactly what that feels like. After, the gap is
+**constant** at the knuckle journal fit, which is concentric with the hinge axis and
+therefore cannot resist closing. **A flat line across that table is the thing to look for;
+a number that collapses toward θ = 0 is a jam no matter how small it looks at 4°.**
+
+**Back-solving the curve tells you WHICH surface.** `r = gap / (1 - cos θ)` gave 5.42 at 4°
+— the socket bore (5.4), not the panel face (5.0). That is how defect B was found after
+fixing A changed the approach table not at all.
+
+**Do not fix B by raising `PanelBottomZ`** — tried and measured. `+ HingeSwingClearance`
+puts the step's corner at radius 5.9 against a 5.4 bore, i.e. outside the socket and into
+solid side wall (single contact at `(50.5, 31.0, 10.9)`). The lid fills the socket from
+BELOW, so clearance means coming DOWN to the knuckle radius.
+
+### THE PATTERN BEHIND ALL THREE — identical expressions guarantee zero clearance
+
+```
+PanelBottomZ    = HingeAxisFromBottom + HingeTabRadius + HingeTabClearance
+socket bore top = HingeAxisFromBottom + HingeTabRadius + HingeTabClearance
+```
+
+Two mating surfaces driven by the **same expression** are coincident forever, by
+construction, and no amount of re-checking the numbers will reveal it because the numbers
+are correct. Compare `HingeWrapRadius = HingeTabRadius + HingeSwingClearance`, which carries
+its clearance term. **When two surfaces must not touch, their expressions must differ by a
+clearance Param — grep for pairs that don't.** This has now happened three times in this
+model (the r=5.000 ride macro 20 fixed, the panel face, and `PanelBottomZ`).
+
+`LidTopThickness` was the same bug in a benign form: it *happened* to equal
+`MagnetThickness + MagnetSkin` = 3.0, with nothing recording that it had to. It is now
+derived, so "the magnets meet with no plastic between them" cannot be broken by editing one
+number.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -368,7 +429,7 @@ be designed for; it is not a slicer setting.
 still Params and still drive everything downstream, but they are no longer free numbers:
 
 ```
-Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 106.0
+Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 111.0
 Depth  = CardWidth       + 2*CardClearance + 2*WallThickness       =  72.0
 Height = CardStackHeight +   CardClearance +   FloorThickness      =  65.0
 ```
@@ -382,10 +443,15 @@ To go back to free knobs, clear those three expressions.
   first print rubbed. **`CardWidth` 66.0 is still an ASSUMPTION** (standard 63 card + sleeve)
   — and since `CardLength` turned out to be off by 1 mm, measure this one too.
 - **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
-  `SideWallThickness` 6.0, `FloorThickness` 2.0, `EdgeFilletRadius` 1.0,
-  `LidTopThickness` 3.0
+  `SideWallThickness` **8.0** (was 6.0; raised by macro 27 — hinge web 0.60 → 2.60 mm and
+  magnet wall margins 0.95 → 1.95 mm. Grows the box OUTWARD only; interior is unchanged),
+  `FloorThickness` 2.0, `EdgeFilletRadius` 1.0,
+  `LidTopThickness` **3.7 (DERIVED = `MagnetThickness + MagnetSkin`, macro 28)**
 - **Magnets** (added 2026-09-13, macro 19): `MagnetDia` 4.0, `MagnetThickness` 2.0,
-  `MagnetFromFront` 8.0, `MagnetSkin` 1.0, `MagnetFit` 0.05 (per side on the radius)
+  `MagnetFromFront` 8.0, `MagnetSkin` **1.7** (was 1.0 — the outer lid flute cuts
+  `FluteDepth` 0.7 straight out of the skin, leaving **0.30 mm** over the magnet after the
+  Width change; now 1.00 mm worst case, measured across the pocket),
+  `MagnetFit` 0.05 (per side on the radius)
 
 **`LidTopThickness` is separate from `WallThickness` on purpose — do not merge them.**
 `WallThickness` already means four unrelated things: the box front/rear walls
@@ -404,7 +470,9 @@ middle of the plate instead of its surface.
 - **Hinge:** `HingeTabRadius` 5.0 — **the single knob; `HingeAxisFromRear` and
   `HingeAxisFromBottom` are DERIVED from it** (see the identity below). `HingePinDia` 6.0,
   `HingePinLength` 3.0, `HingeTabThickness` 5.0, `HingeNeckDrop` 3.0, `RimRelief` 1.0, plus
-  derived `PanelBottomZ` 10.4, `PanelWrapZ` 0.0, `HingeWrapRadius` 5.5,
+  derived `PanelBottomZ` **10.0 = `HingeAxisFromBottom + HingeTabRadius`** (the knuckle
+  top, NOT the bore top — see the third-print section), `PanelWrapZ` 0.0,
+  `HingeWrapRadius` 5.5,
   `HingeFilletRadius` 5.0, `HingeSocketFlatZ` 0.9, `HingeSocketFlatHalf` 3.514
 
 **`HingeTabRadius == HingeAxisFromRear == HingeAxisFromBottom` is a hard requirement, now
@@ -488,6 +556,16 @@ volume = box.common(rotated_lid).Volume     # 0.0 proves nothing on its own
 
 Macro 16's export gate now checks the GAP, which is why it can refuse a mesh that every
 interference test would have waved through.
+
+**1b. At a hinge, the whole-shape minimum distance is the WRONG gate.**
+
+`box.distToShape(lid)[0]` is dominated by surfaces that are SUPPOSED to be close — the
+knuckle journal fit is `HingeTabClearance` 0.4 and the step sits on the bore at 0.0. Gating
+macro 27 on it cost four full verify cycles, because it kept failing on geometry that was
+correct while the defect sat elsewhere. Gate on the SPECIFIC mating faces instead (macro 27
+measures the panel's inner face against the box's rear face directly with a line/solid
+`common()`), and report the whole-shape contact POINTS as information — the points are what
+identify which surface pair is at fault. A bare failing number tells you nothing here.
 
 **2. Geometrically perfect and structurally inconsistent are not exclusive. Check Group
 order against the BaseFeature chain.**
@@ -648,11 +726,11 @@ top of this file.** No successful print yet.
 
 | | plain | fluted |
 |---|---|---|
-| facets | 4 722 | 9 726 |
-| volume | 135.41 cm³ | 128.39 cm³ |
+| facets | 2 134 | 5 554 |
+| volume | 159.56 cm³ | 152.57 cm³ |
 | watertight / non-manifold / self-int. | ✓ / False / False | ✓ / False / False |
 | components | 2 (box + fused lid) | 2 |
-| footprint | 108.91 × 131.45 × 74.00 on Z=0 | identical |
+| footprint | 113.91 × 132.15 × 74.00 on Z=0 | identical |
 | print-pose hinge gap | 0.4000 mm | 0.4000 mm |
 
 Plain is produced by suppressing `Pocket009` in BOTH documents (box flutes and lid top

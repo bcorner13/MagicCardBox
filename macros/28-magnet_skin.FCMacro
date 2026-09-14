@@ -1,0 +1,218 @@
+# -*- coding: utf-8 -*-
+"""
+28-magnet_skin.FCMacro — MagicCardBox
+
+Thickens the plastic over the lid's magnet pockets, which macro 27 made critically thin, and
+writes down the relationship that was holding LidTopThickness at 3.0 by coincidence.
+
+THE MEASUREMENT
+---------------
+The lid plate spans z 65..68 and the magnet pocket z 65..67, so the skin over a magnet is
+nominally MagnetSkin = 1.0 mm. It is not, because the outermost lid flute cuts into it.
+Measured across the pocket at y = -28 after macro 27:
+
+    x       material above the pocket       skin
+    49.45   [65,67] + [67, 67.301]          0.30 mm
+    49.96            [67, 67.343]           0.34 mm
+    50.48            [67, 67.5 ]            0.50 mm
+    51.50            [67, 68  ]             1.00 mm   <- pocket centre
+    53.55            [67, 68  ]             1.00 mm
+
+The outer flute sits at Width/2 - FluteMargin = 49.5 and the hole's inboard edge is at
+49.45 - they coincide, and FluteDepth 0.7 comes straight out of the 1.0 mm skin. 0.30 mm is
+less than one 0.42 extrusion: it prints as a hole, or the magnet pulls through it.
+
+CLAUDE.md already recorded this as 0.5 mm at Width 107 and named the two available knobs
+("raise FluteMargin or MagnetSkin - do not move the magnets outboard"). Macro 27 took Width
+to 111, which moved the pocket centre from x 50 to 51.5 and the flute from 47 to 49.5, and
+the overlap got worse rather than better. Bradley chose the MagnetSkin route so the flute
+pattern is left alone.
+
+WHY LidTopThickness BECOMES DERIVED
+------------------------------------
+The pocket must be exactly MagnetThickness deep and must start on the parting plane at
+z = Height, so the two magnets meet face to face with no plastic between them. That means
+
+    LidTopThickness = MagnetThickness + MagnetSkin
+
+has to hold, and it did - 3.0 = 2.0 + 1.0 - purely by coincidence, with nothing recording
+it. Raising MagnetSkin alone would have driven the pocket 0.7 mm shallower than the magnet
+and left it standing proud of the parting plane. Binding it means the plate now grows
+whenever the skin does, and the "magnets meet with no plastic between them" property cannot
+be broken by editing one number.
+
+    MagnetSkin       1.0 -> 1.7      skin under the flute = MagnetSkin - FluteDepth = 1.0
+    LidTopThickness  3.0 -> 3.7      derived
+    lid plate        z 65..68 -> z 65..68.7
+
+The 24 lid flute expressions are already written against LidTopThickness (macro 19), so they
+follow the plate up. The bed plane is unaffected: in the 90 deg print pose closed-frame Z maps
+to print Y, so plate THICKNESS changes the footprint depth (+0.7 mm), not the height the part
+rests at.
+
+Idempotent. Restores MagnetSkin and LidTopThickness if anything fails.
+
+Run: Macro -> Macros... -> 28-magnet_skin -> Execute
+"""
+
+import FreeCAD
+import Part
+
+# ------------------------------------------------------------------ the dials
+NEW_MAGNET_SKIN = 1.7
+MIN_SKIN_UNDER_FLUTE = 0.95     # measured from the solid, not assumed
+# ------------------------------------------------------------------
+
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+log = []
+
+before = {n: float(getattr(vs, n)) for n in ("MagnetSkin", "LidTopThickness")}
+prev_ltt_expr = dict(vs.ExpressionEngine).get("LidTopThickness")
+
+# ------------------------------------------------------------------ guards, before touching
+errs = []
+if NEW_MAGNET_SKIN - vs.FluteDepth.Value < 0.8:
+    errs.append("MagnetSkin %.2f - FluteDepth %.2f leaves under 0.8 mm beneath the flute"
+                % (NEW_MAGNET_SKIN, vs.FluteDepth.Value))
+if NEW_MAGNET_SKIN <= 0:
+    errs.append("MagnetSkin must be positive")
+if errs:
+    raise RuntimeError("28 refuses to run: " + "; ".join(errs))
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def rollback(why):
+    vs.setExpression("LidTopThickness", prev_ltt_expr)
+    if prev_ltt_expr is None:
+        vs.LidTopThickness = before["LidTopThickness"]
+    vs.MagnetSkin = before["MagnetSkin"]
+    recompute_all()
+    raise RuntimeError("%s - MagnetSkin restored to %.2f, LidTopThickness to %.2f"
+                       % (why, before["MagnetSkin"], before["LidTopThickness"]))
+
+
+# ------------------------------------------------------------------ apply
+vs.setExpression("LidTopThickness", "MagnetThickness + MagnetSkin")
+log.append("LidTopThickness bound to MagnetThickness + MagnetSkin")
+vs.MagnetSkin = NEW_MAGNET_SKIN
+log.append("MagnetSkin %.2f -> %.2f" % (before["MagnetSkin"], NEW_MAGNET_SKIN))
+
+recompute_all()
+
+# ------------------------------------------------------------------ verify
+bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Tip.Shape
+rear = liddoc.getObject(liddoc.getObject("Body001").Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+for nm, s in (("box", box), ("lid rear", rear), ("lid top", top)):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+if rear.distToShape(top)[0] > 1e-6:
+    rollback("lid bodies no longer touch - would export as two meshes")
+
+# THE POINT: measure the skin over the pocket, across its whole width, from the solid.
+ymag = -vs.Depth.Value / 2 + vs.MagnetFromFront.Value
+hole_c = vs.Width.Value / 2 - vs.SideWallThickness.Value / 2
+r_hole = vs.MagnetDia.Value / 2 + vs.MagnetFit.Value
+z_lo = vs.Height.Value - 1.0
+z_hi = vs.Height.Value + vs.LidTopThickness.Value + 1.0
+pocket_top = vs.Height.Value + vs.LidTopThickness.Value - vs.MagnetSkin.Value
+
+
+def skin_at(x):
+    """Plate material lying ABOVE the pocket roof at this x, measured on the solid."""
+    cs = top.common(Part.makeLine(V(x, ymag, z_lo), V(x, ymag, z_hi)))
+    zs = []
+    for e in cs.Edges:
+        zs += [v.Point.z for v in e.Vertexes]
+    above = [z for z in zs if z > pocket_top + 1e-6]
+    return (max(above) - pocket_top) if above else 0.0
+
+
+probe = [round(hole_c - r_hole + i * (2 * r_hole) / 10.0, 3) for i in range(11)]
+skins = [(x, round(skin_at(x), 3)) for x in probe]
+worst_skin = min(s for _x, s in skins)
+if worst_skin < MIN_SKIN_UNDER_FLUTE:
+    rollback("skin over the magnet is %.3f mm, under the %.2f mm target; profile %s"
+             % (worst_skin, MIN_SKIN_UNDER_FLUTE, skins))
+
+# The pocket must stay exactly MagnetThickness deep and start on the parting plane.
+depth = vs.LidTopThickness.Value - vs.MagnetSkin.Value
+if abs(depth - vs.MagnetThickness.Value) > 1e-6:
+    rollback("pocket depth %.3f != MagnetThickness %.3f - the magnets would not meet"
+             % (depth, vs.MagnetThickness.Value))
+
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+approach = []
+for deg in (0.0, 2.0, 4.0):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    approach.append((deg, round(box.distToShape(a)[0], 4)))
+sweep = []
+for deg in (0, 30, 60, 90):
+    a = rear.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+if max(v for _, v, _ in sweep) > 0.5:
+    rollback("swing interferes")
+if min(d for dg, _, d in sweep if dg >= 30) < 0.35:
+    rollback("running clearance dropped below 0.35 mm")
+
+r90 = rear.copy()
+r90.rotate(ctr, ax, -90)
+t90 = top.copy()
+t90.rotate(ctr, ax, -90)
+lowest = min(box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin)
+float_by = box.BoundBox.ZMin - lowest
+if float_by > 1e-6:
+    rollback("box would float %.3f mm above the bed in the print pose" % float_by)
+
+print("=== 28-magnet_skin ===")
+for line in log:
+    print("  " + line)
+print("  MagnetSkin %.2f -> %.2f   LidTopThickness %.2f -> %.2f (derived)"
+      % (before["MagnetSkin"], vs.MagnetSkin.Value,
+         before["LidTopThickness"], vs.LidTopThickness.Value))
+print("  lid plate z %.2f..%.2f   pocket roof z %.2f   pocket depth %.3f (= MagnetThickness)"
+      % (vs.Height.Value, vs.Height.Value + vs.LidTopThickness.Value, pocket_top, depth))
+print("  SKIN OVER THE MAGNET, measured across the pocket (x, skin_mm)")
+for x, s in skins:
+    print("     %8.3f   %6.3f" % (x, s))
+print("  worst skin %.3f mm  (was 0.30 mm; flute cuts %.2f)"
+      % (worst_skin, vs.FluteDepth.Value))
+print("  closing approach  %s" % approach)
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  print pose ZMin  box %.3f  panel %.3f  top %.3f   box floats %.3f"
+      % (box.BoundBox.ZMin, r90.BoundBox.ZMin, t90.BoundBox.ZMin, float_by))
+print("  print footprint depth  %.2f  (plate thickness adds to Y in the print pose)"
+      % (r90.BoundBox.YMax - box.BoundBox.YMin))
+print("  box vol %.2f   lid rear vol %.2f   lid top vol %.2f"
+      % (box.Volume, rear.Volume, top.Volume))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("  re-solve the assembly Revolute joint after this (macro 05).")
+print("NOT SAVED.")

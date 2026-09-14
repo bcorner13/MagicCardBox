@@ -128,8 +128,22 @@ if is_dead(j.Reference1):
 # joint then drags the lid 0.4 mm to make the two faces touch, closing the clearance it is
 # supposed to have. The assembled pose we want is the tab flush with the side wall's outer
 # face, i.e. the lid link unmoved, so both frames sit at the same axial station on the axis.
-j.Placement1 = P1
-j.Placement2 = FreeCAD.Placement(P1)
+# ...but only the ROTATION may be restored blindly. The captured POSITION is valid only
+# while the hinge has not physically moved, and a Width or SideWallThickness change slides
+# it along X: macro 27 took Width 107 -> 111, which moved the pin's end disc 51.1 -> 53.1
+# and the hole's blind end 51.5 -> 53.5. Restoring the captured position would have anchored
+# the joint 2 mm inboard of the actual hinge and the solver would drag the lid to suit -
+# caught by the pose check below, but not fixed by it.
+#
+# So: position follows the face we just located by geometry; rotation is preserved, because
+# that is the part FreeCAD re-derives wrongly (note 1 in the header).
+anchor = FreeCAD.Vector(lid_hits[0][1], aY, aZ)
+P_new = FreeCAD.Placement(anchor, P1.Rotation)
+if (P_new.Base - P1.Base).Length > 1e-9:
+    print("  hinge moved: joint anchor %s -> %s (rotation preserved)"
+          % (P1.Base, P_new.Base))
+j.Placement1 = P_new
+j.Placement2 = FreeCAD.Placement(P_new)
 
 for n in ("Params", "MagicCardBox", "Lid", "MagicCardAssembly"):
     FreeCAD.getDocument(n).recompute(None, True, True)
@@ -153,8 +167,8 @@ print("          Ref2=%s  State=%s" % (ref2_before, state_before))
 print("  repaired: %s" % (", ".join(repaired) if repaired else "nothing was dead"))
 print("  after : Ref1=%s" % str(j.Reference1))
 print("          Ref2=%s" % str(j.Reference2))
-print("  Placement1 restored: %s" % j.Placement1)
-print("  Placement2 restored: %s" % j.Placement2)
+print("  Placement1 set: %s" % j.Placement1)
+print("  Placement2 set: %s" % j.Placement2)
 print("  Lid link pose moved by %.9f mm (allowed <= HingePinClearance %.3f), rotation unchanged=%s  -> %s"
       % (moved, vs.HingePinClearance.Value, rot_same,
          "OK" if pose_ok else "*** POSE CHANGED BEYOND CLEARANCE - DO NOT SAVE ***"))
