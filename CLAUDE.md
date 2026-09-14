@@ -454,16 +454,31 @@ To go back to free knobs, clear those three expressions.
   first print rubbed. **`CardWidth` 66.0 is still an ASSUMPTION** (standard 63 card + sleeve)
   — and since `CardLength` turned out to be off by 1 mm, measure this one too.
 
-  **One sleeved card measures 0.69 mm** (caliper, 2026-09-14). That converts the box between
-  millimetres and the unit customers actually think in:
+  **Card pitch: measure IN A STACK, not one card.** Two caliper readings, 2026-09-14:
 
   ```
-  CardStackHeight 62.0  ÷ 0.69  =  ~90 cards      <- what this box actually is
-  60 cards        × 0.69        =  41.4 mm        <- CardStackHeight for a 60-card version
+  one sleeved card, loose        0.69 mm/card
+  cards in the 100-count box     0.58 mm/card   <- USE THIS ONE
   ```
 
-  So the current design is a **~90-card box**, not a 60-card one. A 60-card variant is
-  `CardStackHeight` 41.4, which takes `Height` 65 → 44.4 — but see the warning below first.
+  A single sleeved card reads ~19 % thick: the sleeve is uncompressed and there is air at the
+  lip. In a stack under its own weight that disappears. Over 60 cards the two figures differ
+  by **6.6 mm**, which is more than `CardClearance` and `FloorThickness` combined — size off
+  the loose figure and the box is needlessly tall; size off nothing and it does not close.
+
+  ```
+  CardStackHeight 62.0  ÷ 0.58  =  ~107 cards     <- what this box actually is
+  60 cards        × 0.58        =  34.8 mm        <- CardStackHeight for a 60-card version
+  ```
+
+  So the current design is effectively a **100-card box** (107 with the headroom), not a
+  60-card one. A 60-card variant lands near `CardStackHeight` 35, taking `Height` 65 → 38.
+
+  **Before building it, measure a real sleeved 60-card stack** rather than trusting either
+  multiplication. 0.58 came from a full 100-box, where compression is at its greatest; a
+  60-stack sits somewhere between the two figures, and the honest number is the measured one.
+  This is the same correction `CardLength` and `CardStackHeight` already needed after print 1
+  — card dimensions have been wrong every single time they were inferred rather than measured.
 
   **TWO UNBOUND LITERALS ENCODE A RELATIONSHIP TO `Height` AND WILL NOT TRACK IT.** Verified
   2026-09-14: neither has an expression.
