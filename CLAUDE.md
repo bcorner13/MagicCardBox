@@ -474,8 +474,29 @@ To go back to free knobs, clear those three expressions.
   So the current design is effectively a **100-card box** (107 with the headroom), not a
   60-card one. A 60-card variant lands near `CardStackHeight` 35, taking `Height` 65 → 38.
 
-  **Before building it, measure a real sleeved 60-card stack** rather than trusting either
-  multiplication. 0.58 came from a full 100-box, where compression is at its greatest; a
+  **SUPERSEDED BY THE REAL BOX, 2026-09-14: the printed box holds 101 cards.** That is the
+  authoritative pitch, because it is this sleeve in this box rather than a caliper on a
+  sample:
+
+  ```
+  62 mm (CardStackHeight) ÷ 101  =  0.614 mm/card
+  63 mm (interior)        ÷ 101  =  0.624 mm/card   <- if the stack used the 1 mm headroom
+                                    ~0.62 mm/card   <- use this
+  ```
+
+  It lands between the loose 0.69 and the fully-compressed 0.58, which is what a
+  partially-compressed stack should do — both calipers were right about their own case and
+  wrong about this one. **Capacity is ~100 cards, by count, not by arithmetic.**
+
+  ```
+  60 cards × 0.62  =  37.2 mm   ->  CardStackHeight ~37, Height ~40
+  ```
+
+  Keep the older readings above: they are the evidence for WHY a single-card caliper cannot
+  size a stack, which is worth more than the numbers themselves.
+
+  **Still worth measuring a real sleeved 60-card stack** rather than trusting the
+  multiplication, since a 60-stack compresses less than a 101-stack. 0.58 came from a full 100-box, where compression is at its greatest; a
   60-stack sits somewhere between the two figures, and the honest number is the measured one.
   This is the same correction `CardLength` and `CardStackHeight` already needed after print 1
   — card dimensions have been wrong every single time they were inferred rather than measured.
