@@ -739,10 +739,40 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
 
 ## Print profile
 
-**First test print: 2026-09-13, PLA (orange), FAILED — see the print-failure section at the
-top of this file.** No successful print yet.
+**Print 1 (2026-09-13, PLA): FAILED** — hinge snapped, stringing across the back, overhang at
+the top of the hinge. See the first-print section at the top of this file.
+**Print 2: cancelled.**
+**Print 3 (2026-09-14, PLA, silk): the hinge HELD and the box is usable** — but the lid would
+not close, which took three stacked coincident-surface defects to explain. See the third-print
+section. Print 4 is the first with real clearance on every mating face.
 
-**Exports current as of 2026-09-13, both variants, both from the same tree state:**
+### Measured print times — Creality K2 Plus, 0.4 nozzle, PLA, fluted variant
+
+Two findings from slicing print 4, both worth carrying into the production version.
+
+**A cutout that INTERRUPTS a perimeter can cost more time than the material it removes.**
+Making the front wall solid (macro 29) ADDED 2854 mm³ and the estimate went DOWN to 4h12m.
+The finger slot ran `FingerSlotDepth` 61 mm up the front, so for roughly 300 layers the outer
+perimeter was not a closed loop: stop at one slot edge, retract, travel, re-prime, restart at
+the other — two extra wall ends per layer, with the front flutes chopped into short segments
+that never reach cruise before decelerating. Filling it restores one continuous loop per
+layer. The saved retractions and accelerations outweigh the extra extrusion comfortably.
+**Judge a cutout on its perimeter cost, not its volume.**
+
+**Variable layer height is worth more than it looks.** Same geometry:
+
+| setting | estimate |
+|---|---|
+| fixed layer height | 4h12m |
+| variable, 0.32 quality/speed, smooth 5 | **3h43m** |
+
+(Smoothing is inverted — a LOWER number means MORE adjustment, so 5 is more aggressive than
+the 7 used earlier.) Earlier rounds measured 3h6m at 0.4 quality / smooth 7, but on the
+SMALLER box; print 4 carries `SideWallThickness` 8, `LidTopThickness` 3.7, `Width` 111 and a
+solid front, which is **94 555 → 116 541 mm³ of box, +23%**. The rise from 3h6m is that extra
+material, not a regression.
+
+**Exports current as of 2026-09-14, both variants, both from the same tree state:**
 
 | | plain | fluted |
 |---|---|---|
