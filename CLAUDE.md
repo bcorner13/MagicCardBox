@@ -359,13 +359,24 @@ been built yet; treat them as the agreed direction for the next modeling passes.
    accepted under the lid. Settle this **before** tuning clearances, because it decides
    which surfaces are Z-facing and therefore which gaps are at risk of fusing.
 
-2. ~~**Finger slots front and back** to lift the cards out.~~ **BUILT.** `FingerSlotWidth` 30,
-   `FingerSlotDepth` 61 — runs to the interior floor so the whole stack can be gripped.
-   **Caveat:** the slot is cut through *both* the front and rear walls (`Pocket007`,
-   ThroughAll Symmetric), but the lid's rear panel is solid across it — measured material at
-   `y = 37` at both `z = 20` and `z = 50`. **The back slot is sealed shut whenever the lid is
-   closed and currently does nothing.** Either slot the lid panel to match, or drop the rear
-   cut and leave that wall intact (which would also help it print).
+2. ~~**Finger slots front and back** to lift the cards out.~~ **BUILT, and now REAR ONLY**
+   (macro 29, 2026-09-14). `FingerSlotWidth` 30, `FingerSlotDepth` 61 — runs to the interior
+   floor so the whole stack can be gripped. `Pocket007` is `ThroughAll` + **`One side`**;
+   it was `Symmetric`, which punched both walls with one feature.
+
+   **The front wall is solid.** Two reasons: it is the display face and the flutes now run
+   across it unbroken, and a solid front means a knocked-over box cannot shed its cards.
+
+   **An earlier note here said the rear slot "is sealed shut and currently does nothing".
+   That was wrong** — it is only covered with the lid CLOSED. The panel swings with the lid,
+   so at 90° open it has rotated down and back to lie flat behind the box and the rear wall
+   is exposed, which is exactly when you reach in for cards.
+
+   **Changing this side breaks `Fillet003` and that is unavoidable.** Closing the front slot
+   is a TOPOLOGICAL change: the front inner rim stops being two 32.5 mm segments at
+   `(±31.25, -34, 65)` and becomes one 95 mm edge. Both stored names die AND both recorded
+   midpoints then land on the SAME new edge, so re-picking must de-duplicate — 12 refs
+   collapse to 11. Macro 29 does this; macro 24 is the prior art but never had to merge.
 
 3. **Bottom extended by 2 mm**, as an additional body that tapers outward to a wider
    footprint. Note this interacts with `FloorThickness` and with the "centered at (0,0,0)"
@@ -567,6 +578,15 @@ measures the panel's inner face against the box's rear face directly with a line
 `common()`), and report the whole-shape contact POINTS as information — the points are what
 identify which surface pair is at fault. A bare failing number tells you nothing here.
 
+**1c. A bounding box does not notice most changes. Check VOLUME too.**
+
+Macro 16's export gate compared triangle counts, watertightness, component count and bbox,
+and on 2026-09-14 it passed BOTH stale exports after macro 29 filled the front wall's finger
+slot — 2854 mm³ of geometry and not one millimetre of bounding box. It now also compares the
+mesh volume against the posed solid, for whichever variant the model is currently in
+(`Pocket009.Suppressed` decides which). Measured tessellation error is **0.07 %** against a
+**1 %** gate, and the staleness it had missed was 1.87 %, so the margin is wide.
+
 **2. Geometrically perfect and structurally inconsistent are not exclusive. Check Group
 order against the BaseFeature chain.**
 
@@ -726,8 +746,8 @@ top of this file.** No successful print yet.
 
 | | plain | fluted |
 |---|---|---|
-| facets | 2 134 | 5 554 |
-| volume | 159.56 cm³ | 152.57 cm³ |
+| facets | 2 012 | 5 636 |
+| volume | 163.02 cm³ | 155.43 cm³ |
 | watertight / non-manifold / self-int. | ✓ / False / False | ✓ / False / False |
 | components | 2 (box + fused lid) | 2 |
 | footprint | 113.91 × 132.15 × 74.00 on Z=0 | identical |

@@ -1,0 +1,260 @@
+# -*- coding: utf-8 -*-
+"""
+29-finger_slot_rear_only.FCMacro — MagicCardBox
+
+Leaves the finger slot in the REAR wall and makes the FRONT wall solid.
+(Bradley's son's call, 2026-09-14: the back grip is fine, the front should be solid — and a
+solid front wall stops the cards spilling out if the box is knocked over.)
+
+WHAT IT CHANGES
+---------------
+`Pocket007` / "FingerSlot001" is sketched on the y = 0 plane and cut
+
+    Type = ThroughAll, SideType = Symmetric
+
+so one feature punches BOTH the front wall (y -36..-34) and the rear wall (y 34..36).
+Dropping SideType to "One side" cuts in one direction only. Nothing dimensional changes —
+`FingerSlotWidth` and `FingerSlotDepth` still drive `Sketch011` exactly as before — so this
+is a feature-property change, not a geometry edit, and the audit is unaffected.
+
+WHICH DIRECTION IS "ONE SIDE"
+------------------------------
+The sketch's placement is Yaw-Pitch-Roll (0, 0, 90), so its normal points along -Y and an
+un-reversed pocket cuts toward +Y, the rear. That is the algebra; this macro does not trust
+it. It sets the property, MEASURES which wall survived, and flips `Reversed` if it guessed
+wrong — then refuses unless the front is solid and the rear is open.
+
+THE REAR SLOT IS NOT DEAD, WHICH IS WHY THIS IS THE RIGHT ONE TO KEEP
+---------------------------------------------------------------------
+CLAUDE.md previously recorded the rear slot as doing nothing, because the lid's rear panel
+covers it. That is only true with the lid CLOSED. The panel swings with the lid, so at 90 deg
+open it has rotated down and back to lie flat behind the box and the rear wall is exposed —
+which is exactly when you reach in for the cards. The note in CLAUDE.md is corrected.
+
+The front wall keeps its flutes and is now unbroken across them, which is the point — and
+with nothing cut into it, a knocked-over box cannot shed its cards through the front.
+
+IT BREAKS Fillet003, AND THAT IS NOT AVOIDABLE — IT IS REPAIRED
+----------------------------------------------------------------
+Filling the slot is a TOPOLOGICAL change, and CLAUDE.md's rule applies: element-name hashing
+carries fillet references through dimensional changes but cannot map a name onto an edge that
+stops existing. `Fillet003` (R 0.6, the top edge breaks) references the front inner rim as TWO
+32.5 mm segments at (+/-31.25, -34, 65), split by the slot. Close the slot and they merge into
+a single 95 mm edge: both stored names die, and — the part macro 24 did not have to handle —
+BOTH recorded midpoints now land on the SAME new edge, so a naive re-pick produces a duplicate.
+
+So the edges are re-found by position (the recorded midpoint still LIES ON the right edge) and
+then de-duplicated, 12 references collapsing to 11. Fillet, Fillet001 and Fillet002 reference
+only rear-side edges and come through untouched; they are checked, not rewritten.
+
+Idempotent: re-running finds the front already solid and stops. Restores SideType and
+Reversed if anything fails.
+
+Run: Macro -> Macros... -> 29-finger_slot_rear_only -> Execute
+"""
+
+import FreeCAD
+import Part
+
+DOCS = ("Params", "MagicCardBox", "Lid", "MagicCardAssembly")
+V = FreeCAD.Vector
+
+vs = FreeCAD.getDocument("Params").getObject("VarSet")
+boxdoc = FreeCAD.getDocument("MagicCardBox")
+liddoc = FreeCAD.getDocument("Lid")
+pk = boxdoc.getObject("Pocket007")
+if pk is None:
+    raise RuntimeError("Pocket007 (FingerSlot001) not found")
+log = []
+
+before = {"SideType": pk.SideType, "Reversed": bool(pk.Reversed), "Midplane": bool(pk.Midplane)}
+vol_before = boxdoc.getObject("Body").Tip.Shape.Volume
+
+y_front = -vs.Depth.Value / 2 + vs.WallThickness.Value / 2      # mid-thickness, front wall
+y_rear = vs.Depth.Value / 2 - vs.WallThickness.Value / 2        # mid-thickness, rear wall
+Z_PROBES = (10.0, 30.0, 55.0)
+
+
+def recompute_all():
+    for n in DOCS:
+        FreeCAD.getDocument(n).recompute(None, True, True)
+
+
+def solid_at(shape, x, y, z):
+    return shape.isInside(V(x, y, z), 1e-6, True)
+
+
+def wall_state(shape, y):
+    """(solid at x=0 for every probe height, solid just outside the slot at x=+/-20)."""
+    on_axis = [solid_at(shape, 0.0, y, z) for z in Z_PROBES]
+    beside = [solid_at(shape, 20.0, y, z) for z in Z_PROBES]
+    return all(on_axis), all(beside)
+
+
+FILLETS = ("Fillet", "Fillet001", "Fillet002", "Fillet003")
+sigs, base_before = {}, {}
+for _fn in FILLETS:
+    _f = boxdoc.getObject(_fn)
+    _src, _subs = _f.Base[0], list(_f.Base[1])
+    base_before[_fn] = (_src.Name, list(_subs))
+    ents = []
+    for _en in _subs:
+        _e = _src.Shape.getElement(_en)
+        _c = _e.CenterOfMass
+        ents.append({"pt": V(_c.x, _c.y, _c.z), "curve": type(_e.Curve).__name__,
+                     "len": _e.Length, "name": _en})
+    sigs[_fn] = {"base": _src.Name, "edges": ents}
+
+
+def find_edge(shape, pt, curve, want_len):
+    """The recorded midpoint still lies ON the right edge even when its extent changed."""
+    vtx = Part.Vertex(pt)
+    hits = []
+    for i, e in enumerate(shape.Edges):
+        if type(e.Curve).__name__ != curve:
+            continue
+        if e.distToShape(vtx)[0] < 1e-5:
+            hits.append((i + 1, e.Length))
+    if not hits:
+        return None
+    hits.sort(key=lambda h: abs(h[1] - want_len))
+    return "Edge%d" % hits[0][0]
+
+
+def rollback(why):
+    for _fn in FILLETS:
+        _f = boxdoc.getObject(_fn)
+        _f.Base = (boxdoc.getObject(base_before[_fn][0]), base_before[_fn][1])
+    pk.Midplane = before["Midplane"]
+    pk.SideType = before["SideType"]
+    pk.Reversed = before["Reversed"]
+    recompute_all()
+    raise RuntimeError("%s - Pocket007 restored to SideType=%s Reversed=%s"
+                       % (why, before["SideType"], before["Reversed"]))
+
+
+# ------------------------------------------------------------------ apply
+# Midplane is the deprecated twin of SideType and writing it RESETS SideType (see CLAUDE.md).
+# It is already False here; set SideType directly and leave the legacy flag alone.
+pk.SideType = "One side"
+log.append("Pocket007.SideType %s -> One side" % before["SideType"])
+recompute_all()
+
+# Probe UPSTREAM of the fillet chain. Fillet003 is expected to be Invalid at this point, and
+# an Invalid feature leaves Body.Tip.Shape holding the PREVIOUS shape - probing it would
+# report on geometry that no longer exists.
+probe_src = boxdoc.getObject(sigs["Fillet"]["base"])        # Mirrored002, carries the slot
+front_solid, _ = wall_state(probe_src.Shape, y_front)
+rear_solid, _ = wall_state(probe_src.Shape, y_rear)
+
+if not front_solid and rear_solid:
+    # Guessed the wrong way: it kept the front and closed the rear. Flip it.
+    pk.Reversed = not pk.Reversed
+    log.append("direction was wrong way round - Reversed -> %s" % pk.Reversed)
+    recompute_all()
+    probe_src = boxdoc.getObject(sigs["Fillet"]["base"])
+    front_solid, _ = wall_state(probe_src.Shape, y_front)
+    rear_solid, _ = wall_state(probe_src.Shape, y_rear)
+else:
+    log.append("direction was already correct (Reversed=%s)" % pk.Reversed)
+
+# ------------------------------------------------------------------ repair the fillets
+repairs = []
+for fn in FILLETS:
+    f = boxdoc.getObject(fn)
+    if not any(s_ in (list(getattr(f, "State", []) or [])) for s_ in ("Invalid", "Error")):
+        repairs.append("%s: still resolves, left alone" % fn)
+        continue
+    src = boxdoc.getObject(sigs[fn]["base"])
+    boxdoc.recompute(None, True, True)
+    if src.Shape.isNull():
+        rollback("%s has no shape to re-pick %s against" % (src.Name, fn))
+    picked, lost = [], []
+    for ent in sigs[fn]["edges"]:
+        name = find_edge(src.Shape, ent["pt"], ent["curve"], ent["len"])
+        if name is None:
+            lost.append(ent["name"])
+        elif name not in picked:
+            picked.append(name)                 # merged segments collapse to one edge
+    if lost:
+        rollback("%s: no edge passes through the recorded point for %s"
+                 % (fn, ", ".join(lost)))
+    if not picked:
+        rollback("%s: re-pick found nothing" % fn)
+    f.Base = (src, picked)
+    repairs.append("%s: %d refs -> %d edges %s"
+                   % (fn, len(sigs[fn]["edges"]), len(picked), picked))
+    boxdoc.recompute(None, True, True)
+    if any(s_ in (list(getattr(f, "State", []) or [])) for s_ in ("Invalid", "Error")):
+        rollback("%s still invalid after re-picking" % fn)
+
+recompute_all()
+
+# ------------------------------------------------------------------ verify
+bad = ["%s/%s" % (n, o.Name) for n in ("MagicCardBox", "Lid")
+       for o in FreeCAD.getDocument(n).Objects
+       if any(s in (list(getattr(o, "State", []) or [])) for s in ("Invalid", "Error"))]
+if bad:
+    rollback("invalid features: " + ", ".join(bad))
+
+box = boxdoc.getObject("Body").Tip.Shape
+front_solid, _ = wall_state(box, y_front)
+rear_solid, _ = wall_state(box, y_rear)
+if not front_solid:
+    rollback("front wall is still open at y=%.2f - that is the wall that had to close"
+             % y_front)
+if rear_solid:
+    rollback("rear wall is solid at y=%.2f - the grip slot has been lost" % y_rear)
+
+rear_beside = all(solid_at(box, 20.0, y_rear, z) for z in Z_PROBES)
+if not rear_beside:
+    rollback("rear wall is open at x=20, outside the %.0f mm slot - the cut is too wide"
+             % vs.FingerSlotWidth.Value)
+
+for nm, s in (("box", box),):
+    if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+        rollback("%s is not a single closed valid solid" % nm)
+
+rear_lid = liddoc.getObject(liddoc.getObject("Body001").Tip.Name).Shape
+top = liddoc.getObject(liddoc.getObject("Body").Tip.Name).Shape
+ay = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+az = vs.HingeAxisFromBottom.Value
+ctr = V(0, ay, az)
+ax = V(1, 0, 0)
+sweep = []
+for deg in (0, 30, 60, 90):
+    a = rear_lid.copy()
+    a.rotate(ctr, ax, -deg)
+    b = top.copy()
+    b.rotate(ctr, ax, -deg)
+    sweep.append((deg, box.common(a).Volume + box.common(b).Volume,
+                  min(box.distToShape(a)[0], box.distToShape(b)[0])))
+if max(v for _, v, _ in sweep) > 0.5:
+    rollback("swing interferes")
+if min(d for dg, _, d in sweep if dg >= 30) < 0.35:
+    rollback("running clearance dropped below 0.35 mm")
+
+gained = box.Volume - vol_before
+
+print("=== 29-finger_slot_rear_only ===")
+for line in log:
+    print("  " + line)
+for line in repairs:
+    print("  " + line)
+print("  front wall y=%.2f  solid at z %s : %s   <- must be True"
+      % (y_front, list(Z_PROBES), front_solid))
+print("  rear  wall y=%.2f  solid at z %s : %s   <- must be False (the grip)"
+      % (y_rear, list(Z_PROBES), rear_solid))
+print("  rear wall beside the slot (x=20) solid: %s" % rear_beside)
+print("  Pocket007: Type=%s SideType=%s Reversed=%s" % (pk.Type, pk.SideType, pk.Reversed))
+print("  box volume %.2f -> %.2f  (front wall filled back in: +%.2f mm3)"
+      % (vol_before, box.Volume, gained))
+print("  swing  deg   interf_mm3   min_gap_mm")
+for deg, v, d in sweep:
+    print("        %4d   %9.4f   %9.4f" % (deg, v, d))
+print("  box valid=%s closed=%s solids=%d" % (box.isValid(), box.isClosed(), len(box.Solids)))
+touched = ["%s/%s" % (n, o.Name) for n in DOCS
+           for o in FreeCAD.getDocument(n).Objects
+           if "Touched" in (list(getattr(o, "State", []) or []))]
+print("  still Touched: %d %s" % (len(touched), touched if touched else ""))
+print("NOT SAVED.")

@@ -156,6 +156,17 @@ def _tris_in_3mf(path):
 
 print("  --- export check (files currently on disk) ---")
 _expect_bb = (round(nb.XLength, 2), round(nb.YLength, 2), round(nb.ZLength, 2))
+
+# BBOX IS NOT ENOUGH, learned 2026-09-14. Macro 29 filled the front wall's finger slot -
+# 2854 mm3 of geometry, and not one millimetre of bounding box. Both stale files sailed
+# through this check reporting OK. Volume is the coarse quantity that actually moves when
+# the model changes, so it is checked too.
+#
+# It can only be checked against the variant the model is CURRENTLY in, since the other one's
+# geometry is not loaded. The flutes decide which that is.
+_cur_variant = "plain" if mb.getObject("Pocket009").Suppressed else "fluted"
+_expect_vol = comb.Volume
+_VOL_TOL = 0.01          # 1%: tessellation of the flutes and fillets loses a little volume
 _problems = []
 for _variant in ("plain", "fluted"):
     _3mf = os.path.join(PROJ, "3mf", "MagicCardBox-%s.3mf" % _variant)
@@ -185,12 +196,19 @@ for _variant in ("plain", "fluted"):
         _bad.append("stl has %d components, expected 2 (box + fused lid)" % _m.countComponents())
     if _got_bb != _expect_bb:
         _bad.append("stl bbox %s != posed %s - stale geometry" % (_got_bb, _expect_bb))
+    if _variant == _cur_variant:
+        _dv = abs(_m.Volume - _expect_vol) / _expect_vol
+        if _dv > _VOL_TOL:
+            _bad.append("stl volume %.2f cm3 != posed %.2f cm3 (%.2f%% off) - stale geometry"
+                        % (_m.Volume / 1000.0, _expect_vol / 1000.0, _dv * 100.0))
     if _bad:
         _problems.append("%s: %s" % (_variant, "; ".join(_bad)))
         print("  %-7s FAIL  %s" % (_variant, "; ".join(_bad)))
     else:
-        print("  %-7s OK    %d tris, %.2f cm3, %s, on Z=%.1f"
-              % (_variant, _m.CountFacets, _m.Volume / 1000.0, _got_bb, _bb.ZMin))
+        _note = ("vol %+.2f%% vs model" % ((_m.Volume - _expect_vol) / _expect_vol * 100.0)
+                 if _variant == _cur_variant else "vol unchecked (model is %s)" % _cur_variant)
+        print("  %-7s OK    %d tris, %.2f cm3, %s, on Z=%.1f  [%s]"
+              % (_variant, _m.CountFacets, _m.Volume / 1000.0, _got_bb, _bb.ZMin, _note))
 if _problems:
     raise RuntimeError("exports failed verification: " + " | ".join(_problems))
 
