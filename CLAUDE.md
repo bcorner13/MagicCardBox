@@ -449,10 +449,33 @@ Interior is therefore **94.0 x 68.0 x 63.0 mm**, verified from the solid, holdin
 92 x 66 x 62 stack with 1 mm all round and 1 mm headroom.
 To go back to free knobs, clear those three expressions.
 
-- **Cards (the input):** `CardLength` 92.0, `CardWidth` 66.0, `CardStackHeight` 62.0.
+- **Cards (the input):** `CardLength` 93.0, `CardWidth` 66.0, `CardStackHeight` 62.0.
   `CardLength` and `CardStackHeight` were corrected from calipers on 2026-09-13 after the
   first print rubbed. **`CardWidth` 66.0 is still an ASSUMPTION** (standard 63 card + sleeve)
   — and since `CardLength` turned out to be off by 1 mm, measure this one too.
+
+  **One sleeved card measures 0.69 mm** (caliper, 2026-09-14). That converts the box between
+  millimetres and the unit customers actually think in:
+
+  ```
+  CardStackHeight 62.0  ÷ 0.69  =  ~90 cards      <- what this box actually is
+  60 cards        × 0.69        =  41.4 mm        <- CardStackHeight for a 60-card version
+  ```
+
+  So the current design is a **~90-card box**, not a 60-card one. A 60-card variant is
+  `CardStackHeight` 41.4, which takes `Height` 65 → 44.4 — but see the warning below first.
+
+  **TWO UNBOUND LITERALS ENCODE A RELATIONSHIP TO `Height` AND WILL NOT TRACK IT.** Verified
+  2026-09-14: neither has an expression.
+  - `FingerSlotDepth` **61.0** was hand-set against the current 63 mm interior
+    (`Height - FloorThickness`). At `Height` 44.4 the interior is 42.4 and a 61 mm slot runs
+    about 20 mm past the rim. **Bind it before changing `Height`** — read `Sketch011`'s
+    constraints first, since the sketch spans z 4..67 and the 61 is not simply its length.
+  - `FluteStartZ` **12.0** is absolute, so a shorter box gets proportionally chunkier
+    fluting (53 mm of flute becomes 32 mm). Cosmetic, not a defect — decide deliberately.
+
+  This is the same family as the defects in the third-print section: a number that is correct
+  today because someone computed it by hand, with nothing recording what it was computed from.
 - **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
   `SideWallThickness` **8.0** (was 6.0; raised by macro 27 — hinge web 0.60 → 2.60 mm and
   magnet wall margins 0.95 → 1.95 mm. Grows the box OUTWARD only; interior is unchanged),
