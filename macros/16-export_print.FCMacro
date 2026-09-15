@@ -10,12 +10,21 @@ PRINT POSE
 One part, lid rotated 90 deg open about the hinge axis. That angle is not arbitrary: at
 exactly 90 deg the lid's rear-panel outer face lands at
 
-    Z = HingeAxisFromBottom - (HingeAxisFromRear + WallThickness) = 5 - 7 = -2
+    Z = HingeAxisFromBottom - (Depth/2 + LidBackThickness - aY) = -LidBackThickness = -4
 
-which is exactly the footer's bottom, `-FooterHeight`. Box and open lid are therefore
-COPLANAR and the whole part sits flat on one plane with no supports. That coplanarity holds
-because `HingeAxisFromBottom = HingeAxisFromRear + WallThickness - FooterHeight`; change any
-of those and the lid will no longer sit flat.
+with aY = Depth/2 - HingeAxisFromRear, so the HingeAxisFromRear terms cancel exactly. That
+is the footer's bottom, -FooterHeight. Box and open lid are therefore COPLANAR and the whole
+part sits flat on one plane with no supports.
+
+This now holds BY CONSTRUCTION rather than by coincidence: FooterHeight is DERIVED from
+LidBackThickness (macro 34), because they were two free knobs that merely happened to share
+a value. Measured bed mismatch 0.0000 mm.
+
+SUPERSEDED 2026-09-14: this read `HingeAxisFromBottom = HingeAxisFromRear + WallThickness -
+FooterHeight` = 5 - 7 = -2, from when the rear panel was WallThickness 2 and the footer 2.
+The panel is LidBackThickness 4 now and the footer tracks it. Note also that raising the lid
+plate by LidSeatClearance (macro 35) does NOT affect this: in the print pose the plate's Z
+maps onto Y, not Z, so the bed plane is untouched.
 
 Box and lid are exported as ONE compound object so the slicer keeps their relative positions
 and does not try to arrange them as two separate parts. They are NOT fused — the hinge
