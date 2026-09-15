@@ -1422,7 +1422,7 @@ No longer a placeholder. Pulled from the sliced gcode, not from memory:
 
 Ryan asked for black; the black loaded is `CR-PETG` (tool **T3**, 240 °C / 70 °C bed —
 confirmed three ways: active tool, `filament_settings_id` slot 4, and all 84.44 g drawn from
-slot 4). Printing fine at the halfway mark.
+slot 4). **It printed, and the hinge moves freely — see the print 5 result below.**
 
 **The numbers below were chosen against PLA's ~0.2 % shrink and PLA layer bonding:**
 
@@ -1443,6 +1443,34 @@ droops further at the same overhang and welds to what it lands on. It prints in 
 first 80 layers (the compound is shifted so the box underside is print z = 0), so a build
 that gets past ~z 20 mm has cleared it — though whether the hinge is actually FREE is only
 knowable off the plate.
+
+### PRINT 5 RESULT (PETG, black) — the hinge survived, and the droop is NOT a material problem
+
+**The hinge came off the plate FREE.** PETG, in clearances sized for PLA — `HingeTabClearance`
+0.4, `HingeSwingClearance` 0.5, and the 0.5 mm gap under the cantilever — did not fuse. That
+was the one failure that cannot be rescued after the fact, and it did not happen. Record it as
+a fact about the joint; **it does not mean PETG fixed anything.**
+
+**The lid now sits FLUSH at rest and closes better.** That is `LidSeatClearance` 0.15 doing its
+job — the 1.1 mm front lift from print 4 is gone. The seat moved off a knife-edge 1.3 mm from
+the pivot (38:1) onto the front rim at 66 mm (1:1).
+
+**Curved overhangs print; flat ones droop.** The two knuckle undersides are cylindrical,
+101.7 mm² each, and are *hard to see* on the part. The flat ledge between them — 176.9 mm²,
+`X ±50.1`, the span between the knuckles — is the visible defect. Same part, same material,
+same layers: the difference is flat vs curved. This is exactly what separates this box from
+h3liØ's reference, whose overhangs are small, curved and distributed.
+
+**THE DROOP IS MATERIAL-INDEPENDENT — it did the same thing in PLA.** So it is purely a
+function of unsupported span and layer height. Do not chase it with temperatures, materials or
+clearances.
+
+  * span: 4.5 mm on print 5 → **1.9 mm** now (macros 43/44, sliced after print 5 went out)
+  * layers: ~0.16 effective on print 5 → 0.12, and 0.08 being tried
+
+The stringing visible alongside it is a separate problem — the nozzle traverses an open hinge
+gap every layer through that region. Retraction, travel speed and nozzle temperature are the
+levers there; model changes will not touch it.
 
 ### THE SLICER WILL WARN ABOUT A FLOATING CANTILEVER. THIS IS EXPECTED.
 
