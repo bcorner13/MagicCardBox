@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+"""
+34-magnet_proud_and_footer_binding.FCMacro
+
+Two fixes, both of the same species: a knob that was carrying two meanings,
+and a requirement that nothing in the model wrote down.
+
+
+1. MAGNET POCKET DEPTH IS NOT MAGNET THICKNESS
+
+   Before, both PocketMagnetBox.Length and PocketMagnetLid.Length bound
+   straight to MagnetThickness, so the pockets were ALWAYS exactly as deep as
+   the magnet -- flush, by construction, with no way to express "stand proud"
+   short of lying about how thick the magnet is. (That lie was in the model
+   briefly: MagnetThickness had been set to 1.58 to shallow the pocket. It
+   turned out 1.58 is the real measured thickness, so the number was right by
+   coincidence and the concept was still wrong.)
+
+     MagnetThickness   1.58   FACT     -- measured, Bradley's calipers
+     MagnetProud       0.025  DECISION -- how far each magnet stands out
+     MagnetPocketDepth        DERIVED  = MagnetThickness - MagnetProud
+
+   Both magnets are proud, so the closed seam opens by 2 * MagnetProud
+   = 0.05 mm, and the magnet faces meet each other directly rather than
+   through two layers of plastic.
+
+   LidTopThickness follows the POCKET, not the magnet:
+     LidTopThickness = MagnetPocketDepth + MagnetSkin
+   so MagnetSkin stays a true statement about the plastic over the lid magnet
+   however the proud figure is tuned. The 24 lid flutes reference
+   Height + LidTopThickness, so they track the plate face automatically and
+   the worst-case skin under a flute stays MagnetSkin - FluteDepth = 1.0 mm.
+
+   NOTE: the 0.05 mm seam cannot be measured in CAD -- the magnets are
+   purchased parts, not modelled geometry, so the plate underside and the box
+   rim are still coincident at z = Height in the model. What IS checked below
+   is that both pockets are MagnetPocketDepth deep and the skin is intact.
+
+
+2. FooterHeight MUST EQUAL LidBackThickness -- NOW BOUND
+
+   Printed lid-open at 90 deg, closed-frame +Y maps onto print -Z:
+     box underside        -> z = -FooterHeight
+     panel's outer face   -> z = -(D/2 + LidBackThickness - ay) = -LidBackThickness
+   (with ay = D/2 - HingeAxisFromRear, az = HingeAxisFromBottom, so the
+   HingeAxisFromRear terms cancel exactly.)
+
+   Equal -> both land flat on the bed. Unequal -> the slicer rests the part on
+   whichever is lower and the other floats. Measured 0.0000 mm mismatch at
+   4.0/4.0 before this change, and again after.
+
+   They were two free knobs that happened to hold the same value -- the same
+   trap as the three coincident-surface defects from print 3, inverted: there,
+   two surfaces that must NOT touch shared an expression; here, two that MUST
+   stay coplanar did not. FooterHeight is now derived from LidBackThickness,
+   so thickening the back wall carries the footer with it.
+
+   To decouple, the print pose itself has to change -- clear the expression
+   deliberately, don't just overwrite the value.
+
+Also normalises Lid/Sketch001.Constraints[7], which the GUI edit wrote as
+"Params#VarSet.TopLidClearance", to the canonical <<Params>>#VarSet. form.
+
+Supersedes the FooterHeight and MagnetThickness lines of macro 33 (that macro
+captured the GUI state as found; this one fixes its concepts). Macro 33 skips
+any property that carries an expression, so the two stay re-runnable together.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+
+PARAMS_DOC = "Params"
+
+NEW_PARAMS = [
+    ("MagnetProud", "App::PropertyLength", 0.025, "Magnets",
+     "How far each magnet stands proud of its pocket face. A DECISION, kept "
+     "separate from MagnetThickness (a measured fact). Closed seam = 2x this."),
+    ("MagnetPocketDepth", "App::PropertyLength", None, "Magnets",
+     "Depth of both magnet pockets. Derived; never set by hand."),
+]
+
+VARSET_EXPR = [
+    ("MagnetPocketDepth", "MagnetThickness - MagnetProud"),
+    ("LidTopThickness",   "MagnetPocketDepth + MagnetSkin"),
+    ("FooterHeight",      "LidBackThickness"),
+]
+
+BINDINGS = [
+    ("MagicCardBox", "PocketMagnetBox", "Length",         "<<Params>>#VarSet.MagnetPocketDepth"),
+    ("Lid",          "PocketMagnetLid", "Length",         "<<Params>>#VarSet.MagnetPocketDepth"),
+    ("Lid",          "Sketch001",       "Constraints[7]", "<<Params>>#VarSet.Height + <<Params>>#VarSet.TopLidClearance"),
+]
+
+TOL = 1e-6
+
+
+def main():
+    log = []
+    vs = FreeCAD.getDocument(PARAMS_DOC).getObject("VarSet")
+
+    bound = dict(vs.ExpressionEngine)
+    for name, ptype, value, group, doc in NEW_PARAMS:
+        if name not in vs.PropertiesList:
+            vs.addProperty(ptype, name, group, doc)
+            log.append("added   %s" % name)
+        else:
+            log.append("present %s" % name)
+        # Macro 35 derives MagnetProud from LidSeatClearance. Never write a
+        # stale literal over a later macro's expression.
+        if name in bound:
+            log.append("  skip  %s -- driven by expression '%s'" % (name, bound[name]))
+        elif value is not None:
+            setattr(vs, name, value)
+            log.append("  set   %s = %s" % (name, value))
+
+    for name, expr in VARSET_EXPR:
+        vs.setExpression(name, expr)
+        log.append("  expr  %s = %s" % (name, expr))
+
+    for doc_name, obj_name, path, expr in BINDINGS:
+        obj = FreeCAD.getDocument(doc_name).getObject(obj_name)
+        if obj is None:
+            raise RuntimeError("%s/%s not found" % (doc_name, obj_name))
+        obj.setExpression(path, expr)
+        log.append("  bind  %s/%s.%s = %s" % (doc_name, obj_name, path, expr))
+
+    for dn in (PARAMS_DOC, "Lid", "MagicCardBox"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---- verify, from the solids, not from the Params ----
+    import Part
+    from FreeCAD import Vector, Rotation, Placement
+
+    boxS  = FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape
+    plate = FreeCAD.getDocument("Lid").getObject("Body").Shape
+    panel = FreeCAD.getDocument("Lid").getObject("Body001").Shape
+
+    W  = float(vs.Width.Value); D = float(vs.Depth.Value); H = float(vs.Height.Value)
+    mx = W / 2 - float(vs.SideWallThickness.Value) / 2
+    my = -D / 2 + float(vs.MagnetFromFront.Value)
+    depth = float(vs.MagnetPocketDepth.Value)
+    skin  = float(vs.MagnetSkin.Value)
+
+    def zspans(shape, x, y):
+        e = Part.makeLine(Vector(x, y, -30.0), Vector(x, y, 100.0))
+        return [(s.BoundBox.ZMin, s.BoundBox.ZMax) for s in shape.common(e).Edges]
+
+    problems = []
+
+    box_top = max(hi for _, hi in zspans(boxS, mx, my))
+    got = H - box_top
+    log.append("box pocket depth  %.4f (want %.4f)" % (got, depth))
+    if abs(got - depth) > 1e-4:
+        problems.append("box magnet pocket %.4f != %.4f" % (got, depth))
+
+    lid_spans = zspans(plate, mx, my)
+    lid_lo = min(lo for lo, _ in lid_spans)
+    lid_hi = max(hi for _, hi in lid_spans)
+    log.append("lid pocket depth  %.4f (want %.4f), skin %.4f (want %.4f)"
+               % (lid_lo - H, depth, lid_hi - lid_lo, skin))
+    if abs((lid_lo - H) - depth) > 1e-4:
+        problems.append("lid magnet pocket %.4f != %.4f" % (lid_lo - H, depth))
+    if abs((lid_hi - lid_lo) - skin) > 1e-4:
+        problems.append("lid magnet skin %.4f != %.4f" % (lid_hi - lid_lo, skin))
+
+    # print-pose bed plane
+    ay = D / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    pose = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -90), Vector(0, ay, az))
+    zmins = [boxS.BoundBox.ZMin]
+    for sh in (plate, panel):
+        c = sh.copy(); c.Placement = pose.multiply(c.Placement)
+        zmins.append(c.BoundBox.ZMin)
+    mismatch = max(zmins) - min(zmins)
+    log.append("print-pose bed mismatch %.4f mm" % mismatch)
+    if mismatch > 1e-4:
+        problems.append("bed plane mismatch %.4f mm" % mismatch)
+
+    # panel must keep constant clearance through the swing
+    gaps = []
+    for deg in (0.0, 2.0, 8.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4), round(boxS.common(c).Volume, 4)))
+    log.append("panel swing (deg, gap, interference): %s" % gaps)
+    if len(set(g for _, g, _ in gaps)) != 1:
+        problems.append("panel swing gap is not flat: %s" % gaps)
+    if any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing interference: %s" % gaps)
+
+    for dn in ("Lid", "MagicCardBox"):
+        for obj in FreeCAD.getDocument(dn).Objects:
+            st = obj.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, obj.Name, list(st)))
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    return problems
+
+
+main()

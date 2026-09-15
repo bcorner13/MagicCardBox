@@ -1,0 +1,284 @@
+# -*- coding: utf-8 -*-
+"""
+35-lid_seat_clearance.FCMacro
+
+Fixes the closed lid sitting 1.1 mm proud at the front (observed on print 4).
+
+THE DEFECT, MEASURED
+  The box's sealing rail runs along each side wall at z = Height and stops at
+  y = 30.5 -- 0.5 mm in front of the hinge axis at y = 31. (The rim fillet
+  pushes the real contact out to y = 29.71.) So the lid's rearmost seating
+  contact is a knife-edge 1.29 mm from its own pivot, while the front edge is
+  67 mm away. Lever ratio 38:1 as measured:
+
+      back lid short by   front lifts
+      0.006 mm            0.29 mm
+      0.014 mm            0.59 mm
+      0.029 mm            1.10 mm     <- Bradley's measurement
+      0.054 mm            1.75 mm
+
+  29 microns of print tolerance -- a third of one layer -- produced the 1.1 mm.
+  Nothing is wrong with the CAD: at nominal the lid is dead flat, plate-to-rim
+  0.0000. The geometry simply multiplies any tolerance by 38.
+
+  Root cause of the rail end: Sketch009.Constraints[8] is
+      Depth/2 - HingeAxisFromRear - HingeSwingClearance
+  HingeSwingClearance means "lid-vs-footer running clearance" everywhere else
+  in this model. Here it was silently deciding how close to the pivot the lid
+  may seat -- an unrelated concept that wants a completely different number.
+  Left alone by this macro (0.5 is correct AS a swing clearance); the fix
+  below removes the dependence on it instead.
+
+THE FIX -- lift the plate off the rail entirely
+  The lid cannot be raised as a whole: the panel is pinned to the hinge axis
+  by its knuckle. It is the PLATE that rises relative to the panel, so the
+  plate clears the rim by LidSeatClearance and never touches it. The lid then
+  rests on the magnets, which are 67 mm from the pivot where the lever ratio
+  is 1:1.
+
+      LidSeatClearance  0.15  DECISION - uniform plate-to-rim gap; absorbs
+                                         5x the tolerance that caused the tilt
+      MagnetProud       DERIVED = LidSeatClearance / 2
+
+  MagnetProud MUST stay bound to LidSeatClearance. If the plate rises 0.15
+  while the magnets stay 0.025 proud, the magnet faces no longer meet -- they
+  sit 0.10 apart, the magnets pull the lid back down until they touch, and the
+  realised lift collapses to 0.05. The lift would be silently undone by a knob
+  that looks unrelated. Bound, the magnet faces meet exactly at the rest
+  position and the rim gap is the full LidSeatClearance.
+
+  Consequence, stated plainly: the closed seam becomes LidSeatClearance
+  = 0.15 mm, not the 0.05 chosen when MagnetProud was picked in isolation.
+  Raising the lid and keeping a 0.05 seam are the same number -- you cannot
+  have both. Lower LidSeatClearance for a tighter seam and less margin.
+
+FIVE THINGS FOLLOW THE PLATE (all rebound here):
+  DatumPlane "LidPlane"  .AttachmentOffset.Base.z   - positions the plate
+  SketchMagnetLid        .AttachmentOffset.Base.z   - lid magnet pocket
+  Sketch012              24 flute constraints       - flutes ride the top face
+  SketchPanelRelief      Constraints[11]            - relief top
+  Sketch001              Constraints[7]             - panel top must still
+                                                      reach INTO the plate
+
+DATUM TRAP -- Sketch002 and Sketch010 DO need touching, for the opposite
+reason to the one you would expect. They are hinge geometry and must stay
+pinned to the hinge axis, which is exactly why they need rebinding:
+
+  DatumPlane001 is attached to Fillet.Face6 -- a FEATURE FACE, the standing
+  debt CLAUDE.md flags. That face moves with the rear panel's top edge, so
+  raising the panel top by LidSeatClearance dragged the datum from z = 65 to
+  z = 65.15. Both hinge sketches ride that datum and convert to absolute Z by
+  subtracting a bare Height:
+
+      Sketch002.Constraints[10]  HingeAxisFromBottom - Height - HingeNeckDrop
+      Sketch002.Constraints[11]  PanelBottomZ - Height
+      Sketch010.Constraints[1]   HingeAxisFromBottom - Height
+
+  That compensation is only correct while the datum sits exactly at Height.
+  With the datum at Height + LidSeatClearance the whole hinge neck rode up
+  0.15 into the socket bore -- panel volume 25926.54 -> 25976.10 mm3, and the
+  panel-to-box clearance collapsed from a flat 0.400 to 0.254 at the closed
+  position. Caught by this macro's swing gate, not by eye.
+
+  Each now subtracts (Height + LidSeatClearance), i.e. the datum's real
+  height. VERIFIED by controlled test: LidSeatClearance 0 -> gap 0.4000 with
+  the panel contact at (55.5, 31, 10); 0.15 -> 0.2544 at (55.5, 29.784, 10).
+
+  This is the SECOND time the feature-attached datums have bitten. The real
+  fix is retargeting DatumPlane001/DatumPlane002 to origin planes, which is
+  a separate job -- it moves geometry and needs the assembly joint re-solved.
+  Until then, ANY change to the rear panel's top edge must re-check these
+  three expressions.
+
+RENAME: TopLidClearance -> TopLidOverlap. It was never a clearance; it pushes
+the panel's top edge INTO the plate to guarantee the two bodies fuse. Leaving
+a "TopLidClearance" beside a real "LidSeatClearance" is exactly the kind of
+name collision this model has already been bitten by three times.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+
+NEW_PARAMS = [
+    ("LidSeatClearance", "App::PropertyLength", 0.15, "Lid",
+     "Uniform gap between the lid plate's underside and the box rim, so the "
+     "plate never seats on the rail near the hinge (38:1 lever). The lid rests "
+     "on the magnets instead. MagnetProud is derived from this - see macro 35."),
+    ("TopLidOverlap", "App::PropertyLength", 0.1, "Lid",
+     "How far the rear panel's top edge is driven INTO the lid plate so the "
+     "two bodies fuse into one mesh. An overlap, not a clearance. "
+     "Renamed from the misleading TopLidClearance."),
+]
+
+VARSET_EXPR = [("MagnetProud", "LidSeatClearance / 2")]
+
+PLATE_Z = P + "Height + " + P + "LidSeatClearance"
+
+REBIND = [
+    ("DatumPlane",       ".AttachmentOffset.Base.z", PLATE_Z),
+    ("SketchMagnetLid",  ".AttachmentOffset.Base.z", PLATE_Z),
+    ("SketchPanelRelief", "Constraints[11]",         PLATE_Z + " + " + P + "LidTopThickness"),
+    ("Sketch001",        "Constraints[7]",           PLATE_Z + " + " + P + "TopLidOverlap"),
+
+    # --- the datum-fragility compensation; see DATUM TRAP in the docstring ---
+    ("Sketch002", "Constraints[10]",
+     P + "HingeAxisFromBottom - (" + PLATE_Z + ") - " + P + "HingeNeckDrop"),
+    ("Sketch002", "Constraints[11]",
+     P + "PanelBottomZ - (" + PLATE_Z + ")"),
+    ("Sketch010", "Constraints[1]",
+     P + "HingeAxisFromBottom - (" + PLATE_Z + ")"),
+]
+
+FLUTE_OLD = (P + "Height + " + P + "LidTopThickness + " + P + "FluteRadius - " + P + "FluteDepth")
+FLUTE_NEW = (PLATE_Z + " + " + P + "LidTopThickness + " + P + "FluteRadius - " + P + "FluteDepth")
+
+
+def main():
+    log = []
+    vs  = FreeCAD.getDocument("Params").getObject("VarSet")
+    lid = FreeCAD.getDocument("Lid")
+
+    for name, ptype, value, group, doc in NEW_PARAMS:
+        if name not in vs.PropertiesList:
+            vs.addProperty(ptype, name, group, doc)
+            log.append("added   %s" % name)
+        setattr(vs, name, value)
+        log.append("  set   %s = %s" % (name, value))
+
+    for name, expr in VARSET_EXPR:
+        vs.setExpression(name, expr)
+        log.append("  expr  %s = %s" % (name, expr))
+
+    for obj_name, path, expr in REBIND:
+        obj = lid.getObject(obj_name)
+        if obj is None:
+            raise RuntimeError("Lid/%s not found" % obj_name)
+        obj.setExpression(path, expr)
+        log.append("  bind  %s.%s" % (obj_name, path))
+
+    sk = lid.getObject("Sketch012")
+    n = 0
+    for path, expr in list(sk.ExpressionEngine):
+        if expr.replace(" ", "") == FLUTE_OLD.replace(" ", ""):
+            sk.setExpression(path, FLUTE_NEW)
+            n += 1
+    log.append("  bind  Sketch012: %d flute constraints re-pointed" % n)
+    if n == 0 and "LidSeatClearance" not in dict(sk.ExpressionEngine).get("Constraints[1]", ""):
+        raise RuntimeError("no flute constraints matched the expected expression")
+
+    # retire the misleading name only after nothing references it
+    if "TopLidClearance" in vs.PropertiesList:
+        still = []
+        for o in lid.Objects:
+            try: ee = list(o.ExpressionEngine)
+            except Exception: continue
+            still += [p for p, e in ee if "TopLidClearance" in e]
+        if still:
+            raise RuntimeError("TopLidClearance still referenced by %s" % still)
+        vs.removeProperty("TopLidClearance")
+        log.append("removed TopLidClearance (renamed to TopLidOverlap)")
+
+    for dn in ("Params", "Lid", "MagicCardBox"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---------- verify from the solids ----------
+    import Part
+    from FreeCAD import Vector, Rotation, Placement
+
+    boxS  = FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape
+    plate = lid.getObject("Body").Shape
+    panel = lid.getObject("Body001").Shape
+
+    H  = float(vs.Height.Value); D = float(vs.Depth.Value); W = float(vs.Width.Value)
+    L  = float(vs.LidSeatClearance.Value)
+    dep = float(vs.MagnetPocketDepth.Value); thk = float(vs.MagnetThickness.Value)
+    skin = float(vs.MagnetSkin.Value)
+    mx = W/2 - float(vs.SideWallThickness.Value)/2
+    my = -D/2 + float(vs.MagnetFromFront.Value)
+
+    def spans(shape, x, y, lo=-30.0, hi=110.0):
+        e = Part.makeLine(Vector(x, y, lo), Vector(x, y, hi))
+        return [(s.BoundBox.ZMin, s.BoundBox.ZMax) for s in shape.common(e).Edges]
+
+    bad = []
+
+    # 1. plate rides LidSeatClearance above the rim
+    got = plate.BoundBox.ZMin - H
+    log.append("plate underside  %.4f above rim (want %.4f)" % (got, L))
+    if abs(got - L) > 1e-4:
+        bad.append("plate lift %.4f != %.4f" % (got, L))
+
+    # 2. rail no longer reachable: min gap over the whole rim
+    rail = boxS.common(Part.makeBox(W+20, D+20, 8, Vector(-W/2-10, -D/2-10, H-4)))
+    gap = rail.distToShape(plate)[0]
+    log.append("plate-to-rim gap %.4f (want %.4f)" % (gap, L))
+    if abs(gap - L) > 1e-4:
+        bad.append("rim gap %.4f != %.4f" % (gap, L))
+
+    # 3. magnet faces must MEET at the rest position
+    box_floor = max(hi for _, hi in spans(boxS, mx, my))        # box pocket floor, measured
+    if abs(box_floor - (H - dep)) > 1e-4:
+        bad.append("box pocket floor %.4f != %.4f" % (box_floor, H - dep))
+    box_mag_top = box_floor + thk                              # magnet sits on the floor
+    lid_ceiling = min(lo for lo, _ in spans(plate, mx, my))     # lid pocket roof, measured
+    lid_mag_bot = lid_ceiling - thk                             # magnet hangs from the roof
+    log.append("box magnet top %.4f  lid magnet bottom %.4f" % (box_mag_top, lid_mag_bot))
+    if abs(box_mag_top - lid_mag_bot) > 1e-4:
+        bad.append("magnet faces do not meet: %.4f vs %.4f" % (box_mag_top, lid_mag_bot))
+    if abs((lid_ceiling - (H + L)) - dep) > 1e-4:
+        bad.append("lid pocket depth %.4f != %.4f" % (lid_ceiling - (H + L), dep))
+
+    # 4. skin under the outer flute survives the move
+    bore_r = float(vs.MagnetDia.Value)/2 + float(vs.MagnetFit.Value)
+    pocket_top = H + L + dep
+    void = Part.makeCylinder(bore_r, 40.0, Vector(mx, my, pocket_top), Vector(0,0,1)).cut(plate)
+    min_skin = void.BoundBox.ZMin - pocket_top
+    log.append("worst-case skin under flute %.4f (want %.4f)" % (min_skin, skin - float(vs.FluteDepth.Value)))
+    if min_skin < skin - float(vs.FluteDepth.Value) - 1e-3:
+        bad.append("flute skin %.4f too thin" % min_skin)
+
+    # 5. panel still fuses into the plate
+    d_bodies = plate.distToShape(panel)[0]
+    ov = plate.common(panel).Volume
+    log.append("panel-to-plate distance %.4f, overlap %.3f mm3" % (d_bodies, ov))
+    if d_bodies > 1e-6 or ov <= 0:
+        bad.append("panel no longer fused into plate (d=%.4f, overlap=%.3f)" % (d_bodies, ov))
+
+    # 6. panel swing must stay flat and clear
+    ay = D/2 - float(vs.HingeAxisFromRear.Value); az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 2.0, 8.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0,0,0), Rotation(Vector(1,0,0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0],4), round(boxS.common(c).Volume,4)))
+    log.append("panel swing %s" % gaps)
+    if len(set(g for _, g, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        bad.append("panel swing changed: %s" % gaps)
+
+    # 7. print-pose bed plane
+    pose = Placement(Vector(0,0,0), Rotation(Vector(1,0,0), -90), Vector(0, ay, az))
+    zmins = [boxS.BoundBox.ZMin]
+    for sh in (plate, panel):
+        c = sh.copy(); c.Placement = pose.multiply(c.Placement); zmins.append(c.BoundBox.ZMin)
+    mm = max(zmins) - min(zmins)
+    log.append("print-pose bed mismatch %.4f" % mm)
+    if mm > 1e-4:
+        bad.append("bed mismatch %.4f" % mm)
+
+    for dn in ("Lid", "MagicCardBox"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                bad.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(bad) if bad else "all checks pass"))
+    print("\n".join(log))
+    if bad:
+        raise RuntimeError("; ".join(bad))
+
+
+main()

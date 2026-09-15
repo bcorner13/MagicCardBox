@@ -1,0 +1,131 @@
+# -*- coding: utf-8 -*-
+"""
+33-lid_back_and_magnet_depth.FCMacro
+
+Captures the hand edits Bradley made in the FreeCAD GUI after print 4
+(2026-09-14). Those edits lived ONLY in the running session -- the Params
+document on disk had neither new variable, and list_documents reported all
+four documents as unmodified, so nothing warned that the work was unsaved.
+
+Replays, from the committed 04:19 state:
+
+  1. LidBackThickness 4.0  (NEW)  -- the rear panel felt flimsy at 2 mm.
+     Drives Lid/Pad001.Length (was WallThickness) and the lid top plate's
+     Y extent, Lid/Sketch.Constraints[9] = Depth + LidBackThickness, so the
+     plate still caps the thicker panel.
+
+  2. TopLidClearance 0.1   (NEW)  -- Lid/Sketch001.Constraints[7]
+     = Height + TopLidClearance (was bare Height).
+     NOTE: the GUI edit wrote this as "Params#VarSet.TopLidClearance".
+     Normalised here to the canonical <<Params>>#VarSet. form per CLAUDE.md.
+
+  3. FooterHeight 2.0 -> 4.0 -- deliberately matched to LidBackThickness so
+     the box bottom and the lid panel's outer face stay coplanar in the
+     90-deg print pose. See PRINT POSE below -- these two MUST stay equal
+     and nothing in the model says so.
+
+  4. MagnetThickness 2.0 -> 1.58 -- "make the magnet pocket shallower".
+     FLAGGED, NOT ENDORSED. MagnetThickness is a FACT about the purchased
+     magnet; the pocket depth is a DECISION. Both PocketMagnetBox.Length and
+     PocketMagnetLid.Length bind straight to MagnetThickness, so shrinking it
+     is the only lever available -- but it also drags LidTopThickness
+     (= MagnetThickness + MagnetSkin) thinner by the same amount, and it
+     destroys the record of how thick the magnet actually is.
+     If the magnets really are 2.0 thick, this leaves each one 0.42 proud,
+     i.e. a 0.84 mm gap at the closed seam -- far past the 0.01-0.1 asked for.
+     Decouple this properly before relying on it.
+
+PRINT POSE (why FooterHeight must equal LidBackThickness):
+  Printed lid-open at 90 deg, the closed-frame +Y axis maps onto print -Z.
+  The box's underside sits at -FooterHeight; the lid panel's outer face sits
+  at -LidBackThickness. Equal -> both land flat on the bed. Unequal -> the
+  slicer rests the part on whichever is lower and the other floats.
+  CLAUDE.md already records this exact failure for a 0.5 mm panel shift.
+
+Idempotent: safe to re-run. Adds properties only when absent, but always
+(re)asserts the values and bindings above, since that is the macro's purpose.
+"""
+
+import FreeCAD
+
+PARAMS_DOC = "Params"
+
+NEW_PARAMS = [
+    ("LidBackThickness", "App::PropertyLength", 4.0, "Lid",
+     "Thickness of the lid's rear panel (Pad001). Separate from WallThickness: "
+     "raising WallThickness would also grow Depth and three unrelated walls. "
+     "MUST equal FooterHeight -- see the print-pose note in this macro."),
+    ("TopLidClearance", "App::PropertyLength", 0.1, "Lid",
+     "Vertical clearance lifting the rear panel's top edge above Height so it "
+     "does not bind on the lid plate underside."),
+]
+
+SET_VALUES = {
+    "FooterHeight":    4.0,
+    "MagnetThickness": 1.58,
+}
+
+BINDINGS = [
+    ("Lid", "Pad001",    "Length",         "<<Params>>#VarSet.LidBackThickness"),
+    ("Lid", "Sketch",    "Constraints[9]", "<<Params>>#VarSet.Depth + <<Params>>#VarSet.LidBackThickness"),
+    ("Lid", "Sketch001", "Constraints[7]", "<<Params>>#VarSet.Height + <<Params>>#VarSet.TopLidClearance"),
+]
+
+
+def main():
+    log = []
+    vs = FreeCAD.getDocument(PARAMS_DOC).getObject("VarSet")
+
+    for name, ptype, value, group, doc in NEW_PARAMS:
+        if name not in vs.PropertiesList:
+            vs.addProperty(ptype, name, group, doc)
+            log.append("added   %s" % name)
+        else:
+            log.append("present %s" % name)
+        setattr(vs, name, value)
+        log.append("  set   %s = %s" % (name, value))
+
+    bound = dict(vs.ExpressionEngine)
+    for name, value in SET_VALUES.items():
+        if name not in vs.PropertiesList:
+            raise RuntimeError("expected Param %s is missing" % name)
+        # Macro 34 derives FooterHeight from LidBackThickness. Never fight a
+        # later macro's expression by writing a stale literal over it.
+        if name in bound:
+            log.append("  skip  %s -- driven by expression '%s'" % (name, bound[name]))
+            continue
+        before = float(getattr(vs, name).Value)
+        setattr(vs, name, value)
+        log.append("  set   %s = %s (was %s)" % (name, value, before))
+
+    # Guard the invariant this macro exists to document.
+    if abs(float(vs.FooterHeight.Value) - float(vs.LidBackThickness.Value)) > 1e-9:
+        raise RuntimeError(
+            "FooterHeight (%s) != LidBackThickness (%s). The print pose needs "
+            "them equal -- see the PRINT POSE note in this macro."
+            % (vs.FooterHeight.Value, vs.LidBackThickness.Value))
+
+    for doc_name, obj_name, path, expr in BINDINGS:
+        doc = FreeCAD.getDocument(doc_name)
+        obj = doc.getObject(obj_name)
+        if obj is None:
+            raise RuntimeError("%s/%s not found" % (doc_name, obj_name))
+        obj.setExpression(path, expr)
+        log.append("  bind  %s/%s.%s = %s" % (doc_name, obj_name, path, expr))
+
+    for doc_name in (PARAMS_DOC, "Lid", "MagicCardBox"):
+        FreeCAD.getDocument(doc_name).recompute()
+
+    bad = []
+    for doc_name in ("Lid", "MagicCardBox"):
+        for obj in FreeCAD.getDocument(doc_name).Objects:
+            st = obj.State or []
+            if "Invalid" in st or "Error" in st:
+                bad.append("%s/%s %s" % (doc_name, obj.Name, st))
+    log.append("post-recompute invalid/error: %s" % (bad or "none"))
+
+    print("\n".join(log))
+    return bad
+
+
+bad = main()

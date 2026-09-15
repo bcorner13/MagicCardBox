@@ -126,6 +126,195 @@ model (the r=5.000 ride macro 20 fixed, the panel face, and `PanelBottomZ`).
 derived, so "the magnets meet with no plastic between them" cannot be broken by editing one
 number.
 
+## FOURTH ROUND — 2026-09-14 — post-print-4 hand edits (macros 33, 34)
+
+Bradley made four changes in the GUI after print 4. All four were sound; two of them were
+expressed through the wrong knob. Captured by `macros/33-lid_back_and_magnet_depth` (replays
+the edits as found) and corrected by `macros/34-magnet_proud_and_footer_binding`.
+
+| Change | Verdict |
+|---|---|
+| Rear panel 2 → 4 mm via new `LidBackThickness`, lid plate Y extent rebound to `Depth + LidBackThickness` | ✅ correct as made |
+| `FooterHeight` 2 → 4 "to match the new rear lid" | ✅ correct, and it was load-bearing — now bound, see below |
+| New `TopLidClearance` 0.1 on the panel's top edge | ✅ works — but it is an OVERLAP, and it was aimed at the wrong problem; renamed `TopLidOverlap` by macro 35 |
+| `MagnetThickness` 2.0 → 1.58 to shallow the pocket | ⚠️ right number, wrong knob — fixed by macro 34 |
+
+### THE UNSAVED-SESSION TRAP — `is_modified` LIED
+
+All four documents reported `is_modified: false` from `list_documents`, the working tree was
+clean, and the files on disk were untouched since the previous commit — while the live VarSet
+held two variables that **did not exist on disk at all** and 28 objects in `MagicCardBox` sat
+`Touched`. Hours of GUI work was one crash away from gone, and every status signal said fine.
+
+**`is_modified` is not evidence.** What actually proves the disk matches memory:
+
+```python
+# per-object staleness — 28 Touched objects means the geometry is not what the Params say
+[(o.Name, list(o.State)) for o in doc.Objects if "Touched" in (o.State or [])]
+# and read the document on disk directly (zipfile inside FreeCAD is NOT a shell tool,
+# so it complies with the MCP-only rule; the guard hook blocks the shell path, not this)
+zipfile.ZipFile(path).read("Document.xml")
+```
+
+**Before recomputing anything on a session that may hold unsaved GUI work, write the delta out
+as a macro first.** A failed recompute does not roll back (D5), and the only recovery is
+closing without saving — which would have destroyed exactly the work being recovered. Macro 33
+exists for that reason and is the template: diff disk against memory, emit the replay.
+
+### `MagnetProud` — pocket depth is not magnet thickness (macro 34)
+
+`PocketMagnetBox.Length` and `PocketMagnetLid.Length` both bound straight to
+`MagnetThickness`, so the pockets were **always exactly flush by construction** and the only
+way to make a magnet stand proud was to lie about how thick it is. Now:
+
+```
+MagnetThickness   1.58    FACT     - measured with calipers
+MagnetProud       0.025   DECISION - how far each magnet stands out
+MagnetPocketDepth 1.555   DERIVED  = MagnetThickness - MagnetProud
+LidTopThickness   3.255   DERIVED  = MagnetPocketDepth + MagnetSkin   <- follows the POCKET
+```
+
+Both magnets are proud, so the closed seam opens by `2 * MagnetProud` = **0.05 mm** and the
+magnet faces meet directly instead of through two layers of plastic. Verified from the solids:
+box pocket 1.5550, lid pocket 1.5550, skin 1.7000, worst-case skin under the outer flute
+**0.9995 mm** (the flute at `x = 49.5` still clips the bore, which spans 49.45–53.55 — the
+documented, accepted 1.0 mm case, preserved because the flutes reference `LidTopThickness`).
+
+**The seam gap cannot be measured in CAD.** The magnets are purchased parts, not modelled
+geometry, so the plate underside and the box rim remain coincident at `z = Height` in the
+model. Do not go looking for a 0.05 mm gap in the solids — check the pocket depths instead.
+
+### `FooterHeight = LidBackThickness` — now bound, and it is a real constraint
+
+Printed lid-open at 90°, closed-frame +Y maps onto print −Z:
+
+```
+box underside      -> z = -FooterHeight
+panel outer face   -> z = -(Depth/2 + LidBackThickness - ay) = -LidBackThickness
+                      with ay = Depth/2 - HingeAxisFromRear: the rear terms cancel exactly
+```
+
+Equal → both land flat on the bed. Unequal → the slicer rests the part on whichever is lower
+and the other floats. Measured **0.0000 mm bed mismatch** at 4.0/4.0. These were two free
+knobs that happened to hold the same value — the print-3 coincidence trap **inverted**: there,
+two surfaces that must NOT touch shared an expression; here, two that MUST stay coplanar did
+not. `FooterHeight` is now derived from `LidBackThickness`. To decouple, the print pose itself
+has to change — clear the expression deliberately, don't overwrite the value.
+
+### `TopLidOverlap` (was `TopLidClearance`) — it is an overlap, and it was aimed wrong
+
+Bradley added this trying to make the closed lid lie flatter. **It cannot do that**, and the
+reason is worth keeping: the plate's underside is pinned to the `LidPlane` datum at
+`z = Height`, while this constraint lives in `Sketch001`, the rear *panel's* profile. So it
+moves the panel relative to the plate and never moves the plate at all. The diagnosis behind
+it was right — see the 38:1 lever section — but the lever needed `LidSeatClearance`.
+
+Renamed by macro 35, because leaving a "TopLidClearance" beside a real `LidSeatClearance`
+is precisely the name collision this model keeps getting caught by.
+
+`Lid/Sketch001.Constraints[7] = Height + LidSeatClearance + TopLidOverlap` pushes the rear panel's top edge
+0.1 mm **into** the lid top plate. The two lid bodies now interpenetrate by **38.85 mm³**
+(distance 0.0). That is harmless and arguably good — they are one rigid part and the overlap
+guarantees they export as one connected mesh rather than meeting at a fragile tangency — but
+the name promises a gap and delivers an interference. Rename to `TopLidOverlap` on the next
+pass that touches it; don't "fix" the geometry to match the name.
+
+### A hinge needs its bodies measured SEPARATELY (CLAUDE.md rule 1b, again)
+
+The combined lid-vs-box swing table looked like the print-3 jam — 0.0000 at closed, rising as
+θ². It was not. Split into the two lid bodies:
+
+```
+deg   panel vs box      plate vs box
+0     0.4000  flat      0.0000   <- lid SEATING on the rim; this is what closure IS
+2     0.4000            0.0814
+8     0.4000            0.7571
+90    0.4000            55.0
+```
+
+The panel — the surface that jammed on print 3 — is **flat at 0.4000 mm through the entire
+0–90° swing with 0.0000 mm³ interference**. The whole-shape minimum was the plate's contact
+masking the panel entirely. **Gate on the specific mating pair; a combined number can hide a
+good surface behind a bad one.**
+
+**And the plate's zero was NOT "the lid landing on the rim, which it is supposed to do" —
+that reading was wrong and it cost a round.** Seating is correct; seating *1.3 mm from the
+pivot* is the defect that pushed the closed lid's front edge up 1.1 mm. See the next section.
+A contact being expected is not the same as a contact being in an acceptable place — always
+ask WHERE, and what its lever arm is.
+
+### THE CLOSED LID SAT 1.1 mm PROUD AT THE FRONT — a 38:1 lever (macro 35)
+
+Observed on print 4 with **no magnets installed**, so this is pure plastic-on-plastic.
+
+The box's sealing rail runs along each side wall at `z = Height` and stops at **y = 30.5**,
+set by `Sketch009.Constraints[8] = Depth/2 - HingeAxisFromRear - HingeSwingClearance`. The
+rim fillet pushes the real contact out to **y = 29.71**. The hinge axis is at **y = 31**. So
+the lid's rearmost seat is a knife-edge **1.29 mm from its own pivot**, while the front edge
+is 67 mm away:
+
+```
+back lid short by    front lifts
+0.006 mm             0.29 mm
+0.014 mm             0.59 mm
+0.029 mm             1.10 mm     <- measured on the part
+0.054 mm             1.75 mm
+```
+
+**29 microns — a third of one layer — produced 1.1 mm.** The CAD was never wrong: at nominal
+the lid is dead flat, plate-to-rim 0.0000. The geometry simply multiplies tolerance by 38.
+
+`HingeSwingClearance` was the culprit knob. It means "lid-vs-footer running clearance"
+everywhere else; here it was silently deciding *how close to the pivot the lid may seat*.
+0.5 is right as a swing clearance and catastrophic as a seat setback. **Left alone** — the
+fix removes the dependence rather than overloading the knob further.
+
+**The fix: `LidSeatClearance` 0.15 lifts the plate clear of the rail entirely.** The lid
+cannot be raised as a whole — the panel is pinned to the hinge axis by its knuckle — so it
+is the *plate* that rises relative to the panel. Result, measured:
+
+| | before | after |
+|---|---|---|
+| front edge | up 1.10 mm | seats flat (drops 0.152 mm onto the front rim) |
+| rear rail clearance | 0.000 | **0.125 mm** |
+| fulcrum distance from pivot | 1.29 mm | **66 mm** |
+| amplification | **38x** | **1x** |
+
+The lid now seats on the **front** rim, where the lever is 1:1 and the surface is the one you
+actually look at. The leftover wedge is at the rear, 0.125 mm, hidden under the lid overhang.
+
+**`MagnetProud` is bound to `LidSeatClearance / 2` and must stay bound.** If the plate rises
+0.15 while the magnets stay 0.025 proud, the faces no longer meet — they sit 0.10 apart, the
+magnets drag the lid back down until they touch, and the lift silently collapses to 0.05. A
+knob that looks unrelated would undo the whole fix. Bound, the faces meet exactly at the rest
+position. Consequence: **the closed seam is `LidSeatClearance` = 0.15 mm, not the 0.05 picked
+when `MagnetProud` was chosen in isolation.** Raising the lid and keeping a 0.05 seam are the
+same number; you cannot have both.
+
+### THE DATUM TRAP — feature-attached datums bit for real this time
+
+Raising the panel's top edge by `LidSeatClearance` **moved `DatumPlane001` from z = 65 to
+z = 65.15**, because it is attached to `Fillet.Face6` — the standing debt rule 3 flags. Both
+hinge sketches ride that datum and convert to absolute Z by subtracting a bare `Height`:
+
+```
+Sketch002.Constraints[10]   HingeAxisFromBottom - Height - HingeNeckDrop
+Sketch002.Constraints[11]   PanelBottomZ - Height
+Sketch010.Constraints[1]    HingeAxisFromBottom - Height
+```
+
+That compensation is only valid while the datum sits exactly at `Height`. With the datum
+0.15 higher the **entire hinge neck rode up into the socket bore** — panel volume
+25926.54 → 25976.10 mm³, and panel-to-box clearance collapsed from a flat 0.400 to **0.254**.
+Each now subtracts `(Height + LidSeatClearance)`.
+
+Two things to carry forward:
+- **The swing gate caught this, not inspection.** Nothing looked wrong; one number moved.
+  Every macro that moves lid geometry must re-measure the panel swing before claiming success.
+- **This is the second time the feature-attached datums have bitten.** Retargeting
+  `DatumPlane001`/`DatumPlane002` to origin planes is now overdue. Until then, **any** change
+  to the rear panel's top edge must re-check those three expressions.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -326,20 +515,23 @@ Current hinge, after the 2026-09-13 rebuild:
   whole back of the box folds away. `MagicCardAssembly.FCStd` models this with the box
   grounded and a `Revolute` joint between `LidBack.Face13` and `Box.Face21`.
 
-- **Magnetic closure** (macro 19): two pairs of Ø4 x 2 disc magnets, one pair per thick
-  side wall, `MagnetFromFront` (8 mm) back from the front face. Centres at
-  `x = ±(Width/2 - SideWallThickness/2)` = ±50, `y = -Depth/2 + MagnetFromFront` = -28.
-  The box pocket is `z 63…65` (magnet flush with the rim); the lid pocket is `z 65…67`
-  with `MagnetSkin` above it, so the two magnet faces meet on the parting plane at
-  `z = Height` with **no plastic between them**. Verified from the solid: Ø4.10 bore with
-  0.95 mm of side wall each side, solid below, and the box loses 52.79 mm³ against 52.81
-  predicted.
+- **Magnetic closure** (macro 19; depth decoupled by macro 34): two pairs of Ø4 × **1.58**
+  disc magnets, one pair per thick side wall, `MagnetFromFront` (8 mm) back from the front
+  face. Centres at `x = ±(Width/2 - SideWallThickness/2)` = **±51.5**,
+  `y = -Depth/2 + MagnetFromFront` = -28.
+  Both pockets are `MagnetPocketDepth` **1.505** deep — box `z 63.495…65`, lid
+  `z 65.15…66.655` (the lid pocket rides `Height + LidSeatClearance`, not `Height`) with
+  `MagnetSkin` above it — so each magnet stands `MagnetProud` **0.075** out and the two faces
+  meet at **z = 65.075** with **no plastic between them**, holding the closed seam at
+  `LidSeatClearance` = 0.15 mm. Verified from the solid: Ø4.10 bore, both pockets 1.5050,
+  skin 1.7000, worst case 0.9995 under the outer flute.
 
-  **Skin thins to 0.5 mm at the inboard edge of the lid pocket.** The outermost lid-top
-  flute sits at `x = 47` and grazes the hole, which starts at `x = 47.95`. Measured skin is
-  1.0 mm across the whole pocket except the first ~0.8 mm, where it falls to 0.5 mm. If that
-  ever matters, raise `FluteMargin` (moves the outer flute inboard, away from the magnet) or
-  `MagnetSkin` — do not move the magnets outboard, there is only 0.95 mm of wall there.
+  **The outermost lid-top flute still clips the magnet bore.** It sits at
+  `x = Width/2 - FluteMargin` = **49.5**, and the bore spans **49.45–53.55**, so the flute
+  cuts `FluteDepth` 0.7 out of the skin right at the bore's inboard edge. Measured worst-case
+  skin is **0.9995 mm** (was 0.30 mm before macro 28 raised `MagnetSkin` to 1.7). If that
+  ever needs more, raise `FluteMargin` (moves the outer flute inboard, away from the magnet)
+  or `MagnetSkin` — do not move the magnets outboard, there is only 1.95 mm of wall there.
 
 ---
 
@@ -575,11 +767,24 @@ To go back to free knobs, clear those three expressions.
   `SideWallThickness` **8.0** (was 6.0; raised by macro 27 — hinge web 0.60 → 2.60 mm and
   magnet wall margins 0.95 → 1.95 mm. Grows the box OUTWARD only; interior is unchanged),
   `FloorThickness` 2.0, `EdgeFilletRadius` 1.0,
-  `LidTopThickness` **3.7 (DERIVED = `MagnetThickness + MagnetSkin`, macro 28)**
-- **Magnets** (added 2026-09-13, macro 19): `MagnetDia` 4.0, `MagnetThickness` 2.0,
+  `LidTopThickness` **3.205 (DERIVED = `MagnetPocketDepth + MagnetSkin`, macros 28/34 —
+  follows the POCKET, not the magnet)**,
+  `LidBackThickness` **4.0** (new, macro 33 — the rear panel; `FooterHeight` is derived from
+  it, see the fourth-round section),
+  `LidSeatClearance` **0.15** (new, macro 35 — lifts the lid plate clear of the rail near the
+  hinge; killed the 38:1 lever that pushed the closed lid's front edge up 1.1 mm. **Raising it
+  moves `DatumPlane001` — re-check the three hinge-sketch expressions, see THE DATUM TRAP**),
+  `TopLidOverlap` **0.1** (new, macro 33; renamed from the misleading `TopLidClearance` by
+  macro 35 — it drives the panel's top edge 0.1 mm INTO the plate so the two bodies fuse)
+- **Magnets** (added 2026-09-13, macro 19; decoupled 2026-09-14, macro 34): `MagnetDia` 4.0,
+  `MagnetThickness` **1.58 (MEASURED — a fact about the purchased magnet, never a depth knob)**,
+  `MagnetProud` **0.075 (DERIVED = `LidSeatClearance / 2`, macro 35 — MUST stay bound, or the
+  magnets silently drag the lid back down and undo the seat lift)**,
+  `MagnetPocketDepth` **1.505 (DERIVED = `MagnetThickness - MagnetProud`; drives BOTH
+  `PocketMagnetBox.Length` and `PocketMagnetLid.Length`)**,
   `MagnetFromFront` 8.0, `MagnetSkin` **1.7** (was 1.0 — the outer lid flute cuts
   `FluteDepth` 0.7 straight out of the skin, leaving **0.30 mm** over the magnet after the
-  Width change; now 1.00 mm worst case, measured across the pocket),
+  Width change; now 0.9995 mm worst case, measured under the flute),
   `MagnetFit` 0.05 (per side on the radius)
 
 **`LidTopThickness` is separate from `WallThickness` on purpose — do not merge them.**
@@ -595,7 +800,9 @@ positions all 24 flute circles off the plate's TOP face as
 `Height + LidTopThickness + FluteRadius - FluteDepth`. Macro 19 rewrote those 24
 expressions from `WallThickness`; if they ever drift back, the flutes get cut into the
 middle of the plate instead of its surface.
-- **Footer:** `FooterHeight` 2.0, `FooterTaperAngle` 36 deg
+- **Footer:** `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
+  equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg,
+  `FooterReliefChamfer` 1.0
 - **Hinge:** `HingeTabRadius` 5.0 — **the single knob; `HingeAxisFromRear` and
   `HingeAxisFromBottom` are DERIVED from it** (see the identity below). `HingePinDia` 6.0,
   `HingePinLength` 3.0, `HingeTabThickness` 5.0, `HingeNeckDrop` 3.0, `RimRelief` 1.0, plus
@@ -823,7 +1030,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-18. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-35. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
