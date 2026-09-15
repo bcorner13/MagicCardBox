@@ -1,0 +1,250 @@
+# -*- coding: utf-8 -*-
+"""
+38-name_plate_blank.FCMacro
+
+A flat name-plate blank on the lid top, cut SUBTRACTIVELY out of the flutes.
+
+WHAT IT IS
+  A rounded rectangle pocketed FluteDepth down from the lid's top face, so the
+  flute ridges inside it are removed and the area becomes flat at exactly the
+  flute-bottom level. Not a raised pad - Bradley's mockup (Body002 "NamePlate")
+  padded UP from the flute bottom to the top face, filling the flutes flush.
+  This is the inverse: recessed rather than proud.
+
+GEOMETRY, AND WHERE THE NUMBERS COME FROM
+
+  X - "match up to the bottom of the 2nd flute from each end". The 24 lid
+  flutes sit at
+
+      -(Width/2 - FluteMargin) + i * (Width - 2*FluteMargin) / (FluteCountFront - 1)
+
+  so flute 1 is at +/-49.5 and flute 2 at +/-45.1957. The blank's edges land on
+  that second flute's CENTRELINE, which is its deepest line - so the blank's
+  floor meets the flute bottom with no step, and flute 1 plus the outer half of
+  flute 2 survive as a border each side.
+
+      NamePlateHalfWidth = Width/2 - FluteMargin
+                           - (Width - 2*FluteMargin) / (FluteCountFront - 1)
+
+  Y - 10 mm in from the leading and rear edges of the lid. The plate spans
+  y -Depth/2 .. Depth/2 + LidBackThickness (-36 .. 40 today), so:
+
+      front edge = -Depth/2 + NamePlateInset                 = -26
+      rear  edge =  Depth/2 + LidBackThickness - NamePlateInset = 30
+
+  Note the plate is NOT symmetric in Y - it overhangs the back by
+  LidBackThickness to cap the rear panel - so the two insets are different
+  expressions, not one offset from centre.
+
+  Corners keep Bradley's BorderRadius.
+
+WHY THIS SKETCH IS REBUILT RATHER THAN REUSED
+  Sketch013 in the mockup dimensions off FOUR external-geometry references
+  (GeoIds -3..-6) taken through a SubShapeBinder on Face6. That is exactly the
+  dependency behind defect D1 in this model: when the referenced face's edge
+  COUNT changes, every external GeoId shifts and the constraints silently point
+  at the wrong edges. Macros 02, 08 and 12 stripped that pattern out of every
+  other sketch in both documents, and CLAUDE.md records ExternalGeometry as
+  empty everywhere. This sketch therefore carries the same shape and the same
+  constraint topology, but is dimensioned from the sketch ORIGIN against Params.
+  It has no external geometry and no binder.
+
+WHY AT THE TIP OF Body
+  Appended after PocketMagnetLid, so it disturbs no existing references, and
+  suppressing PocketNamePlate removes the blank cleanly. Same reasoning as the
+  flutes (macro 24) and the hinge chamfer (macro 37).
+
+THE MOCKUP IS NOT DELETED
+  Body002/Sketch013/Pad005 are saved on disk but were never committed, so
+  deleting them could not be undone from git. They are hidden instead. Macro 16
+  exports Body and Body001 explicitly, so Body002 does not reach the print
+  files either way. Delete it by hand once this is confirmed.
+
+WATCH THE MESH
+  The blank's floor is tangent to the 2nd flute's cylinder along its centreline
+  - a zero-dihedral edge. Macro 37 hit exactly this class of thing: a valid,
+  closed, single solid that tessellated non-manifold and exported an
+  unprintable STL. The mesh is gated below, not just the BRep.
+
+Idempotent: safe to re-run.
+"""
+
+import math
+import FreeCAD
+import Part
+import Sketcher
+from FreeCAD import Vector, Rotation, Placement
+
+SK = "SketchNamePlate"
+PK = "PocketNamePlate"
+P = "<<Params>>#VarSet."
+
+
+def main():
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    body = ld.getObject("Body")
+    log = []
+
+    if "NamePlateInset" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "NamePlateInset", "NamePlate",
+                       "Inset of the name-plate blank from the lid's leading and rear "
+                       "edges. The X extent is NOT this - it is pinned to the 2nd "
+                       "flute's centreline; see macro 38.")
+        log.append("added NamePlateInset")
+    if "NamePlateInset" not in dict(vs.ExpressionEngine):
+        vs.NamePlateInset = 10.0
+    if "BorderRadius" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "BorderRadius", "NamePlate",
+                       "Corner radius of the name-plate blank.")
+        vs.BorderRadius = 5.0
+        log.append("added BorderRadius")
+    FreeCAD.getDocument("Params").recompute()
+
+    W = float(vs.Width.Value)
+    FM = float(vs.FluteMargin.Value)
+    N = int(vs.FluteCountFront)
+    D2 = float(vs.Depth.Value) / 2.0
+    LBT = float(vs.LidBackThickness.Value)
+    INS = float(vs.NamePlateInset.Value)
+    R = float(vs.BorderRadius.Value)
+
+    X2 = W / 2.0 - FM - (W - 2.0 * FM) / (N - 1)      # 2nd flute centreline
+    YF = -D2 + INS                                     # leading edge inset
+    YR = D2 + LBT - INS                                # rear edge inset
+
+    EX_X2 = (P + "Width / 2 - " + P + "FluteMargin - (" + P + "Width - 2 * "
+             + P + "FluteMargin) / (" + P + "FluteCountFront - 1)")
+    EX_YF = "-" + P + "Depth / 2 + " + P + "NamePlateInset"
+    EX_YR = P + "Depth / 2 + " + P + "LidBackThickness - " + P + "NamePlateInset"
+
+    if ld.getObject(SK) is None:
+        sk = ld.addObject("Sketcher::SketchObject", SK)
+        sk.Label = "NamePlateBlank"
+        body.addObject(sk)
+        sk.AttachmentSupport = [(ld.getObject("DatumPlane"), "")]
+        sk.MapMode = "FlatFace"
+        sk.AttachmentOffset = Placement(Vector(0, 0, float(vs.LidTopThickness.Value)),
+                                        Rotation(0, 0, 0))
+        sk.setExpression(".AttachmentOffset.Base.z", P + "LidTopThickness")
+
+        n = Vector(0, 0, 1)
+        # loop: line0(left) arc5 line1(front) arc6 line2(right) arc7 line3(rear) arc4
+        sk.addGeometry(Part.LineSegment(Vector(-X2, YR - R, 0), Vector(-X2, YF + R, 0)), False)   # 0
+        sk.addGeometry(Part.LineSegment(Vector(-X2 + R, YF, 0), Vector(X2 - R, YF, 0)), False)   # 1
+        sk.addGeometry(Part.LineSegment(Vector(X2, YF + R, 0), Vector(X2, YR - R, 0)), False)    # 2
+        sk.addGeometry(Part.LineSegment(Vector(X2 - R, YR, 0), Vector(-X2 + R, YR, 0)), False)   # 3
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(Vector(-X2 + R, YR - R, 0), n, R),
+                                        math.pi / 2, math.pi), False)                            # 4 top-left
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(Vector(-X2 + R, YF + R, 0), n, R),
+                                        math.pi, 3 * math.pi / 2), False)                        # 5 bot-left
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(Vector(X2 - R, YF + R, 0), n, R),
+                                        3 * math.pi / 2, 2 * math.pi), False)                    # 6 bot-right
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(Vector(X2 - R, YR - R, 0), n, R),
+                                        0.0, math.pi / 2), False)                                # 7 top-right
+        sk.addGeometry(Part.Point(Vector(-X2, YR, 0)), True)                                     # 8
+        sk.addGeometry(Part.Point(Vector(X2, YF, 0)), True)                                      # 9
+
+        C = Sketcher.Constraint
+        for a, ap, b, bp in ((0, 1, 4, 2), (0, 2, 5, 1), (1, 1, 5, 2), (1, 2, 6, 1),
+                             (2, 1, 6, 2), (2, 2, 7, 1), (3, 1, 7, 2), (3, 2, 4, 1)):
+            sk.addConstraint(C("Tangent", a, ap, b, bp))
+        sk.addConstraint(C("Vertical", 0))
+        sk.addConstraint(C("Vertical", 2))
+        sk.addConstraint(C("Horizontal", 1))
+        sk.addConstraint(C("Horizontal", 3))
+        sk.addConstraint(C("Equal", 4, 5))
+        sk.addConstraint(C("Equal", 5, 6))
+        sk.addConstraint(C("Equal", 6, 7))
+        sk.addConstraint(C("PointOnObject", 8, 1, 0))
+        sk.addConstraint(C("PointOnObject", 8, 1, 3))
+        sk.addConstraint(C("PointOnObject", 9, 1, 1))
+        sk.addConstraint(C("PointOnObject", 9, 1, 2))
+
+        for kind, gid, val, expr in (("DistanceX", 8, -X2, "-(" + EX_X2 + ")"),
+                                     ("DistanceY", 8, YR, EX_YR),
+                                     ("DistanceX", 9, X2, EX_X2),
+                                     ("DistanceY", 9, YF, EX_YF)):
+            i = sk.addConstraint(C(kind, -1, 1, gid, 1, val))
+            sk.setExpression("Constraints[%d]" % i, expr)
+        i = sk.addConstraint(C("Radius", 7, R))
+        sk.setExpression("Constraints[%d]" % i, P + "BorderRadius")
+
+        ld.recompute()
+        log.append("built %s: %d geo, %d constraints, fully constrained=%s, external=%d"
+                   % (SK, len(sk.Geometry), len(sk.Constraints), sk.FullyConstrained,
+                      len(sk.ExternalGeometry or [])))
+    else:
+        sk = ld.getObject(SK)
+        log.append("%s already present" % SK)
+
+    if ld.getObject(PK) is None:
+        pk = ld.addObject("PartDesign::Pocket", PK)
+        pk.Label = "NamePlateBlank001"
+        pk.Profile = sk
+        pk.Type = 0                                   # Length
+        pk.setExpression("Length", P + "FluteDepth")
+        if hasattr(pk, "Midplane"):
+            pk.Midplane = False
+        pk.SideType = "One side"
+        pk.BaseFeature = body.Tip
+        body.addObject(pk)
+        body.Tip = pk
+        log.append("appended %s at the tip of Body" % PK)
+    else:
+        pk = ld.getObject(PK)
+        log.append("%s already present" % PK)
+
+    mock = ld.getObject("Body002")
+    if mock is not None and mock.Visibility:
+        mock.Visibility = False
+        log.append("hid the additive mockup Body002 (NOT deleted - never committed)")
+
+    for dn in ("Params", "Lid", "MagicCardBox"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---------------- verify ----------------
+    problems = []
+    if not sk.FullyConstrained:
+        problems.append("%s is not fully constrained" % SK)
+    if sk.ExternalGeometry:
+        problems.append("%s picked up external geometry" % SK)
+    for o in ld.Objects:
+        st = o.State or []
+        if "Invalid" in st or "Error" in st:
+            problems.append("Lid/%s %s" % (o.Name, list(st)))
+
+    plate = body.Shape
+    if not (plate.isValid() and plate.isClosed() and len(plate.Solids) == 1):
+        problems.append("lid plate not a single valid closed solid")
+
+    import MeshPart
+    m = MeshPart.meshFromShape(Shape=plate, LinearDeflection=0.1,
+                               AngularDeflection=0.5, Relative=False)
+    log.append("plate mesh: solid=%s nonmanifold=%s selfint=%s"
+               % (m.isSolid(), m.hasNonManifolds(), m.hasSelfIntersections()))
+    if not m.isSolid():
+        problems.append("plate mesh not watertight")
+    if m.hasNonManifolds():
+        problems.append("plate mesh non-manifold")
+
+    # measure the blank from the solid
+    top = float(vs.Height.Value) + float(vs.LidSeatClearance.Value) + float(vs.LidTopThickness.Value)
+    want_floor = top - float(vs.FluteDepth.Value)
+    e = Part.makeLine(Vector(0, 0, top + 2), Vector(0, 0, top - 5))
+    spans = [(s.BoundBox.ZMin, s.BoundBox.ZMax) for s in plate.common(e).Edges]
+    floor = max(hi for _, hi in spans) if spans else None
+    log.append("blank floor at z = %.4f (want %.4f = top %.3f - FluteDepth)"
+               % (floor if floor else -1, want_floor, top))
+    if floor is None or abs(floor - want_floor) > 1e-4:
+        problems.append("blank floor %.4f != %.4f" % (floor if floor else -1, want_floor))
+
+    log.append("blank extent: x +/-%.4f (2nd flute centreline), y %.3f .. %.3f"
+               % (X2, YF, YR))
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

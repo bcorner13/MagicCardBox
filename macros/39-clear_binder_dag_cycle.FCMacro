@@ -1,0 +1,142 @@
+# -*- coding: utf-8 -*-
+"""
+39-clear_binder_dag_cycle.FCMacro
+
+Clears a DAG cycle in Lid.FCStd introduced by the NamePlate mockup's
+SubShapeBinder. Run after macro 38.
+
+THE SYMPTOM
+  A plain `doc.recompute()` succeeded and every solid measured correct, but
+  8 objects stayed Touched no matter how often it ran, and a FORCED recompute
+  - `doc.recompute(None, True, True)` - raised:
+
+      RuntimeError: The graph must be a DAG.
+
+  The audit then failed with:
+
+      DAG RISK: Sketch001 attached to feature face Binder.Face2
+
+TWO SEPARATE LOOPS, BOTH THROUGH THE Part CONTAINER
+
+  1. Binder.Support was [(<Part>, ('Body.Pad.',))] - it bound Body.Pad by
+     going THROUGH the App::Part container. Part contains Body002, Body002
+     contains Sketch013, and Sketch013 uses the Binder:
+
+         Binder -> Part -> Body002 -> Sketch013 -> Binder
+
+  2. Sketch001 - the lid's REAR PANEL sketch, in Body001 - had picked up four
+     external-geometry references to Binder.Face2:
+
+         Sketch001 -> Binder -> Part -> Body001 -> Sketch001
+
+     Those four references were used by NO constraint. Every constraint in
+     Sketch001 addresses GeoIds 0..3 (its own four lines) and -1 (the X axis).
+     They were pure dead weight whose only effect was the cycle.
+
+     NOTE for anyone auditing GeoIds: -1 is the X axis and -2 the Y axis;
+     EXTERNAL geometry starts at -3. A filter of `gid <= -3` is correct;
+     `gid < 0` will report the axes as external references and mislead you.
+
+THE FIX
+  * strip the unused external geometry from Sketch001
+  * retarget Binder.Support from the Part container to Body directly
+
+  Neither touches geometry. Verified: panel bbox Y 26..40, Z 0..65.25 and
+  volume 25984.82 mm3 identical before and after; Sketch001 still fully
+  constrained; forced recompute clean; zero Touched objects.
+
+WHY IT MATTERS BEYOND THE MOCKUP
+  Sketch001 carries the rear panel, which is hinge-critical. A stale reference
+  in it is the D1 failure waiting to happen - and the model reported valid,
+  closed, single solids the entire time it was cyclic. `recompute()` is not a
+  cycle check; `recompute(None, True, True)` is.
+
+  The underlying cause is a binder whose Support points at the Part rather
+  than at a Body. Bind to the Body, never to the container that holds the
+  thing you are binding into.
+
+Idempotent: safe to re-run; does nothing if already clean.
+"""
+
+import FreeCAD
+
+
+def main():
+    ld = FreeCAD.getDocument("Lid")
+    sk = ld.getObject("Sketch001")
+    bn = ld.getObject("Binder")
+    body = ld.getObject("Body")
+    log = []
+
+    panel_before = ld.getObject("Body001").Shape
+    vol_before = round(panel_before.Volume, 4)
+    bb_before = (round(panel_before.BoundBox.YMin, 4), round(panel_before.BoundBox.YMax, 4),
+                 round(panel_before.BoundBox.ZMin, 4), round(panel_before.BoundBox.ZMax, 4))
+
+    # 1. Sketch001's external geometry - only if genuinely unused
+    if sk is not None and sk.ExternalGeometry:
+        used = []
+        for i, c in enumerate(sk.Constraints):
+            for gid in (c.First, c.Second, c.Third):
+                if gid is not None and gid <= -3:      # -1/-2 are the axes
+                    used.append(i)
+                    break
+        if used:
+            raise RuntimeError("Sketch001 constraints %s DO use external geometry - "
+                               "stripping it would break the sketch" % used)
+        n = sum(len(s) for _, s in sk.ExternalGeometry)
+        for i in range(n - 1, -1, -1):
+            try:
+                sk.delExternal(i)
+            except Exception:
+                pass                                    # group deletes in one go
+        ld.recompute()
+        log.append("stripped %d unused external reference(s) from Sketch001 -> %d left"
+                   % (n, sum(len(s) for _, s in (sk.ExternalGeometry or []))))
+    else:
+        log.append("Sketch001 external geometry already clear")
+
+    # 2. the binder must not bind through the Part container
+    if bn is not None:
+        tgt = [o.Name for o in bn.OutList]
+        if "Part" in tgt:
+            bn.Support = [(body, ("Pad.",))]
+            ld.recompute()
+            log.append("Binder retargeted from Part to Body")
+        else:
+            log.append("Binder already targets %s" % tgt)
+
+    # ---- prove the cycle is gone ----
+    problems = []
+    try:
+        ld.recompute(None, True, True)
+        log.append("forced recompute: OK - no cycle")
+    except Exception as exc:
+        problems.append("forced recompute still fails: %s" % str(exc)[:100])
+
+    left = [o.Name for o in ld.Objects if "Touched" in (o.State or [])]
+    if left:
+        problems.append("still Touched after forced recompute: %s" % left)
+    for o in ld.Objects:
+        st = o.State or []
+        if "Invalid" in st or "Error" in st:
+            problems.append("Lid/%s %s" % (o.Name, list(st)))
+    if sk is not None and not sk.FullyConstrained:
+        problems.append("Sketch001 is no longer fully constrained")
+
+    panel = ld.getObject("Body001").Shape
+    vol_after = round(panel.Volume, 4)
+    bb_after = (round(panel.BoundBox.YMin, 4), round(panel.BoundBox.YMax, 4),
+                round(panel.BoundBox.ZMin, 4), round(panel.BoundBox.ZMax, 4))
+    log.append("rear panel volume %.4f -> %.4f, bbox %s -> %s"
+               % (vol_before, vol_after, bb_before, bb_after))
+    if abs(vol_after - vol_before) > 1e-4 or bb_after != bb_before:
+        problems.append("rear panel MOVED - this repair must not change geometry")
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()
