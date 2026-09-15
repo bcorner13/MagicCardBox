@@ -1,0 +1,198 @@
+# -*- coding: utf-8 -*-
+"""
+42-drop_socket_flat_fillet.FCMacro
+
+Deletes Box/Fillet004 (SocketFlatFillet) and re-points the footer Chamfer that
+sat downstream of it.
+
+WHY DELETE IT
+  Fillet004 was a 0.7 mm cosmetic ease on the front edge of the hinge socket's
+  bottom flat - the chord macro 23 cut so the neck's corner clears at full open.
+  Macro 26, which bound it, says plainly: "Eases that edge; NOT clearance-
+  critical." It is an internal edge inside the side wall that nobody sees.
+
+  It had gone Invalid, holding a STALE shape: 506 edges against its own base
+  Pocket009's 515. Everything downstream was therefore building on stale
+  geometry - including Bradley's new footer ramp, which was not reaching the
+  part at all. A cosmetic fillet was silently blocking a real design change.
+
+  It is also the second time this named-edge reference has died. Deleting it
+  removes a fragile reference from a chain that has broken twice, and retires
+  SocketFlatFillet with it.
+
+  BorderWidth is retired here too - added during the name-plate work, derived
+  correctly as FluteMargin + FluteRadius, but referenced by nothing. A Param
+  used nowhere fails the audit. Both are checked against the live expression
+  engine of BOTH documents AND the VarSet's own internal expressions before
+  removal, never on the assumption that they are unused.
+
+THE CHAMFER'S TARGET EDGE MOVED, IT DID NOT JUST RE-INDEX
+  FooterReliefChamfer breaks the front edge of the footer relief. Macro 26
+  recorded that edge at (0, 25.5, 0), full width. The new footer ramp moved it:
+  the relief now rises from y 25.5 at z = -FooterHeight to y ~29.2 at z = 0, so
+  the front edge is at the BOTTOM now, (0, 25.5, -FooterHeight).
+
+  Re-pointing by index would have bound it to whatever sits at that index. It
+  is found BY POSITION instead - the technique macros 24, 29, 31 use.
+
+  NOTE its original justification may now be obsolete: the chamfer existed to
+  break an overhang that the ramp has already broken (~43 deg from vertical).
+  It is repaired rather than removed because that was the instruction; revisit
+  whether it still earns its place.
+
+Idempotent: safe to re-run; does nothing once Fillet004 is gone.
+"""
+
+import math
+import FreeCAD
+
+
+def find_edge(shape, mid, min_len=100.0, tol=1.5):
+    best, bestd = None, 1e9
+    for i, e in enumerate(shape.Edges):
+        if e.Length < min_len:
+            continue
+        m = e.CenterOfMass
+        d = math.dist((m.x, m.y, m.z), mid)
+        if d < tol and d < bestd:
+            best, bestd = "Edge%d" % (i + 1), d
+    return best, bestd
+
+
+def check_body_order(body, problems):
+    feats = [o for o in body.Group if hasattr(o, "BaseFeature")]
+    roots = [o for o in feats if o.BaseFeature is None]
+    if len(roots) != 1:
+        problems.append("expected 1 chain root, found %d" % len(roots)); return
+    chain, seen, cur = [], set(), roots[0]
+    while cur is not None:
+        if cur.Name in seen:
+            problems.append("CYCLE at %s" % cur.Name); return
+        seen.add(cur.Name); chain.append(cur)
+        nxt = [o for o in feats if o.BaseFeature is cur]
+        if len(nxt) > 1:
+            problems.append("%s is BaseFeature of %d" % (cur.Name, len(nxt))); return
+        cur = nxt[0] if nxt else None
+    if [o.Name for o in feats] != [o.Name for o in chain]:
+        problems.append("Group order != BaseFeature chain")
+    if body.Tip is not chain[-1]:
+        problems.append("Tip %s != chain end %s" % (body.Tip.Name, chain[-1].Name))
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    body = mb.getObject("Body")
+    log = []
+
+    f4 = mb.getObject("Fillet004")
+    ch = mb.getObject("Chamfer")
+    pk = mb.getObject("Pocket009")
+
+    if f4 is not None:
+        # InList lists a referrer once per referring property - Chamfer points at
+        # Fillet004 through BOTH Base and BaseFeature, so dedupe before checking.
+        users = sorted({o.Name for o in f4.InList} - {"Body"})
+        if users != ["Chamfer"]:
+            raise RuntimeError("Fillet004 used by %s - expected only Chamfer" % users)
+
+        ch.BaseFeature = pk
+        mb.recompute()
+
+        target = (0.0, 25.5, -float(vs.FooterHeight.Value))
+        ref, d = find_edge(pk.Shape, target)
+        if ref is None:
+            raise RuntimeError("could not find the footer-relief front edge near %s" % (target,))
+        ch.Base = (pk, [ref])
+        log.append("Chamfer re-pointed to %s on Pocket009 (%.3f mm from %s)" % (ref, d, target))
+
+        body.Group = [o for o in body.Group if o is not f4]
+        mb.removeObject(f4.Name)
+        log.append("removed Fillet004")
+        mb.recompute()
+    else:
+        log.append("Fillet004 already gone")
+
+    # Retire dead Params. Each is checked against the LIVE expression engine of both
+    # documents first - never removed on the assumption that it is unused. A Param
+    # referenced by nothing fails the audit, and a Param removed while still
+    # referenced breaks whatever referenced it.
+    import re as _re
+    for dead in ("SocketFlatFillet", "BorderWidth"):
+        if dead not in vs.PropertiesList:
+            continue
+        still = []
+        for dn in ("MagicCardBox", "Lid"):
+            for o in FreeCAD.getDocument(dn).Objects:
+                try: eng = list(o.ExpressionEngine)
+                except Exception: continue
+                still += ["%s/%s.%s" % (dn, o.Name, pth) for pth, ex in eng
+                          if _re.search(r"\b%s\b" % dead, ex)]
+        # VarSet-internal expressions count as references too
+        still += [k for k, ex in vs.ExpressionEngine
+                  if k != dead and _re.search(r"\b%s\b" % dead, ex)]
+        if still:
+            raise RuntimeError("%s still referenced by %s" % (dead, still))
+        vs.removeProperty(dead)
+        log.append("retired %s (dead Param)" % dead)
+
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---------------- verify ----------------
+    problems = []
+    check_body_order(body, problems)
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    boxS = body.Shape
+    if not (boxS.isValid() and boxS.isClosed() and len(boxS.Solids) == 1):
+        problems.append("box not a single valid closed solid")
+
+    import MeshPart
+    mm = MeshPart.meshFromShape(Shape=boxS, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    if not mm.isSolid():
+        problems.append("box mesh not watertight")
+    if mm.hasNonManifolds():
+        problems.append("box mesh non-manifold")
+
+    # the payoff: how much unsupported ledge is left now that the ramp propagates
+    import Part
+    from FreeCAD import Vector, Rotation, Placement
+    flat = 0.0
+    for f in boxS.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        n = f.normalAt(0, 0)
+        if n.z > -0.99 or abs(f.BoundBox.ZMin) > 1e-6:
+            continue
+        flat += f.Area
+    log.append("down-facing FLAT area at z=0: %.1f mm2  (was 458.4 before the ramp)" % flat)
+
+    panel = ld.getObject("Body001").Shape
+    D = float(vs.Depth.Value)
+    ay = D / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    if len(set(g for _, g, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing changed: %s" % gaps)
+    log.append("panel swing %s" % gaps)
+    log.append("box %.2f mm3, valid=%s solids=%d" % (boxS.Volume, boxS.isValid(), len(boxS.Solids)))
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

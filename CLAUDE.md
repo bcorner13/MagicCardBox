@@ -523,6 +523,94 @@ branch was skipped — and the macro's own gate caught it (`floor 67.6550 !=
 67.4550`). **Re-assert driving expressions every run, outside the create
 branch.**
 
+## SEVENTH ROUND — 2026-09-15 — the floating cantilever, halved (macros 42-44)
+
+Creality Print warns `object Object_1 has floating cantilever` on every slice. Bradley fixed
+it with **two changes of his own**, and the work here was mostly clearing what blocked them.
+
+### The measured result
+
+```
+flat down-facing area at z=0     458.4  ->  176.9 mm2     (-61%)
+footer reach at z=-0.1            26.4  ->   28.381
+panel swing                      0.4000 flat, zero interference (unchanged)
+```
+
+### What actually fixed it — and the order matters
+
+1. **`PanelBottomFillet`** (Lid/Fillet001) rounds the rear panel's bottom inner edge. It is
+   NOT cosmetic: it shrinks the lid's **swept envelope**, freeing space the box can then
+   occupy. Measured, space free below z=0 after adding it:
+
+   ```
+   z = -0.5    26.5 -> 29.00    (+2.50 mm)
+   z = -1.0    26.0 -> 27.25
+   z = -2.0    25.5 -> 26.25
+   ```
+
+   Bound: `Radius = LidBackThickness - HingeSwingClearance - HingeTabClearance` = 3.1. The
+   panel is 3.5 thick there, so it rounds to within one `HingeTabClearance` of its outer face.
+
+2. **`FooterReliefRadius` 3.74** turns the footer relief from a step into an arc (Sketch006 →
+   Pocket004), using the space the fillet freed. A **free design input, not derived** —
+   nothing in the Params lands on 3.74, and inventing a derivation that merely evaluates
+   correctly today is the `LidTopThickness` mistake all over again.
+
+   **It is AT the swept-envelope limit.** The relief reaches y = 29.24 at z = 0 against a
+   sampled free limit of 29.00 (0.25 mm grid, so inside the error band). The swing gate reads
+   a flat 0.4000, so it is not colliding — but **raising this Param eats hinge clearance
+   directly. Re-measure the swing after any increase.**
+
+### The lesson: a cosmetic feature was hiding a real design change
+
+`Fillet004` — a 0.7 mm ease on an internal socket edge, which macro 26 explicitly called
+"NOT clearance-critical" — had gone Invalid and was holding a **stale shape**: 506 edges
+against its own base `Pocket009`'s 515. Everything downstream built on that stale geometry,
+so **the footer arc was not reaching the part at all**. The viewport was not showing the box
+that had been designed.
+
+Deleted, and the footer `Chamfer` behind it re-pointed. Note its target had **moved**, not
+just re-indexed: the arc relief put the relief's front edge at (0, 25.5, −FooterHeight)
+instead of (0, 25.5, 0), so it was re-found **by position**.
+
+### A NAMED-EDGE REFERENCE THAT RE-RESOLVES TO THE WRONG EDGE IS WORSE THAN ONE THAT DIES
+
+`PanelBottomChamfer` was superseded by the new fillet, but it had also **silently drifted**.
+Both named `Edge27` on their own base, and inserting the fillet ahead of the chamfer changed
+that base:
+
+```
+PanelBottomFillet    Edge27 on PocketKnuckleRelief  ->  (0, 36.5, 0)     panel BOTTOM
+PanelBottomChamfer   Edge27 on Fillet001            ->  (0, 36, 65.25)   panel TOP
+```
+
+It had moved to the panel's **top** inner edge, inside the overlap with the lid plate, while
+still labelled `PanelBottomChamfer`. It was never Invalid, so nothing complained. `Fillet004`
+at least announced itself.
+
+**After inserting any feature mid-chain, re-check every named-edge reference DOWNSTREAM of it
+BY POSITION — not just the ones that error.**
+
+### Retired Params
+
+`SocketFlatFillet` and `BorderWidth`, both dead. Each checked against the live expression
+engine of **both** documents *and* the VarSet's own internal expressions before removal —
+never on the assumption that they were unused. `RimFilletRadius` was checked and **kept**: it
+still drives `MagicCardBox/Fillet002`.
+
+### What the slicer warning is actually worth
+
+Unchanged by any of this, and worth keeping in proportion:
+
+```
+Overhang wall    6s     0.00 m       Internal Bridge   6m38s   1.45 m
+```
+
+Six seconds of overhang wall in the whole print. **The slicer bridges that ledge rather than
+treating it as unsupported perimeter**, at 0.2 mm layers and at 0.12 alike. The warning is a
+geometry flag, not a defect report — five prints bear that out. h3liØ's reference box has the
+same joint with the same 0.38 mm gap over its own lid; what it lacks is one big flat face.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -1039,7 +1127,9 @@ positions all 24 flute circles off the plate's TOP face as
 `Height + LidTopThickness + FluteRadius - FluteDepth`. Macro 19 rewrote those 24
 expressions from `WallThickness`; if they ever drift back, the flutes get cut into the
 middle of the plate instead of its surface.
-- **Footer:** `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
+- **Footer:** `FooterReliefRadius` **3.74** (macro 44 — the relief arc; a free design input,
+  AT the lid's swept-envelope limit, so re-measure the swing if raised),
+  `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
   equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg,
   `FooterReliefChamfer` 1.0
 - **Name plate** (macro 38): `NamePlateInset` 10.0, `BorderRadius` 5.0,
@@ -1277,7 +1367,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-41. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-44. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 

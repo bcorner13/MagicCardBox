@@ -1,0 +1,173 @@
+# -*- coding: utf-8 -*-
+"""
+43-panel_bottom_fillet.FCMacro
+
+Binds PanelBottomFillet's radius and removes the PanelBottomChamfer it replaced.
+
+1. PanelBottomFillet (Lid/Fillet001) - BIND THE RADIUS
+
+   Bradley added it as a literal 3.1. It is NOT cosmetic: rounding the rear
+   panel's bottom inner edge shrinks the lid's SWEPT ENVELOPE, which is what
+   let the footer grow outward and cut the unsupported flat area at z=0 from
+   458.4 to 176.9 mm2. Measured, the space freed below z=0:
+
+       z = -0.5    26.5 -> 29.00     (+2.50 mm)
+       z = -1.0    26.0 -> 27.25
+       z = -2.0    25.5 -> 26.25
+       z = -3.9    25.5 -> 25.75
+
+   So it drives how far the footer may reach and must not be a loose number:
+
+       Radius = LidBackThickness - HingeSwingClearance - HingeTabClearance
+              = 4 - 0.5 - 0.4 = 3.1
+
+   The panel is LidBackThickness - HingeSwingClearance = 3.5 thick at that
+   edge, so this rounds it to within HingeTabClearance of its outer face.
+
+2. PanelBottomChamfer (Lid/Chamfer) - DELETE, AND NOT ONLY BECAUSE IT IS
+   REDUNDANT
+
+   The fillet supersedes it. But it had also SILENTLY DRIFTED. Both features
+   name "Edge27" on their own base, and inserting the fillet ahead of the
+   chamfer changed that base:
+
+       PanelBottomFillet   Edge27 on PocketKnuckleRelief -> (0, 36.5, 0)    bottom
+       PanelBottomChamfer  Edge27 on Fillet001           -> (0, 36, 65.25)  TOP
+
+   It had moved to the panel's TOP inner edge, inside the overlap with the lid
+   plate, while still labelled PanelBottomChamfer. It was never Invalid, so
+   nothing complained. That is worse than the Fillet004 failure, which at
+   least announced itself: a named-edge reference that re-resolves to a valid
+   but WRONG edge is silent.
+
+   => After inserting any feature mid-chain, re-check every named-edge
+      reference DOWNSTREAM of it by position, not just the ones that error.
+
+   PocketPanelRelief was the only thing holding it in place. That pocket takes
+   a SKETCH as its profile, not edges, so re-pointing its BaseFeature is the
+   whole job - no edge re-pick needed.
+
+   RimFilletRadius (which drove the chamfer's size) is NOT retired: it still
+   drives the box's top-rim fillet. Verified below rather than assumed.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+RADIUS_EXPR = (P + "LidBackThickness - " + P + "HingeSwingClearance - "
+               + P + "HingeTabClearance")
+
+
+def check_body_order(body, problems):
+    feats = [o for o in body.Group if hasattr(o, "BaseFeature")]
+    roots = [o for o in feats if o.BaseFeature is None]
+    if len(roots) != 1:
+        problems.append("expected 1 chain root, found %d" % len(roots)); return
+    chain, seen, cur = [], set(), roots[0]
+    while cur is not None:
+        if cur.Name in seen:
+            problems.append("CYCLE at %s" % cur.Name); return
+        seen.add(cur.Name); chain.append(cur)
+        nxt = [o for o in feats if o.BaseFeature is cur]
+        if len(nxt) > 1:
+            problems.append("%s is BaseFeature of %d" % (cur.Name, len(nxt))); return
+        cur = nxt[0] if nxt else None
+    if [o.Name for o in feats] != [o.Name for o in chain]:
+        problems.append("Group order != BaseFeature chain")
+    if body.Tip is not chain[-1]:
+        problems.append("Tip %s != chain end %s" % (body.Tip.Name, chain[-1].Name))
+
+
+def main():
+    ld = FreeCAD.getDocument("Lid")
+    mb = FreeCAD.getDocument("MagicCardBox")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    body = ld.getObject("Body001")
+    log = []
+
+    f1 = ld.getObject("Fillet001")
+    f1.setExpression("Radius", RADIUS_EXPR)
+    ld.recompute()
+    log.append("PanelBottomFillet.Radius bound -> %.4f" % float(f1.Radius.Value))
+
+    ch = ld.getObject("Chamfer")
+    if ch is not None:
+        users = sorted({o.Name for o in ch.InList} - {"Body001"})
+        if users != ["PocketPanelRelief"]:
+            raise RuntimeError("PanelBottomChamfer used by %s - expected only "
+                               "PocketPanelRelief" % users)
+        pr = ld.getObject("PocketPanelRelief")
+        if getattr(pr, "Base", None):
+            raise RuntimeError("PocketPanelRelief unexpectedly carries edge refs %s"
+                               % (pr.Base,))
+        pr.BaseFeature = f1
+        body.Group = [o for o in body.Group if o is not ch]
+        ld.removeObject(ch.Name)
+        log.append("removed PanelBottomChamfer; PocketPanelRelief now on PanelBottomFillet")
+        ld.recompute()
+    else:
+        log.append("PanelBottomChamfer already gone")
+
+    # RimFilletRadius must still be earning its keep somewhere
+    import re
+    users = []
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            try: eng = list(o.ExpressionEngine)
+            except Exception: continue
+            users += ["%s/%s.%s" % (dn, o.Name, p) for p, e in eng
+                      if re.search(r"\bRimFilletRadius\b", e)]
+    log.append("RimFilletRadius still used by: %s" % (users or "NOTHING - now dead"))
+
+    for dn in ("Params", "Lid", "MagicCardBox"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---------------- verify ----------------
+    problems = []
+    check_body_order(body, problems)
+    if not users:
+        problems.append("RimFilletRadius is now a dead Param - the audit will fail")
+    for dn in ("Lid", "MagicCardBox"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    plate = ld.getObject("Body").Shape
+    panel = body.Shape
+    for tag, sh in (("plate", plate), ("panel", panel)):
+        if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+            problems.append("%s not a single valid closed solid" % tag)
+
+    # the two lid bodies must still meet, or the lid exports as two meshes
+    d = plate.distToShape(panel)[0]
+    ov = plate.common(panel).Volume
+    log.append("plate-to-panel distance %.4f, overlap %.3f mm3" % (d, ov))
+    if d > 1e-6 or ov <= 0:
+        problems.append("lid bodies no longer fused (d=%.4f, overlap=%.3f)" % (d, ov))
+
+    from FreeCAD import Vector, Rotation, Placement
+    boxS = mb.getObject("Body").Shape
+    D = float(vs.Depth.Value)
+    ay = D / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    if len(set(g for _, g, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing changed: %s" % gaps)
+    log.append("panel swing %s" % gaps)
+    log.append("panel %.3f mm3, plate %.3f mm3" % (panel.Volume, plate.Volume))
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

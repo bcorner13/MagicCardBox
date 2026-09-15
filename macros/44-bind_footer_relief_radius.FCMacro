@@ -1,0 +1,145 @@
+# -*- coding: utf-8 -*-
+"""
+44-bind_footer_relief_radius.FCMacro
+
+Adds FooterReliefRadius and binds Sketch006.Constraints[15], the last literal
+in either document.
+
+WHAT IT DRIVES
+  Sketch006 -> Pocket004 is the footer relief: the cut that pulls the footer
+  back so the open lid can lie flat at 90 deg. Bradley reshaped it from a step
+  into a single arc, R 3.74, centred (29.24, -3.74) and tangent to the footer's
+  underside at z = -FooterHeight. Every other constraint in that sketch was
+  already bound; this one was a literal.
+
+  It is not a cosmetic radius. It sets how far the footer reaches at z = 0,
+  which is the outboard end of the unsupported ledge. Together with
+  PanelBottomFillet (macro 43) it took the flat down-facing area at z = 0 from
+  458.4 to 176.9 mm2 - a 61% cut in the thing Creality flags as a floating
+  cantilever.
+
+WHY A FREE PARAM AND NOT A DERIVATION
+  Nothing in the existing Params lands on 3.74. FooterHeight is 4,
+  FooterHeight - ChamferWallKeep is 3.6, and no combination of the hinge
+  values gives it cleanly. It was tuned by eye against the lid's swept
+  envelope, so it is recorded as what it is - a design input - rather than
+  dressed up in a derivation that merely happens to evaluate correctly today.
+  That mistake is already in this project's history: LidTopThickness
+  "happened to equal" MagnetThickness + MagnetSkin with nothing recording that
+  it had to, and it broke silently when one side moved.
+
+ITS UPPER BOUND IS THE LID, AND IT IS CLOSE TO IT
+  The lid's swept envelope through 0-90 deg leaves the box free only up to:
+
+      z = -0.5    y <= 29.00
+      z = -1.0    y <= 27.25
+      z = -2.0    y <= 26.25
+      z = -3.9    y <= 25.75
+
+  At R 3.74 the relief reaches y = 29.24 at z = 0. That is AT or slightly past
+  the sampled limit - the scan used a 0.25 mm grid, so 29.24 is inside its
+  error band. The swing gate measures a flat 0.4000 with zero interference, so
+  it is not colliding today.
+
+  => RAISING THIS PARAM EATS DIRECTLY INTO HINGE CLEARANCE. Re-run the swing
+     measurement after any increase; do not assume the 0.4 holds. Lowering it
+     is always safe and simply gives back overhang.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+
+TARGET = 3.74
+CON = 15
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    log = []
+
+    if "FooterReliefRadius" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "FooterReliefRadius", "Footer",
+                       "Radius of the footer relief arc (Sketch006 -> Pocket004), which "
+                       "pulls the footer back for the open lid. Sets how far the footer "
+                       "reaches at z=0 and therefore the outboard end of the unsupported "
+                       "ledge. A free design input, not derived. BOUNDED ABOVE by the "
+                       "lid's swept envelope - re-measure the swing if increased.")
+        log.append("added FooterReliefRadius")
+    if "FooterReliefRadius" not in dict(vs.ExpressionEngine):
+        vs.FooterReliefRadius = TARGET
+    FreeCAD.getDocument("Params").recompute()
+
+    sk = mb.getObject("Sketch006")
+    c = sk.Constraints[CON]
+    if c.Type != "Radius":
+        raise RuntimeError("Sketch006.Constraints[%d] is %s, expected Radius - the "
+                           "constraint list has shifted; re-identify it by type and "
+                           "value before binding" % (CON, c.Type))
+    before = round(c.Value, 4)
+    sk.setExpression("Constraints[%d]" % CON, "<<Params>>#VarSet.FooterReliefRadius")
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+    log.append("Sketch006.Constraints[%d] %s -> bound, now %.4f"
+               % (CON, before, sk.Constraints[CON].Value))
+
+    # ---------------- verify ----------------
+    problems = []
+    if not sk.FullyConstrained:
+        problems.append("Sketch006 is no longer fully constrained")
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    boxS = mb.getObject("Body").Shape
+    if not (boxS.isValid() and boxS.isClosed() and len(boxS.Solids) == 1):
+        problems.append("box not a single valid closed solid")
+
+    # binding must not have moved anything
+    import Part
+    from FreeCAD import Vector, Rotation, Placement
+    def ymax(z):
+        e = Part.makeLine(Vector(0.0, 15.0, z), Vector(0.0, 45.0, z))
+        cc = boxS.common(e)
+        return round(max(s.BoundBox.YMax for s in cc.Edges), 3) if cc.Edges else None
+    prof = {("z=%.1f" % z): ymax(z) for z in (-2.0, -1.0, -0.5, -0.1, 0.0)}
+    log.append("footer profile %s" % prof)
+    if prof["z=-0.5"] != 27.372 or prof["z=0.0"] != 31.101:
+        problems.append("footer profile moved: %s" % prof)
+
+    flat = 0.0
+    for f in boxS.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        if f.normalAt(0, 0).z > -0.99 or abs(f.BoundBox.ZMin) > 1e-6:
+            continue
+        flat += f.Area
+    log.append("flat down-facing area at z=0: %.1f mm2" % flat)
+    if abs(flat - 176.9) > 1.0:
+        problems.append("unsupported flat area changed: %.1f" % flat)
+
+    panel = ld.getObject("Body001").Shape
+    D = float(vs.Depth.Value)
+    ay = D / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 15.0, 45.0, 90.0):
+        cc = panel.copy()
+        cc.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                 Vector(0, ay, az)).multiply(cc.Placement)
+        gaps.append((deg, round(boxS.distToShape(cc)[0], 4),
+                     round(boxS.common(cc).Volume, 4)))
+    if len(set(g for _, g, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing changed: %s" % gaps)
+    log.append("panel swing %s" % gaps)
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()
