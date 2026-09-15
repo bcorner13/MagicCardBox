@@ -1,0 +1,110 @@
+# -*- coding: utf-8 -*-
+"""
+36-back_hinge_fillet_radius.FCMacro
+
+BackHingeFilletRadius 4.0 -> 8.0, to cut the overhang above the hinge socket.
+
+THE DEFECT
+  The knuckle recess is open in the box's rear face over x 50.1..55.5 (each
+  side wall) from the bottom up to a ceiling. `BackHengeFilet` sweeps that
+  recess from 9.49 mm deep at z = 8 up to closed, and at R = 4 it did so in
+  only 4.88 mm of height -- an average of ~63 deg of overhang, going to 90 deg
+  at the tangent. That is the drooping, stringy region visible on print 4.
+
+  At R = 8 the sweep is spread over 7.89 mm instead:
+
+      z        inboard y      overhang
+      10.5     30.617         -
+      11.0     31.763         66.4 deg
+      12.0     33.223         55.6 deg
+      13.0     34.197         44.2 deg
+      15.0     35.392         26.5 deg
+      16.0     35.730         18.7 deg
+
+  Rear opening now closes at z = 15.89 (was 12.88). 87.7 mm3 removed.
+
+WHAT THIS CANNOT FIX
+  The 66 deg at z ~ 11 sits directly above the socket bore's apex at
+  z = HingeAxisFromBottom + HingeTabRadius + HingeTabClearance = 10.4. The top
+  of a round hole has a horizontal tangent by definition; no fillet radius
+  removes it. The bore is the knuckle's journal, so it stays round. Do not
+  chase that number with a bigger radius -- it is the bore, not the fillet.
+
+SAFE BECAUSE IT ONLY CUTS
+  The fillet removes material from the side wall's rear face, which has room:
+  the rear face runs up to z = 63.92. It cannot move the lid closer to the box,
+  and the swing gate below confirms 0.4000 flat.
+
+  BUT NOTE, learned the hard way in this same session: a fillet ADDS material
+  on a concave edge. Sweeping `HingeFilletRadius` (a different fillet) caused
+  a downstream box fillet to re-bind to another edge and fill a concave corner
+  at the footer relief -- +1.2469 mm3 of interference with the lid at 90 deg.
+  Reverting the radius did NOT undo it (D5), and box volume stayed identical
+  at 131247.2 while Invalid flags stayed clean. ONLY the swing measurement
+  caught it; recovery was closing all documents unsaved and reloading.
+  => After ANY fillet change in this body, measure the swing. Volume and
+     Invalid flags are not sufficient evidence.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+import Part
+from FreeCAD import Vector, Rotation, Placement
+
+VALUE = 8.0
+
+
+def main():
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+
+    before = float(vs.BackHingeFilletRadius.Value)
+    vs.BackHingeFilletRadius = VALUE
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+
+    problems = []
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    boxS = mb.getObject("Body").Shape
+    panel = ld.getObject("Body001").Shape
+    if not (boxS.isValid() and boxS.isClosed() and len(boxS.Solids) == 1):
+        problems.append("box not a single valid closed solid")
+
+    D = float(vs.Depth.Value)
+    ay = D / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    if len(set(g for _, g, _ in gaps)) != 1:
+        problems.append("panel swing gap not flat: %s" % gaps)
+    if any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing interference: %s" % gaps)
+
+    # how high the rear-face opening now closes
+    e = Part.makeLine(Vector(53.0, D / 2 - 0.3, -6.0), Vector(53.0, D / 2 - 0.3, 70.0))
+    c = boxS.common(e)
+    ceiling = round(min(s.BoundBox.ZMin for s in c.Edges), 3) if c.Edges else None
+
+    print("BackHingeFilletRadius %s -> %s" % (before, VALUE))
+    print("  rear opening closes at z = %s" % ceiling)
+    print("  box %.2f mm3, valid=%s closed=%s solids=%d"
+          % (boxS.Volume, boxS.isValid(), boxS.isClosed(), len(boxS.Solids)))
+    print("  panel swing (deg, gap, interference): %s" % gaps)
+    print("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()
