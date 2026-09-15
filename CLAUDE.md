@@ -661,6 +661,37 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    - `HingePinClearance` is applied to the **hole** (`HingePinDia + HingePinClearance * 2`),
      so it is a per-side radial value.
 
+5. **Reference geometry is DISPOSABLE, and you check it before you build on it.**
+
+   **Naming — `TMP_` or `REF_` prefix means throwaway.** Any body, sketch or object whose
+   label starts with either is a mockup: read dimensions off it, never bind to it, delete it
+   when the real feature lands. No lifecycle question needs asking. Anything *without* the
+   prefix is load-bearing until proven otherwise.
+
+   **Before building on ANY reference object, enumerate what depends on it — and on anything
+   it binds through.** Not just the object itself:
+
+   ```python
+   [o.Name for o in ref.InList]                    # who points at the mockup
+   [o.Name for o in ref.getObject("Binder").InList]  # and at its helpers
+   ```
+
+   GUI-built reference geometry creates helper objects nobody asked for. On 2026-09-15 a
+   mockup NamePlate body owned a `SubShapeBinder`, and **`Sketch001` — the lid's rear panel,
+   hinge-critical — held four external-geometry references to that binder**. They appeared in
+   `Binder.InList` as `Sketch001` four times, visible from the moment the mockup was first
+   read. Nobody looked until the audit failed, by which point the model carried two DAG
+   cycles (see the sixth-round section) and deleting the "disposable" body would have yanked
+   the binder out from under the rear panel.
+
+   Reading a reference object's dependents costs one query. It is the `~/.claude/CLAUDE.md`
+   verify-before-asserting rule applied to **dependencies** rather than to claims.
+
+   **And keep mockup-specific code out of permanent macros.** Macro 38 shipped with a
+   `Body002.Visibility = False` block — logic about a throwaway object embedded in the macro
+   that builds the real feature. It became dead code the moment the mockup was deleted.
+   Mockup handling belongs in its own one-shot macro (macro 40), never in the feature's.
+
 ---
 
 ## Assembly architecture

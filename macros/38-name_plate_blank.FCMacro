@@ -55,12 +55,6 @@ WHY AT THE TIP OF Body
   suppressing PocketNamePlate removes the blank cleanly. Same reasoning as the
   flutes (macro 24) and the hinge chamfer (macro 37).
 
-THE MOCKUP IS NOT DELETED
-  Body002/Sketch013/Pad005 are saved on disk but were never committed, so
-  deleting them could not be undone from git. They are hidden instead. Macro 16
-  exports Body and Body001 explicitly, so Body002 does not reach the print
-  files either way. Delete it by hand once this is confirmed.
-
 THE FLOOR MUST SIT BELOW THE FLUTE BOTTOMS - NamePlateSink
 
   First build had the floor at exactly top - FluteDepth, i.e. level with the
@@ -228,11 +222,6 @@ def main():
     # only inside the create branch made the macro silently non-idempotent: adding
     # NamePlateSink changed nothing on a re-run because the branch was skipped.
     pk.setExpression("Length", P + "FluteDepth + " + P + "NamePlateSink")
-
-    mock = ld.getObject("Body002")
-    if mock is not None and mock.Visibility:
-        mock.Visibility = False
-        log.append("hid the additive mockup Body002 (NOT deleted - never committed)")
 
     for dn in ("Params", "Lid", "MagicCardBox"):
         FreeCAD.getDocument(dn).recompute()

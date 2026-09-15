@@ -41,7 +41,22 @@ THE FIX
   * strip the unused external geometry from Sketch001
   * retarget Binder.Support from the Part container to Body directly
 
-  Neither touches geometry. Verified: panel bbox Y 26..40, Z 0..65.25 and
+  THE RETARGET WAS REDUNDANT, in hindsight. Macro 40 deleted the Binder outright
+  minutes later, so changing its Support bought nothing. The minimal path was
+  TWO steps, not three:
+
+      1. strip Sketch001's dead references   (needed either way)
+      2. delete Body002, which takes the Binder with it
+
+  Step 1 is NOT optional and is the reason "just delete the body" would not have
+  worked on its own: Sketch001 - the rear panel, hinge-critical - held four
+  references to the Binder, so deleting the mockup would have yanked it out from
+  under that sketch. Macro 40's guard refuses for exactly this reason.
+
+  Keep this macro for the diagnosis and for the general rule below; do not copy
+  the retarget as a pattern.
+
+  Neither step touches geometry. Verified: panel bbox Y 26..40, Z 0..65.25 and
   volume 25984.82 mm3 identical before and after; Sketch001 still fully
   constrained; forced recompute clean; zero Touched objects.
 
