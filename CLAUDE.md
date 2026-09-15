@@ -1311,6 +1311,95 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
 
 ## Print profile
 
+### MEASURED PROFILE — read off print 5's gcode, 2026-09-15
+
+No longer a placeholder. Pulled from the sliced gcode, not from memory:
+
+| | |
+|---|---|
+| profile | `0.20mm Standard @Creality K2 Plus 0.4 nozzle - CardBox` |
+| printer | Creality K2 Plus, 0.4 nozzle, High Temp Plate |
+| layer height | 0.2, first layer 0.2 — **356 layers for 75.98 mm, avg 0.213, so variable layer height is ON** (limits 0.08 / 0.32) |
+| walls | 2, arachne. Line width 0.42, inner wall 0.45 |
+| shells | 5 top / 3 bottom |
+| infill | 10 % grid |
+| speeds | outer 200, inner 300, infill 270, first layer 60 mm/s |
+| supports | **disabled** — see the cantilever warning below |
+| brim | auto |
+| estimate | 2 h 40 m 15 s, 84.44 g |
+
+### PRINT 5 IS PETG, AND EVERY CLEARANCE IN THIS MODEL WAS SIZED FOR PLA
+
+Ryan asked for black; the black loaded is `CR-PETG` (tool **T3**, 240 °C / 70 °C bed —
+confirmed three ways: active tool, `filament_settings_id` slot 4, and all 84.44 g drawn from
+slot 4). Printing fine at the halfway mark.
+
+**The numbers below were chosen against PLA's ~0.2 % shrink and PLA layer bonding:**
+
+```
+HingeTabClearance    0.4      knuckle in socket
+HingePinClearance    0.4      pin in bore
+HingeSwingClearance  0.5      panel vs footer - AND the gap under the cantilever
+NamePlateSink        0.2      sized against ~0.1 mm mesh deviation, not material
+```
+
+PLA print-in-place wants 0.3–0.4 per side; PETG usually wants 0.5–0.6, bonds far more
+readily between layers, and strings more. **If a PETG build ever fuses, open
+`HingeTabClearance` and `HingeSwingClearance` first** — both are single Params and the
+cascade is already parametric.
+
+The riskiest spot is the 4.5 mm cantilever sitting **0.5 mm above the lid panel**: PETG
+droops further at the same overhang and welds to what it lands on. It prints in roughly the
+first 80 layers (the compound is shifted so the box underside is print z = 0), so a build
+that gets past ~z 20 mm has cleared it — though whether the hinge is actually FREE is only
+knowable off the plate.
+
+### THE SLICER WILL WARN ABOUT A FLOATING CANTILEVER. THIS IS EXPECTED.
+
+```
+It seems object Object_1 has floating cantilever.
+Please re-orient the object or enable support generation.
+```
+
+**Click OK. Do NOT enable supports, and do not re-orient.** Both of the slicer's suggestions
+are wrong for this part:
+
+- **Supports** — measured, the only thing under that cantilever is the lid, 0.5 mm below
+  (`HingeSwingClearance`). Support material there prints onto the hinge and welds box to lid.
+- **Re-orient** — the lid only opens to 90°; there is no flatter pose. That limit is designed
+  in, not a slicer setting.
+
+The cantilever is the down-facing face at closed-frame z = 0, **458.4 mm², x ±55.5 (full
+width), y 26.5…31** — 4.5 mm deep, supported only along its inboard edge. Both ends are
+pinned: `Depth/2 − HingeTabRadius` = 31 outboard (the hinge fillet tangent), and the lid's
+edge at 90° plus `HingeSwingClearance` = 26.5 inboard. It cannot be narrowed without a
+smaller knuckle, and `HingeTabRadius` is already capped at 5 by the side wall.
+
+It is a **warning**, not a block — the message says "warnings AFTER slicing models". The
+slice has already succeeded when you see it.
+
+### WHEN THE SLICER WON'T SAVE THE GCODE
+
+Two traps, both hit on 2026-09-15:
+
+1. **The sliced gcode already exists in Creality's temp session**, whether or not the export
+   succeeded:
+
+   ```
+   /var/folders/.../T/crealityprint_model/<Day>/<HH_MM_SS>#<pid>#<n>/Metadata/.<pid>.N.gcode
+   ```
+
+   15 MB, full settings block in `; key = value` comments. Read the profile from there rather
+   than waiting for a working export.
+
+2. **`app.last_export_path` drifts back to the tracked `3mf/` directory.** In
+   `~/Library/Application Support/Creality/Creality Print/7.0/Creality.conf`. These are sticky
+   last-used values, so the app rewrites them whenever you save somewhere else — it is not a
+   preference you can set once. `scripts/set_slicer_project_dir.py` repoints them at `gcode/`
+   (gitignored) and **refuses to run while Creality Print is open**, because the app rewrites
+   the conf on exit and would discard the change.
+
+
 **Print 1 (2026-09-13, PLA): FAILED** — hinge snapped, stringing across the back, overhang at
 the top of the hinge. See the first-print section at the top of this file.
 **Print 2: cancelled.**
@@ -1386,7 +1475,12 @@ What the first print showed, and what to look for on the next one:
 - **Not yet fixed:** the lid rides on the box at zero gap for ~95 mm. Expect it to fuse.
   Fix that before printing again, or the hinge will not move.
 
-Target hardware per `CAD_STANDARDS.md`: Creality K2 Plus (FDM) / ELEGOO Saturn 4. Test in
-PLA, production in ASA. Fill in layer height / wall count / material from the first print that
-actually works — the hinge clearances (`HingePinClearance`, `HingeTabClearance`,
-`HingeSwingClearance`) are material-dependent and get tuned from a real print, not defaults.
+Target hardware per `CAD_STANDARDS.md`: Creality K2 Plus (FDM) / ELEGOO Saturn 4.
+**Layer height, wall count and material are no longer a TODO — see MEASURED PROFILE at the
+top of this section**, read off print 5's gcode rather than assumed.
+
+The hinge clearances (`HingePinClearance`, `HingeTabClearance`, `HingeSwingClearance`) are
+material-dependent and get tuned from a real print, not defaults. They currently hold **PLA**
+values. Prints 1–4 were PLA; **print 5 is PETG** because black was requested and the black
+loaded is CR-PETG. Production in ASA was the original intent and would need its own pass —
+ASA shrinks ~0.5–0.7 % against PLA's ~0.2 %, so those three Params cannot simply carry over.
