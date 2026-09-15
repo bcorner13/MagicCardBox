@@ -119,6 +119,28 @@ def posed_compound():
     return comb, gap
 
 
+def tight_bbox(shape, dev=0.05):
+    """Bounding box from a TESSELLATION, not Shape.BoundBox.
+
+    OCC pads BoundBox on a COPIED shape from control points rather than the
+    trimmed surface. Measured 2026-09-15 on this box:
+
+        Shape.BoundBox          116.8123   correct
+        Shape.copy().BoundBox   123.9613   inflated 7.15 mm
+        optimalBoundingBox()    119.7185   also inflated
+        tessellation            116.8123   correct
+
+    posed_compound() builds from .copy() shapes, so the padded value was being
+    compared against the STL's exact mesh bbox and every variant failed on a
+    bbox that was never wrong. Tessellating measures the same thing the mesh
+    does, so the two are directly comparable.
+    """
+    pts = shape.tessellate(dev)[0]
+    xs = [q.x for q in pts]; ys = [q.y for q in pts]; zs = [q.z for q in pts]
+    return (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs),
+            min(xs), min(ys), min(zs))
+
+
 def tris_in_3mf(path):
     import re
     import zipfile
@@ -146,10 +168,10 @@ def run():
             row["gap"] = round(gap, 4)
             if gap < NOZZLE - 1e-6:
                 row["problems"].append("print-pose gap %.4f < nozzle %.2f" % (gap, NOZZLE))
-            bb = comb.BoundBox
-            row["bbox"] = [round(bb.XLength, 2), round(bb.YLength, 2), round(bb.ZLength, 2)]
+            xl, yl, zl, _, _, _ = tight_bbox(comb)
+            row["bbox"] = [round(xl, 2), round(yl, 2), round(zl, 2)]
             row["volume_mm3"] = round(comb.Volume, 2)
-            if bb.XLength > BED or bb.YLength > BED:
+            if xl > BED or yl > BED:
                 row["problems"].append("footprint exceeds bed")
 
             doc = FreeCAD.newDocument("MCB_Exp")
