@@ -315,6 +315,94 @@ Two things to carry forward:
   `DatumPlane001`/`DatumPlane002` to origin planes is now overdue. Until then, **any** change
   to the rear panel's top edge must re-check those three expressions.
 
+## FIFTH ROUND — 2026-09-14 — the hinge overhangs (macros 36, 37)
+
+Print 4's hinge area printed with drooping and stringing in two places. Both are overhangs.
+
+### Top: `BackHingeFilletRadius` 4 → 8 (macro 36)
+
+The knuckle recess is open in the rear face over `x 50.1…55.5` each side. `BackHengeFilet`
+sweeps it from 9.49 mm deep at z=8 up to closed, and at R4 did that in **4.88 mm** — ~63°
+average, 90° at the tangent. At R8 it spreads over 7.89 mm and closes at z=15.89 (was 12.88):
+66.4° at z=11 → 44.2° at z=13 → 18.7° at z=16. 87.7 mm³ removed, swing unchanged.
+
+**The 66° at z≈11 is NOT the fillet** — it is directly above the socket bore's apex at
+`HingeAxisFromBottom + HingeTabRadius + HingeTabClearance` = 10.4. The top of a round hole has
+a horizontal tangent by definition. The bore is the knuckle's journal, so it stays round.
+Don't chase that number with a bigger radius.
+
+### Bottom: a 45° chamfer, cut as a POCKET (macro 37)
+
+`HengeFilet` is a **radius-5.000 cylinder centred exactly on the hinge axis, offset 0.0000**
+(measured — Face9/Face10). It is the journal the panel wraps at a constant **5.5000**.
+Printed upright its tangent is horizontal where it meets the bottom face: 88.8° at z=0,
+over 45° for the first 1.7 mm.
+
+**`PartDesign::Chamfer` cannot do this edge.** The edge is 100.2 mm at (0, 36, 0) and crosses
+regions where the adjacent rear face is too short — the finger slot bottoms at z=4, the
+knuckle recesses interrupt it. Size 5.0 and 4.5 → NULL shape; 4.0 → computes but
+`isValid() == False`. The fillet copes by trimming itself to x 5.39…50.1; the chamfer
+algorithm doesn't.
+
+**So it is a sketch + pocket, appended LAST in the tree.** The 45° chord joins the fillet
+arc's own endpoints and the arc bulges outside it, so cutting that plane leaves exactly the
+chamfer — `HengeFilet` stays as the base geometry. At the tip it disturbs no edge references
+(deleting it mid-tree would break all 17), and suppressing `PocketHingeChamfer` restores the
+roll. Same reasoning as macro 24's flutes-last reorder.
+
+**THE SIZE IS PINNED BY THREE LIMITS, AND THE THIRD IS THE ONE NOBODY EXPECTS:**
+
+1. *The hinge, from above.* Corner radius `√((HingeTabRadius−C)² + HingeTabRadius²)`:
+   C=3 → 5.385 (**fuses**, 0.115 clearance), C=4 → 5.099, C=5 → 5.000.
+2. *The rear wall, from below.* The chord reaches `Depth/2 − C + z` and the wall's inner face
+   is at `Depth/2 − WallThickness`, so the wall is cut through wherever `z ≤ C − WallThickness`,
+   and it only exists above `FloorThickness`. **C=5 put a 1 mm slot straight through the back
+   of the box** across the whole cavity width — and it still measured valid, closed, one solid,
+   because the side walls and floor keep it connected.
+3. *`C = FloorThickness + WallThickness` is the DEGENERATE BOUNDARY, not a safe limit.* There
+   the plane passes exactly through the floor/rear-wall corner and pinches the wall to
+   **exactly zero** along the full width. OCC: valid, closed, one solid. The **mesh**: not
+   watertight, non-manifold, and the exported STL unprintable.
+
+```
+C      wall kept   mesh solid   manifold
+4.0    0.000       False        False     <- knife edge
+3.8    0.200       True         True      <- under one extrusion width
+3.6    0.400       True         True      <- one nozzle width
+3.2    0.800       True         True
+```
+
+```
+ChamferWallKeep  = 0.4    manufacturing limit, its own knob - NOT a clearance
+HingeChamferSize = min(HingeTabRadius; FloorThickness + WallThickness - ChamferWallKeep)
+                 = 3.6
+```
+
+**Hinge clearance is unaffected at 0.500** — the chord is a chord of the fillet's *own*
+circle, so the surface's max radius from the axis stays `HingeTabRadius` wherever the arc
+still governs. The 45° band covers z 0.297…3.303; outside it the original arc remains (the
+0.3 mm sliver below is under one layer height). The shelf at z=0 widens 4.6 → 6.0 mm.
+
+### **A VALID CLOSED SOLID IS NOT EVIDENCE THAT IT CAN BE PRINTED**
+
+This is the round's main lesson and it is new. `isValid()`, `isClosed()`, `len(Solids)==1`
+and a clean audit **all passed on geometry with a zero-thickness knife edge through it**.
+Only `MeshPart.meshFromShape(...).hasNonManifolds()` caught it. **Any macro that cuts near a
+thin wall must gate on the MESH, not just the BRep** — macro 37 now does.
+
+### Two more things that passed while wrong
+
+- **Macro 16's volume gate is too loose to catch a change this size.** The R8 + chamfer edit
+  moved 100-fluted from +0.06 % to +0.26 % against a **1 %** tolerance. It reported OK on a
+  stale file. Re-export whenever the model changes; do not wait for the gate to complain.
+- **D5, triggered by sweeping `HingeFilletRadius` 5 → 8 → 10** to explore a larger blend. It
+  hung FreeCAD past the bridge's 30 s cap and left a downstream box fillet bound to a
+  different edge, **filling a concave corner** at the footer relief: +1.2469 mm³ into the
+  lid's sweep at 90°. Setting the radius back did **not** undo it. Box volume stayed identical
+  at 131247.2, nothing was Invalid, the audit passed — only the swing measurement saw it.
+  Recovery: close all four documents **without saving**, reopen from disk.
+  **Fillets fill concave edges. After any fillet change in this body, measure the swing.**
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -803,6 +891,11 @@ middle of the plate instead of its surface.
 - **Footer:** `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
   equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg,
   `FooterReliefChamfer` 1.0
+- **Hinge chamfer** (macro 37): `HingeChamferSize` **3.6 (DERIVED =
+  `min(HingeTabRadius; FloorThickness + WallThickness - ChamferWallKeep)`)**,
+  `ChamferWallKeep` **0.4** (one nozzle width of rear wall the chamfer must leave at the
+  floor junction — a MANUFACTURING limit, not a clearance; at 0 the wall is a knife edge and
+  the mesh goes non-manifold while the solid still reads valid)
 - **Hinge:** `HingeTabRadius` 5.0 — **the single knob; `HingeAxisFromRear` and
   `HingeAxisFromBottom` are DERIVED from it** (see the identity below). `HingePinDia` 6.0,
   `HingePinLength` 3.0, `HingeTabThickness` 5.0, `HingeNeckDrop` 3.0, `RimRelief` 1.0, plus
@@ -825,7 +918,7 @@ at 15 deg and 0.3256 mm3 at 30 deg, and the running gap collapsed to 0.0000 unti
 At R = 5 it is 0.0000 at every angle with 0.400 mm from 30 deg on. See `macros/21`, unrun.
 - **Fillets** (added 2026-09-13, macro 18 — four different concerns, never merged):
   `HingeFilletRadius` 5.0 **(DERIVED from `HingeAxisFromBottom`; concentricity — do not
-  hand-set, see the header)**, `BackHingeFilletRadius` 4.0 (socket-breakout overhang),
+  hand-set, see the header)**, `BackHingeFilletRadius` **8.0** (was 4.0; macro 36 — spreads the socket-recess ramp over 7.89 mm instead of 4.88, ~63° → ~50°),
   `RimFilletRadius` 0.8, `EdgeBreakRadius` 0.6
 - **Flutes:** `FluteCountFront` 24, `FluteCountSide` 15, `FluteRadius` 2.5, `FluteDepth` 0.7,
   `FluteMargin` 6.0, `FluteStartZ` 12.0
@@ -1030,7 +1123,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-35. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-37. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 

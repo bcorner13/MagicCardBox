@@ -1,0 +1,344 @@
+# -*- coding: utf-8 -*-
+"""
+37-hinge_chamfer.FCMacro
+
+Turns the box's bottom-rear R5 roll into a 45 deg chamfer, to kill the
+overhang there.
+
+WHY
+  Printed upright, the R5 roll is a downward-facing surface whose tangent is
+  HORIZONTAL where it meets the bottom face. Measured down the rear face:
+
+      z      ymax     overhang
+      0.0    31.0     88.8 deg
+      0.1    31.995   84.3 deg
+      0.5    33.179   67.1 deg
+      1.0    34.0     55.7 deg
+      1.5    34.571   48.8 deg
+
+  Over 45 deg for the first ~1.7 mm. A 45 deg chamfer is a constant 45 deg.
+
+SIZE IS PINNED BY TWO SEPARATE LIMITS, AND THE SMALLER ONE WINS
+
+  1. THE HINGE, from above. The chamfer's CORNERS sit further from the axis
+     than a concentric roll does:
+         max radius = sqrt((HingeTabRadius - C)^2 + HingeTabRadius^2)
+     The lid's panel wraps at a constant 5.5000, measured at every angle 0-90.
+
+         C = 3.0   max radius 5.385   clearance 0.115   <- FUSES
+         C = 4.0   max radius 5.099   clearance 0.401
+         C = 5.0   max radius 5.000   clearance 0.500
+
+     That alone argues for C = HingeTabRadius.
+
+  2. THE REAR WALL, from below - and this one is tighter. MEASURED, after
+     building C = 5 and looking at the result: at z = 3 there was NO MATERIAL
+     AT ALL at x = 30. The rear wall's inner face is at Depth/2 -
+     WallThickness = 34 and the chord reaches Depth/2 - C + z, so the wall is
+     cut clean through wherever
+
+         z <= C - WallThickness
+
+     and the wall only exists above the floor, z > FloorThickness. So a
+     through-slot opens in the rear wall unless C <= FloorThickness +
+     WallThickness = 4.
+
+     C = 5 put a 1 mm slot straight through the back of the box, across the
+     whole cavity width. The box still measured valid, closed and a single
+     solid, because the side walls and floor keep it connected - another case
+     where the structural checks say nothing about whether the geometry is
+     what you wanted.
+
+  3. AND 4 IS NOT SAFE EITHER - IT IS THE DEGENERATE BOUNDARY. At exactly
+     C = FloorThickness + WallThickness the chamfer plane passes through the
+     corner where the floor top meets the rear wall's inner face, so the wall
+     is pinched to EXACTLY ZERO thickness along the whole width. OCC reported
+     valid, closed, one solid. The MESH did not: not watertight, non-manifold,
+     and the exported STL was unprintable. Measured:
+
+         C     wall kept   mesh solid   manifold
+         4.0   0.000       False        False      <- knife edge
+         3.8   0.200       True         True       <- under one extrusion width
+         3.6   0.400       True         True       <- one nozzle width
+         3.2   0.800       True         True
+
+     So the wall must keep real thickness, and that is a MANUFACTURING limit,
+     not a clearance - hence its own knob:
+
+         ChamferWallKeep  = 0.4   (one nozzle width)
+         HingeChamferSize = min(HingeTabRadius;
+                                FloorThickness + WallThickness - ChamferWallKeep)
+
+     landing on 3.6. A valid closed solid is NOT evidence that it can be
+     printed; the mesh gate below is.
+
+  The fillet never did this: its arc lies OUTSIDE the chord (y = 35.58 at
+  z = 3 against the chord's 34). The chamfer removing more material in the
+  middle is the same property that makes it look free on hinge clearance.
+
+  Both limits are therefore expressed, and whichever binds, binds. Thicken the
+  rear wall or the floor and the chamfer grows on its own, up to the hinge cap.
+
+  Consequence of landing on 3.6: the chamfer starts at y = Depth/2 - 3.6 =
+  32.4, so the unsupported shelf at z = 0 widens from 4.6 to 6.0 mm, and the
+  45 deg band covers z 0.297..3.303 with the original arc outside it. Hinge
+  clearance is UNAFFECTED at 0.500 - the chord is a chord of the fillet's own
+  circle, so the surface's maximum radius from the axis stays HingeTabRadius
+  wherever the arc still governs.
+
+WHY A POCKET AND NOT PartDesign::Chamfer
+  Tried first, and it does not work on this edge. The edge is 100.2 mm long at
+  (0, 36, 0) and runs across regions where the adjacent rear face is too short
+  to land on - the finger slot bottoms out at z = 4, and the two knuckle
+  recesses interrupt it. Measured:
+
+      Size 5.0  -> NULL shape (Invalid)
+      Size 4.5  -> NULL shape (Invalid)
+      Size 4.0  -> computes, but Shape.isValid() == False
+
+  HengeFilet copes because it trims itself: its faces span only x 5.39..50.1.
+  The chamfer algorithm does not.
+
+  So the cut is done as a sketch + pocket instead. The 45 deg chord from
+  (31,0) to (36,5) joins the fillet arc's OWN endpoints, and the arc bulges
+  outside it, so cutting that plane removes the lens between them and leaves
+  precisely the chamfer. HengeFilet therefore STAYS - it is the base geometry.
+
+WHY LAST IN THE TREE
+  Appended after the footer Chamfer, so it disturbs no edge references. The
+  box carries a 4-deep fillet chain (Fillet001 -> Fillet002 -> Fillet003, plus
+  Fillet004 and the footer Chamfer) whose 17 named edges survive DIMENSIONAL
+  changes but not TOPOLOGICAL ones. Deleting HengeFilet mid-tree - the obvious
+  approach - breaks all of them. Nothing depends on a feature at the tip, so
+  this is also reversible: suppress PocketHingeChamfer to get the roll back.
+  Same reasoning as macro 24's flutes-last reorder.
+
+CLEARANCES THIS MUST NOT BREAK (all gated below)
+  * lid panel through the swing: was 0.4000 flat, must stay flat
+  * the Ø HingePinDia pin still standing in the socket. The chord's distance
+    from the axis is |C - 2*HingeTabRadius| / sqrt(2) = 4.243, against a pin
+    radius of 3.0, so it clears by 1.243. NOTE the formula: C/sqrt(2) is the
+    wrong one and reported -0.17 on a pin that measured perfectly intact
+    (Ø6 at the axis height, 28.764..33.236 at z = 3 and z = 7). The pin is
+    therefore also checked against the SOLID below, not just the arithmetic.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+import Part
+import Sketcher
+from FreeCAD import Vector, Rotation, Placement
+
+SK = "SketchHingeChamfer"
+PK = "PocketHingeChamfer"
+P = "<<Params>>#VarSet."
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    body = mb.getObject("Body")
+    log = []
+
+    if "ChamferWallKeep" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "ChamferWallKeep", "Hinge",
+                       "Minimum rear-wall thickness the hinge chamfer must leave where "
+                       "the wall meets the floor. One nozzle width. Its own knob because "
+                       "it is a MANUFACTURING limit, not a clearance - see macro 37.")
+        log.append("added ChamferWallKeep")
+    if "ChamferWallKeep" not in dict(vs.ExpressionEngine):
+        vs.ChamferWallKeep = 0.4
+
+    if "HingeChamferSize" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "HingeChamferSize", "Hinge",
+                       "45 deg chamfer across the box's bottom-rear edge. DERIVED - "
+                       "capped by the hinge from above and by the rear wall from "
+                       "below. Never set by hand; see macro 37.")
+        log.append("added HingeChamferSize")
+    vs.setExpression(
+        "HingeChamferSize",
+        "min(HingeTabRadius; FloorThickness + WallThickness - ChamferWallKeep)")
+    FreeCAD.getDocument("Params").recompute()
+
+    C = float(vs.HingeChamferSize.Value)
+    D2 = float(vs.Depth.Value) / 2.0
+    WT = float(vs.WallThickness.Value)
+    FH = float(vs.FooterHeight.Value)
+    bottom = -(FH + WT)
+
+    if mb.getObject(SK) is None:
+        # profile in the YZ plane: sketch u -> model Y, v -> model Z
+        sk = mb.addObject("Sketcher::SketchObject", SK)
+        sk.Label = "HingeChamferCut"
+        sk.Placement = Placement(Vector(0, 0, 0), Rotation(90, 0, 90))
+        body.addObject(sk)
+
+        pts = [(D2 - C, 0.0),        # A - on the bottom face, the arc's lower end
+               (D2, C),              # B - on the rear face, the arc's upper end
+               (D2 + WT, C),         # overshoot rearward, past the rear face
+               (D2 + WT, bottom),    # overshoot down, past the footer
+               (D2 - C, bottom)]
+        for i in range(len(pts)):
+            a = pts[i]
+            b = pts[(i + 1) % len(pts)]
+            sk.addGeometry(Part.LineSegment(Vector(a[0], a[1], 0), Vector(b[0], b[1], 0)), False)
+        for i in range(len(pts)):
+            sk.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % len(pts), 1))
+
+        exprs = [
+            (P + "Depth / 2 - " + P + "HingeChamferSize", "0"),
+            (P + "Depth / 2", P + "HingeChamferSize"),
+            (P + "Depth / 2 + " + P + "WallThickness", P + "HingeChamferSize"),
+            (P + "Depth / 2 + " + P + "WallThickness",
+             "-(" + P + "FooterHeight + " + P + "WallThickness)"),
+            (P + "Depth / 2 - " + P + "HingeChamferSize",
+             "-(" + P + "FooterHeight + " + P + "WallThickness)"),
+        ]
+        for i, (ex, ey) in enumerate(exprs):
+            ix = sk.addConstraint(Sketcher.Constraint("DistanceX", i, 1, pts[i][0]))
+            sk.setExpression("Constraints[%d]" % ix, ex)
+            iy = sk.addConstraint(Sketcher.Constraint("DistanceY", i, 1, pts[i][1]))
+            sk.setExpression("Constraints[%d]" % iy, ey)
+        mb.recompute()
+        log.append("built %s (%d geometry, %d constraints, fully constrained=%s)"
+                   % (SK, len(sk.Geometry), len(sk.Constraints), sk.FullyConstrained))
+    else:
+        sk = mb.getObject(SK)
+        log.append("%s already present" % SK)
+
+    if mb.getObject(PK) is None:
+        pk = mb.addObject("PartDesign::Pocket", PK)
+        pk.Label = "HingeChamferCut001"
+        pk.Profile = sk
+        pk.Type = 1                       # ThroughAll  (Pocket enum: 1 == ThroughAll)
+        if hasattr(pk, "Midplane"):
+            pk.Midplane = False           # clear the legacy flag FIRST - CLAUDE.md
+        pk.SideType = "Symmetric"         # then set the modern one
+        pk.BaseFeature = body.Tip
+        body.addObject(pk)
+        body.Tip = pk
+        log.append("appended %s at the tip" % PK)
+    else:
+        pk = mb.getObject(PK)
+        log.append("%s already present" % PK)
+
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ------------------- verify -------------------
+    problems = []
+    if not sk.FullyConstrained:
+        problems.append("%s is not fully constrained" % SK)
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    boxS = body.Shape
+    if not (boxS.isValid() and boxS.isClosed() and len(boxS.Solids) == 1):
+        problems.append("box not a single valid closed solid")
+
+    # MESH GATE. A valid, closed, single BRep solid can still tessellate
+    # non-manifold: at C = FloorThickness + WallThickness the chamfer plane
+    # passes exactly through the floor/rear-wall corner, leaving a ZERO
+    # thickness knife edge across the full width. OCC accepted it; the mesher
+    # did not, and the exported STL came back not watertight. ChamferWallKeep
+    # exists to hold that away from zero, and this gate proves it.
+    import MeshPart
+    _m = MeshPart.meshFromShape(Shape=boxS, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    kept = (float(vs.FloorThickness.Value) + float(vs.WallThickness.Value)
+            - float(vs.HingeChamferSize.Value))
+    log.append("rear wall kept at the floor junction: %.3f mm" % kept)
+    log.append("box mesh: solid=%s nonmanifold=%s selfint=%s"
+               % (_m.isSolid(), _m.hasNonManifolds(), _m.hasSelfIntersections()))
+    if not _m.isSolid():
+        problems.append("box mesh is not watertight")
+    if _m.hasNonManifolds():
+        problems.append("box mesh is non-manifold")
+    if _m.hasSelfIntersections():
+        problems.append("box mesh self-intersects")
+    if kept < float(vs.ChamferWallKeep.Value) - 1e-6:
+        problems.append("rear wall kept only %.3f, below ChamferWallKeep %.3f"
+                        % (kept, float(vs.ChamferWallKeep.Value)))
+
+    # the chamfer face must be flat 45 deg: sample the rear profile
+    import math
+    ay = D2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    def ymax(x, z):
+        e = Part.makeLine(Vector(x, 15.0, z), Vector(x, 45.0, z))
+        c = boxS.common(e)
+        return max(s.BoundBox.YMax for s in c.Edges) if c.Edges else None
+    # Sample only the band the CHORD actually owns. The chord and the fillet arc
+    # cross twice - solving 2z^2 + 2(R-C)z - 2Rz + (R-C)^2 = 0 gives z = 0.129
+    # and z = 3.871 at R=5, C=4 - and outside that band the original arc still
+    # governs. A sample starting at z=0 averages the sub-0.129 fillet sliver in
+    # and reports ~72 deg for a face that is a clean 45. That sliver is 0.129 mm,
+    # below one layer height, so it is reported but not gated.
+    R_fil = float(vs.HingeTabRadius.Value)
+    a = R_fil - C
+    disc = max((2.0 * (a - R_fil)) ** 2 - 8.0 * a * a, 0.0)
+    z_lo = (2.0 * (R_fil - a) - disc ** 0.5) / 4.0
+    z_hi = (2.0 * (R_fil - a) + disc ** 0.5) / 4.0
+    log.append("chord governs z %.3f..%.3f; arc remains below/above" % (z_lo, z_hi))
+    prof, prev = [], None
+    for z in (z_lo + 0.2, 1.0, 2.0, 3.0, z_hi - 0.2):
+        y = ymax(30.0, z)
+        ang = (round(math.degrees(math.atan2(abs(y - prev[1]), z - prev[0])), 1)
+               if prev and y is not None and prev[1] is not None else None)
+        prof.append((z, round(y, 3) if y is not None else None, ang))
+        prev = (z, y)
+    log.append("rear profile (z, ymax, overhang): %s" % prof)
+    angs = [a for _, _, a in prof if a is not None]
+    if angs and max(angs) > 46.0:
+        problems.append("overhang still %.1f deg - the cut did not take" % max(angs))
+
+    # pin must survive. The chord runs (Depth/2 - C, 0) -> (Depth/2, C); its
+    # perpendicular distance from the axis is |C - 2*HingeTabRadius| / sqrt(2),
+    # NOT C/sqrt(2) - that error read -0.17 on a pin that measured perfectly
+    # intact, so the pin is now checked from the SOLID as well.
+    pin_r = float(vs.HingePinDia.Value) / 2.0
+    R = float(vs.HingeTabRadius.Value)
+    chord_r = abs(C - 2.0 * R) / math.sqrt(2.0)
+    log.append("chord passes %.3f from the axis, pin radius %.3f (clearance %.3f)"
+               % (chord_r, pin_r, chord_r - pin_r))
+    if chord_r <= pin_r:
+        problems.append("chamfer would cut the hinge pin")
+    sock = float(vs.Width.Value) / 2 - (float(vs.HingeTabThickness.Value)
+                                        + float(vs.HingeTabClearance.Value))
+    e = Part.makeLine(Vector(sock + 1.0, 20.0, az), Vector(sock + 1.0, 42.0, az))
+    spans = [(s.BoundBox.YMin, s.BoundBox.YMax) for s in boxS.common(e).Edges]
+    pin = [sp for sp in spans if abs(sp[0] - (ay - pin_r)) < 1e-3
+           and abs(sp[1] - (ay + pin_r)) < 1e-3]
+    log.append("pin measured at the socket: %s" % ([(round(a,3), round(b,3)) for a, b in spans],))
+    if not pin:
+        problems.append("hinge pin not found intact at the socket")
+
+    # lid swing
+    panel = ld.getObject("Body001").Shape
+    gaps = []
+    for deg in (0.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    if len(set(g for _, g, _ in gaps)) != 1:
+        problems.append("panel swing gap not flat: %s" % gaps)
+    if any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing interference: %s" % gaps)
+
+    log.append("box %.2f mm3, valid=%s closed=%s solids=%d"
+               % (boxS.Volume, boxS.isValid(), boxS.isClosed(), len(boxS.Solids)))
+    log.append("panel swing (deg, gap, interference): %s" % gaps)
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()
