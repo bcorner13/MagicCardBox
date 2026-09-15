@@ -79,12 +79,19 @@ SIZE IS PINNED BY TWO SEPARATE LIMITS, AND THE SMALLER ONE WINS
   Both limits are therefore expressed, and whichever binds, binds. Thicken the
   rear wall or the floor and the chamfer grows on its own, up to the hinge cap.
 
-  Consequence of landing on 3.6: the chamfer starts at y = Depth/2 - 3.6 =
-  32.4, so the unsupported shelf at z = 0 widens from 4.6 to 6.0 mm, and the
-  45 deg band covers z 0.297..3.303 with the original arc outside it. Hinge
-  clearance is UNAFFECTED at 0.500 - the chord is a chord of the fillet's own
+  Consequence of landing on 3.6: the 45 deg band covers z 0.297..3.303, with
+  the original fillet arc still governing outside it. Hinge clearance is
+  UNAFFECTED at 0.500 - the chord is a chord of the fillet's own
   circle, so the surface's maximum radius from the axis stays HingeTabRadius
   wherever the arc still governs.
+
+  CORRECTION (2026-09-15): an earlier version of this note claimed the chamfer
+  widened the unsupported shelf at z = 0 from 4.6 to 6.0 mm, reasoning that the
+  cut starts at y = Depth/2 - C = 32.4. That is WRONG. The chord only governs
+  between the two crossovers; BELOW z = 0.297 the fillet arc is still the outer
+  surface, so the bottom face reaches y = 31 exactly as it did before and the
+  shelf is unchanged at 4.6 mm. Measured: ymax(x=30, z=0) = 31.0.
+  The chamfer costs nothing at the shelf.
 
 WHY A POCKET AND NOT PartDesign::Chamfer
   Tried first, and it does not work on this edge. The edge is 100.2 mm long at

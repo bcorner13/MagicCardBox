@@ -381,7 +381,13 @@ HingeChamferSize = min(HingeTabRadius; FloorThickness + WallThickness - ChamferW
 **Hinge clearance is unaffected at 0.500** — the chord is a chord of the fillet's *own*
 circle, so the surface's max radius from the axis stays `HingeTabRadius` wherever the arc
 still governs. The 45° band covers z 0.297…3.303; outside it the original arc remains (the
-0.3 mm sliver below is under one layer height). The shelf at z=0 widens 4.6 → 6.0 mm.
+0.3 mm sliver below is under one layer height).
+
+**Correction (2026-09-15):** this section first claimed the chamfer widened the unsupported
+shelf at z=0 from 4.6 to 6.0 mm, reasoning that the cut starts at `Depth/2 − C` = 32.4. That
+is wrong — the chord only governs between the crossovers, so below z=0.297 the fillet arc is
+still the outer surface and the bottom face reaches y=31 as before. Measured `ymax(x=30,
+z=0) = 31.0`. **The shelf is unchanged at 4.6 mm; the chamfer costs nothing there.**
 
 ### **A VALID CLOSED SOLID IS NOT EVIDENCE THAT IT CAN BE PRINTED**
 
