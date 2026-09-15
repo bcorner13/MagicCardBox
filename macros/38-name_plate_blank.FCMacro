@@ -5,11 +5,11 @@
 A flat name-plate blank on the lid top, cut SUBTRACTIVELY out of the flutes.
 
 WHAT IT IS
-  A rounded rectangle pocketed FluteDepth down from the lid's top face, so the
-  flute ridges inside it are removed and the area becomes flat at exactly the
-  flute-bottom level. Not a raised pad - Bradley's mockup (Body002 "NamePlate")
-  padded UP from the flute bottom to the top face, filling the flutes flush.
-  This is the inverse: recessed rather than proud.
+  A rounded rectangle pocketed FluteDepth + NamePlateSink down from the lid's
+  top face, so the flute ridges inside it are removed and the area becomes flat
+  just below the flute-bottom level. Not a raised pad - Bradley's mockup
+  (Body002 "NamePlate") padded UP from the flute bottom to the top face,
+  filling the flutes flush. This is the inverse: recessed rather than proud.
 
 GEOMETRY, AND WHERE THE NUMBERS COME FROM
 
@@ -19,9 +19,10 @@ GEOMETRY, AND WHERE THE NUMBERS COME FROM
       -(Width/2 - FluteMargin) + i * (Width - 2*FluteMargin) / (FluteCountFront - 1)
 
   so flute 1 is at +/-49.5 and flute 2 at +/-45.1957. The blank's edges land on
-  that second flute's CENTRELINE, which is its deepest line - so the blank's
-  floor meets the flute bottom with no step, and flute 1 plus the outer half of
-  flute 2 survive as a border each side.
+  that second flute's CENTRELINE, its deepest line, so the boundary reads as
+  deliberate; flute 1 plus the outer half of flute 2 survive as a border each
+  side. The floor sits NamePlateSink below that line rather than level with it -
+  see below for why it cannot be level.
 
       NamePlateHalfWidth = Width/2 - FluteMargin
                            - (Width - 2*FluteMargin) / (FluteCountFront - 1)
@@ -60,11 +61,29 @@ THE MOCKUP IS NOT DELETED
   exports Body and Body001 explicitly, so Body002 does not reach the print
   files either way. Delete it by hand once this is confirmed.
 
-WATCH THE MESH
-  The blank's floor is tangent to the 2nd flute's cylinder along its centreline
-  - a zero-dihedral edge. Macro 37 hit exactly this class of thing: a valid,
-  closed, single solid that tessellated non-manifold and exported an
-  unprintable STL. The mesh is gated below, not just the BRep.
+THE FLOOR MUST SIT BELOW THE FLUTE BOTTOMS - NamePlateSink
+
+  First build had the floor at exactly top - FluteDepth, i.e. level with the
+  flute bottoms. The blank's X walls run ALONG the flutes and sit exactly on
+  the 2nd flute's low line, so the floor was TANGENT to that cylinder down the
+  blank's whole length - a zero-dihedral edge.
+
+  MeshPart at LinearDeflection 0.1 reported the plate solid, manifold and free
+  of self-intersections. The exported STL did not: Mesh.export's default
+  tessellation is ~5x finer (10656 facets where the typed tool wrote 1958) and
+  it surfaced exactly ONE self-intersection in 29970 facets, at x = -45.15 -
+  the 2nd flute's centreline. A coarse mesh check is not proof.
+
+      NamePlateSink = 0.2   how far the floor sits BELOW the flute bottoms
+
+  0.2 rather than something smaller because the default mesh deviation is
+  around 0.1 - a margin under that is smeared away by the tessellation and
+  proves nothing. The blank is then FluteDepth + NamePlateSink deep, the flute
+  bottoms stand NamePlateSink proud of its floor, and every boundary is a real
+  cut instead of a tangency. Visually it is a 0.2 mm deeper recess.
+
+  Same species as macro 37's ChamferWallKeep: a geometry knob that exists
+  purely to hold a degenerate case away from zero.
 
 Idempotent: safe to re-run.
 """
@@ -94,6 +113,16 @@ def main():
         log.append("added NamePlateInset")
     if "NamePlateInset" not in dict(vs.ExpressionEngine):
         vs.NamePlateInset = 10.0
+    if "NamePlateSink" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "NamePlateSink", "NamePlate",
+                       "How far the blank's floor sits BELOW the flute bottoms. Must be "
+                       "non-zero: at zero the floor is TANGENT to the 2nd flute's cylinder "
+                       "along the blank's whole X edge and the exported STL "
+                       "self-intersects. See macro 38.")
+        log.append("added NamePlateSink")
+    if "NamePlateSink" not in dict(vs.ExpressionEngine):
+        vs.NamePlateSink = 0.2
+
     if "BorderRadius" not in vs.PropertiesList:
         vs.addProperty("App::PropertyLength", "BorderRadius", "NamePlate",
                        "Corner radius of the name-plate blank.")
@@ -183,7 +212,7 @@ def main():
         pk.Label = "NamePlateBlank001"
         pk.Profile = sk
         pk.Type = 0                                   # Length
-        pk.setExpression("Length", P + "FluteDepth")
+        pk.setExpression("Length", P + "FluteDepth + " + P + "NamePlateSink")
         if hasattr(pk, "Midplane"):
             pk.Midplane = False
         pk.SideType = "One side"
@@ -194,6 +223,11 @@ def main():
     else:
         pk = ld.getObject(PK)
         log.append("%s already present" % PK)
+
+    # Re-assert the driving expression EVERY run, not just on creation. Setting it
+    # only inside the create branch made the macro silently non-idempotent: adding
+    # NamePlateSink changed nothing on a re-run because the branch was skipped.
+    pk.setExpression("Length", P + "FluteDepth + " + P + "NamePlateSink")
 
     mock = ld.getObject("Body002")
     if mock is not None and mock.Visibility:
@@ -227,14 +261,16 @@ def main():
         problems.append("plate mesh not watertight")
     if m.hasNonManifolds():
         problems.append("plate mesh non-manifold")
+    if float(vs.NamePlateSink.Value) <= 0:
+        problems.append("NamePlateSink is 0 - the floor would be tangent to flute 2")
 
     # measure the blank from the solid
     top = float(vs.Height.Value) + float(vs.LidSeatClearance.Value) + float(vs.LidTopThickness.Value)
-    want_floor = top - float(vs.FluteDepth.Value)
+    want_floor = top - (float(vs.FluteDepth.Value) + float(vs.NamePlateSink.Value))
     e = Part.makeLine(Vector(0, 0, top + 2), Vector(0, 0, top - 5))
     spans = [(s.BoundBox.ZMin, s.BoundBox.ZMax) for s in plate.common(e).Edges]
     floor = max(hi for _, hi in spans) if spans else None
-    log.append("blank floor at z = %.4f (want %.4f = top %.3f - FluteDepth)"
+    log.append("blank floor at z = %.4f (want %.4f = top %.3f - FluteDepth - NamePlateSink)"
                % (floor if floor else -1, want_floor, top))
     if floor is None or abs(floor - want_floor) > 1e-4:
         problems.append("blank floor %.4f != %.4f" % (floor if floor else -1, want_floor))

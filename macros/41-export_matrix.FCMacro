@@ -1,0 +1,222 @@
+# -*- coding: utf-8 -*-
+"""
+41-export_matrix.FCMacro
+
+Exports the whole product matrix in one run: {100, 60} card counts x
+{smooth, fluted, fluted-label} surfaces = 6 variants, STL + 3MF each.
+
+WHY THIS REPLACES THE MANUAL CYCLE
+  The old procedure was: set CardCount, flip Pocket009.Suppressed in BOTH
+  documents, run macro 16, call export_3mf, call export_stl, repeat. Seven
+  steps per variant. At four variants that was tedious; at six it is forty-plus
+  steps and every one is a chance to write the wrong state into a file. That
+  is not hypothetical - on 2026-09-14 a file was exported carrying the name
+  plate while named "-fluted".
+
+  This macro drives the matrix from a TABLE. Adding a seventh variant is one
+  row, not a new procedure.
+
+WHY IT EXPORTS ITSELF INSTEAD OF DEFERRING TO THE TYPED TOOLS
+  Macro 16 deliberately leaves the writing to export_3mf / export_stl so a
+  locally tessellated facet count cannot disagree with theirs. That separation
+  is what forces the manual dance - and it costs real verification: macro 16
+  can only dimension-check the variant CURRENTLY LOADED, so every other
+  variant gets structural checks only.
+
+  Exporting in-loop means each file is written AND fully checked while the
+  model is in that exact state, so all six get bbox and volume checks, not
+  one. It also retires a known-weak gate: on 2026-09-15 a stale 100-fluted
+  file missing the entire name plate measured +0.95% against macro 16's 1%
+  volume tolerance and passed.
+
+WHY IT WRITES A REPORT FILE
+  Six variants is minutes of recompute, far past the MCP bridge's 30 s
+  response cap. The macro keeps running in FreeCAD after the response is lost
+  (observed repeatedly this session), so it writes REPORT as JSON and the
+  caller polls for it. The cap stops mattering.
+
+THE TWO SWITCHES
+  flutes    Pocket009.Suppressed  in BOTH MagicCardBox and Lid
+  label     PocketNamePlate.Suppressed in Lid
+
+  Both features sit at the TIP of their bodies (macros 24, 38), which is what
+  makes them suppressible without disturbing any edge reference.
+
+RESTORES A CANONICAL STATE
+  Always, even on failure, so the model is never left in a half-configured
+  variant for the next session to trip over.
+"""
+
+import json
+import os
+import traceback
+
+import FreeCAD
+import Part
+import Mesh
+import MeshPart
+from FreeCAD import Vector
+
+PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
+REPORT = ("/private/tmp/claude-501/-Users-bradleycorner-Documents-3dPrinting-"
+          "Commercial-License-MagicCardBox/1bcbf292-4ad0-43ce-a1f9-e0bd8bc80efa/"
+          "scratchpad/export_matrix.json")
+
+NOZZLE = 0.4
+BED = 350.0
+VOL_TOL = 0.01
+
+#        cards, flutes, label, tag
+MATRIX = [(100, False, False, "100-smooth"),
+          (100, True,  False, "100-fluted"),
+          (100, True,  True,  "100-fluted-label"),
+          (60,  False, False, "60-smooth"),
+          (60,  True,  False, "60-fluted"),
+          (60,  True,  True,  "60-fluted-label")]
+
+CANONICAL = (100, True, True, "100-fluted-label")
+
+
+def set_variant(cards, flutes, label):
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    vs.CardCount = cards
+    mb.getObject("Pocket009").Suppressed = not flutes
+    ld.getObject("Pocket009").Suppressed = not flutes
+    ld.getObject("PocketNamePlate").Suppressed = not label
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+    bad = []
+    for dn in ("Lid", "MagicCardBox"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                bad.append("%s/%s" % (dn, o.Name))
+    return bad
+
+
+def posed_compound():
+    """Box + lid folded open 90 deg, sat on Z=0 and centred. Same pose as macro 16."""
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+    aZ = vs.HingeAxisFromBottom.Value
+    box = mb.getObject("Body").Shape.copy()
+    lid = ld.getObject("Body").Shape.fuse(ld.getObject("Body001").Shape)
+    lid = lid.removeSplitter()
+    if len(lid.Solids) != 1:
+        raise RuntimeError("lid did not fuse into one solid (%d)" % len(lid.Solids))
+    lid.rotate(Vector(0, aY, aZ), Vector(1, 0, 0), -90)
+    gap = box.distToShape(lid)[0]
+    for tag, s in (("box", box), ("lid", lid)):
+        if not (s.isValid() and s.isClosed()):
+            raise RuntimeError("%s is not a valid closed solid" % tag)
+    comb = Part.makeCompound([box, lid])
+    b = comb.BoundBox
+    comb.translate(Vector(-(b.XMin + b.XMax) / 2.0, -(b.YMin + b.YMax) / 2.0, -b.ZMin))
+    return comb, gap
+
+
+def tris_in_3mf(path):
+    import re
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            nm = next((n for n in z.namelist() if n.endswith("3dmodel.model")), None)
+            if nm is None:
+                return None
+            return len(re.findall(r"<triangle\b", z.read(nm).decode("utf-8", "replace")))
+    except Exception:
+        return None
+
+
+def run():
+    results = []
+    for cards, flutes, label, tag in MATRIX:
+        row = {"tag": tag, "cards": cards, "flutes": flutes, "label": label,
+               "problems": []}
+        try:
+            bad = set_variant(cards, flutes, label)
+            if bad:
+                row["problems"].append("invalid after recompute: %s" % bad)
+
+            comb, gap = posed_compound()
+            row["gap"] = round(gap, 4)
+            if gap < NOZZLE - 1e-6:
+                row["problems"].append("print-pose gap %.4f < nozzle %.2f" % (gap, NOZZLE))
+            bb = comb.BoundBox
+            row["bbox"] = [round(bb.XLength, 2), round(bb.YLength, 2), round(bb.ZLength, 2)]
+            row["volume_mm3"] = round(comb.Volume, 2)
+            if bb.XLength > BED or bb.YLength > BED:
+                row["problems"].append("footprint exceeds bed")
+
+            doc = FreeCAD.newDocument("MCB_Exp")
+            try:
+                obj = doc.addObject("Part::Feature", "part")
+                obj.Shape = comb
+                doc.recompute()
+                stl = os.path.join(PROJ, "stl", "MagicCardBox-%s.stl" % tag)
+                tmf = os.path.join(PROJ, "3mf", "MagicCardBox-%s.3mf" % tag)
+                Mesh.export([obj], stl)
+                Mesh.export([obj], tmf)
+            finally:
+                FreeCAD.closeDocument("MCB_Exp")
+
+            m = Mesh.Mesh(stl)
+            row["facets"] = m.CountFacets
+            row["mesh_volume_cm3"] = round(m.Volume / 1000.0, 2)
+            row["components"] = m.countComponents()
+            row["on_z"] = round(m.BoundBox.ZMin, 3)
+            if not m.isSolid():
+                row["problems"].append("stl not watertight")
+            if m.hasNonManifolds():
+                row["problems"].append("stl non-manifold")
+            if m.hasSelfIntersections():
+                row["problems"].append("stl self-intersecting")
+            if m.countComponents() != 2:
+                row["problems"].append("stl has %d components, expected 2" % m.countComponents())
+            got = [round(m.BoundBox.XLength, 2), round(m.BoundBox.YLength, 2),
+                   round(m.BoundBox.ZLength, 2)]
+            if got != row["bbox"]:
+                row["problems"].append("stl bbox %s != posed %s" % (got, row["bbox"]))
+            dv = abs(m.Volume - comb.Volume) / comb.Volume
+            row["vol_delta_pct"] = round(dv * 100.0, 3)
+            if dv > VOL_TOL:
+                row["problems"].append("stl volume %.2f%% off the posed solid" % (dv * 100.0))
+            t = tris_in_3mf(tmf)
+            row["3mf_tris"] = t
+            if t is None:
+                row["problems"].append("3mf unreadable or has no 3dmodel.model")
+            elif t == 0:
+                row["problems"].append("3MF HAS NO GEOMETRY - a slicer project, not an export")
+            elif t != m.CountFacets:
+                row["problems"].append("3mf %d tris != stl %d facets" % (t, m.CountFacets))
+        except Exception:
+            row["problems"].append("EXCEPTION: %s" % traceback.format_exc()[-400:])
+        row["ok"] = not row["problems"]
+        results.append(row)
+    return results
+
+
+out = {"results": [], "restored": None, "error": None}
+try:
+    out["results"] = run()
+except Exception:
+    out["error"] = traceback.format_exc()[-800:]
+finally:
+    try:
+        set_variant(CANONICAL[0], CANONICAL[1], CANONICAL[2])
+        out["restored"] = CANONICAL[3]
+    except Exception:
+        out["restored"] = "RESTORE FAILED"
+    out["all_ok"] = bool(out["results"]) and all(r["ok"] for r in out["results"]) \
+        and out["error"] is None
+    try:
+        os.makedirs(os.path.dirname(REPORT), exist_ok=True)
+        with open(REPORT, "w") as fh:
+            json.dump(out, fh, indent=1)
+    except Exception:
+        pass
+    print(json.dumps(out, indent=1)[:2000])

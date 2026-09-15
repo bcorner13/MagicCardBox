@@ -173,15 +173,33 @@ _expect_bb = (round(nb.XLength, 2), round(nb.YLength, 2), round(nb.ZLength, 2))
 #
 # It can only be checked against the variant the model is CURRENTLY in, since the other one's
 # geometry is not loaded. The flutes decide which that is.
-# Four published files now: card count x surface. The model can only be ONE of them at a
-# time, so only that one gets its volume checked; the others get the structural checks.
+# SIX published files now: {100, 60} x {smooth, fluted, fluted-label}. This macro can
+# only have the model in ONE state at a time, so only that variant gets its volume
+# checked and the other five get structural checks. That limitation is precisely why
+# macro 41 exists - it exports in-loop and checks every variant fully. A stale
+# 100-fluted file missing the whole name plate once measured +0.95% here, inside the
+# 1% tolerance, and passed.
+# SUPERSEDED FOR BULK WORK BY MACRO 41. That macro drives the whole matrix from
+# a table, exports each variant WHILE THE MODEL IS IN THAT STATE, and therefore
+# dimension-checks all six instead of only the loaded one. This macro remains
+# useful for building/gating a single pose by hand. Keep the two lists in step.
 _counts = (100, 60)
-_cur_variant = "%d-%s" % (vs.CardCount,
-                          "plain" if mb.getObject("Pocket009").Suppressed else "fluted")
+_surfaces = ("smooth", "fluted", "fluted-label")
+
+
+def _surface_now():
+    _flutes = not mb.getObject("Pocket009").Suppressed
+    _label = not ld.getObject("PocketNamePlate").Suppressed
+    if _flutes and _label:
+        return "fluted-label"
+    return "fluted" if _flutes else "smooth"
+
+
+_cur_variant = "%d-%s" % (vs.CardCount, _surface_now())
 _expect_vol = comb.Volume
 _VOL_TOL = 0.01          # 1%: tessellation of the flutes and fillets loses a little volume
 _problems = []
-for _variant in ["%d-%s" % (_c, _f) for _c in _counts for _f in ("plain", "fluted")]:
+for _variant in ["%d-%s" % (_c, _f) for _c in _counts for _f in _surfaces]:
     _3mf = os.path.join(PROJ, "3mf", "MagicCardBox-%s.3mf" % _variant)
     _stl = os.path.join(PROJ, "stl", "MagicCardBox-%s.stl" % _variant)
     if not (os.path.isfile(_3mf) and os.path.isfile(_stl)):

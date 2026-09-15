@@ -1,0 +1,145 @@
+# -*- coding: utf-8 -*-
+"""
+40-remove_nameplate_mockup.FCMacro
+
+Deletes the additive NamePlate mockup - Body002 / Sketch013 / Pad005 and the
+SubShapeBinder it used - now that macro 38 has replaced it with a subtractive
+pocket (SketchNamePlate / PocketNamePlate in Body).
+
+SAFE TO DELETE ONLY BECAUSE IT IS IN GIT
+  Body002 was saved to disk but never committed until commit 4b80cfa. Deleting
+  it before that point could not have been undone from git, which is why macro
+  38 only hid it. It is in history now.
+
+WHAT IT ALSO REMOVES
+  The Binder. It was the source of the DAG cycle macro 39 cleared: its Support
+  bound Body.Pad by going THROUGH the App::Part container, and Sketch001 - the
+  lid's rear panel sketch - had picked up four dead external-geometry
+  references to Binder.Face2. Macro 39 broke both loops; this removes the
+  object entirely so neither can come back.
+
+REFUSES IF ANYTHING OUTSIDE THE MOCKUP STILL DEPENDS ON THESE
+  Checked against the live InList, not assumed. Sketch001's references were
+  stripped by macro 39; if that has not been run, this macro stops rather than
+  ripping geometry out from under the rear panel.
+
+GEOMETRY MUST NOT MOVE
+  Body002 is a separate body and macro 16 exports Body and Body001 explicitly,
+  so removing it should change nothing that prints. Gated below: plate and
+  panel volumes and bounding boxes are compared before and after, and the
+  forced recompute must stay clean.
+
+Idempotent: does nothing if the mockup is already gone.
+"""
+
+import FreeCAD
+
+MOCKUP_BODY = "Body002"
+DOOMED = ("Pad005", "Sketch013", "Binder")
+
+
+def main():
+    ld = FreeCAD.getDocument("Lid")
+    log = []
+
+    body = ld.getObject(MOCKUP_BODY)
+    if body is None:
+        print("mockup already removed - nothing to do")
+        return
+
+    plate_b = ld.getObject("Body").Shape
+    panel_b = ld.getObject("Body001").Shape
+    before = (round(plate_b.Volume, 4), round(panel_b.Volume, 4),
+              tuple(round(v, 4) for v in (plate_b.BoundBox.XMin, plate_b.BoundBox.XMax,
+                                          plate_b.BoundBox.ZMin, plate_b.BoundBox.ZMax)),
+              tuple(round(v, 4) for v in (panel_b.BoundBox.YMin, panel_b.BoundBox.YMax,
+                                          panel_b.BoundBox.ZMin, panel_b.BoundBox.ZMax)))
+
+    # gather everything that belongs to the mockup
+    doomed = set([body.Name])
+    for nm in DOOMED:
+        o = ld.getObject(nm)
+        if o is not None:
+            doomed.add(o.Name)
+    origin = getattr(body, "Origin", None)
+    if origin is not None:
+        doomed.add(origin.Name)
+        for child in origin.OutList:
+            doomed.add(child.Name)
+
+    # refuse if anything OUTSIDE the mockup depends on any of it
+    blockers = []
+    for nm in sorted(doomed):
+        o = ld.getObject(nm)
+        if o is None:
+            continue
+        for dep in o.InList:
+            if dep.Name not in doomed and dep.Name != "Part":
+                blockers.append("%s is still used by %s" % (nm, dep.Name))
+    if blockers:
+        raise RuntimeError("refusing to delete: " + "; ".join(sorted(set(blockers))))
+    log.append("no outside dependencies on %d mockup object(s)" % len(doomed))
+
+    # unhook from the Part container first
+    part = ld.getObject("Part")
+    if part is not None:
+        grp = [o for o in part.Group if o.Name != body.Name]
+        if len(grp) != len(part.Group):
+            part.Group = grp
+            log.append("removed %s from the Part container" % body.Name)
+
+    # delete leaves before the body, body before its origin's children
+    order = [n for n in DOOMED if n in doomed]
+    order += [n for n in sorted(doomed) if n not in order and n != body.Name
+              and (origin is None or n != origin.Name)]
+    order += ([origin.Name] if origin is not None else [])
+    order += [body.Name]
+    for nm in order:
+        if ld.getObject(nm) is not None:
+            ld.removeObject(nm)
+            log.append("removed %s" % nm)
+
+    ld.recompute()
+
+    # ---------------- verify ----------------
+    problems = []
+    try:
+        ld.recompute(None, True, True)
+        log.append("forced recompute: OK - no cycle")
+    except Exception as exc:
+        problems.append("forced recompute fails: %s" % str(exc)[:100])
+
+    left = [o.Name for o in ld.Objects if "Touched" in (o.State or [])]
+    if left:
+        problems.append("still Touched: %s" % left)
+    for o in ld.Objects:
+        st = o.State or []
+        if "Invalid" in st or "Error" in st:
+            problems.append("Lid/%s %s" % (o.Name, list(st)))
+    for nm in list(DOOMED) + [MOCKUP_BODY]:
+        if ld.getObject(nm) is not None:
+            problems.append("%s survived" % nm)
+
+    plate = ld.getObject("Body").Shape
+    panel = ld.getObject("Body001").Shape
+    after = (round(plate.Volume, 4), round(panel.Volume, 4),
+             tuple(round(v, 4) for v in (plate.BoundBox.XMin, plate.BoundBox.XMax,
+                                         plate.BoundBox.ZMin, plate.BoundBox.ZMax)),
+             tuple(round(v, 4) for v in (panel.BoundBox.YMin, panel.BoundBox.YMax,
+                                         panel.BoundBox.ZMin, panel.BoundBox.ZMax)))
+    log.append("plate vol %.4f -> %.4f, panel vol %.4f -> %.4f"
+               % (before[0], after[0], before[1], after[1]))
+    if after != before:
+        problems.append("GEOMETRY MOVED: %s -> %s" % (before, after))
+
+    for tag, sh in (("plate", plate), ("panel", panel)):
+        if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+            problems.append("%s not a single valid closed solid" % tag)
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

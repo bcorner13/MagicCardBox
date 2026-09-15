@@ -403,6 +403,120 @@ thin wall must gate on the MESH, not just the BRep** — macro 37 now does.
   Recovery: close all four documents **without saving**, reopen from disk.
   **Fillets fill concave edges. After any fillet change in this body, measure the swing.**
 
+## SIXTH ROUND — 2026-09-15 — the name plate, and a real variant matrix
+
+### The product matrix is now 3 surfaces x 2 card counts = SIX
+
+```
+MagicCardBox-{100|60}-{smooth|fluted|fluted-label}.{stl|3mf}
+```
+
+`-plain` was renamed `-smooth` at Bradley's request. Two switches drive it, and
+both features sit at the TIP of their bodies, which is what makes them
+suppressible without disturbing any edge reference:
+
+```
+flutes   Pocket009.Suppressed        in BOTH MagicCardBox and Lid
+label    PocketNamePlate.Suppressed  in Lid
+```
+
+**`macros/41-export_matrix` drives the whole thing from a table.** The old
+procedure — set CardCount, flip two flags in two documents, run macro 16, call
+`export_3mf`, call `export_stl`, repeat — was seven steps per variant. At six
+variants that is forty-plus steps and every one can write the wrong state into
+a file. That is not hypothetical: a file was exported carrying the name plate
+while named `-fluted`.
+
+Three things macro 41 does that the manual cycle could not:
+
+- **Exports in-loop, so every variant is fully checked.** Macro 16 can only
+  dimension-check the variant currently loaded; the other five got structural
+  checks only. This retires a gate that was demonstrably too weak — a stale
+  100-fluted file **missing the entire name plate** measured **+0.95 %** against
+  macro 16's 1 % volume tolerance and passed.
+- **Writes a JSON report to disk.** Six variants is minutes of recompute, far
+  past the MCP bridge's 30 s response cap — but the macro keeps running in
+  FreeCAD after the response is lost, so the caller polls for the file and the
+  cap stops mattering. **This is the general fix for the 30 s cap**, not a
+  one-off.
+- **Restores a canonical state in a `finally`**, so the model is never left
+  half-configured for the next session.
+
+Macro 16 is still useful for building and gating a single pose by hand; its
+variant list must be kept in step with macro 41's.
+
+### The name plate blank (macro 38)
+
+A rounded rectangle pocketed out of the flutes — **subtractive**, not the
+additive pad of the original mockup.
+
+| | |
+|---|---|
+| floor | `top − FluteDepth − NamePlateSink` = 67.4550 |
+| X | ±45.1957, the **2nd flute's centreline** |
+| Y | −26.000 … 30.000, `NamePlateInset` 10 from the leading and rear edges |
+| corners | `BorderRadius` 5 |
+
+X is pinned to the flute lattice, not to a number:
+`Width/2 − FluteMargin − (Width − 2·FluteMargin)/(FluteCountFront − 1)`.
+Y needs **two different expressions** because the plate is not symmetric in Y —
+it overhangs the back by `LidBackThickness` to cap the rear panel.
+
+### `NamePlateSink` — and why a coarse mesh check proves nothing
+
+First build put the floor level with the flute bottoms. The blank's X walls run
+**along** the flutes and sit exactly on the 2nd flute's low line, so the floor
+was **tangent to that cylinder down the blank's whole length**.
+
+`MeshPart` at `LinearDeflection 0.1` reported the plate solid, manifold and free
+of self-intersections. The exported STL did not. `Mesh.export`'s default
+tessellation is **~5× finer** (10656 facets where the typed tool wrote 1958) and
+it found exactly **one** self-intersection in 29970 facets, at x = −45.15 — the
+2nd flute's centreline.
+
+```
+NamePlateSink = 0.2    how far the floor sits BELOW the flute bottoms
+```
+
+0.2 and not less because the default mesh deviation is around 0.1; a margin
+under that is smeared away by the tessellation and proves nothing. Same species
+as `ChamferWallKeep` — a knob that exists purely to hold a degenerate case away
+from zero. **Check the exported file, not a convenient local mesh.**
+
+### The mockup left a DAG cycle behind (macros 39, 40)
+
+The additive mockup's `SubShapeBinder` bound `Body.Pad` by going **through the
+App::Part container**, and `Sketch001` — the lid's *rear panel* sketch — had
+picked up four external-geometry references to `Binder.Face2` that **no
+constraint used**. Two closed loops:
+
+```
+Binder     -> Part -> Body002 -> Sketch013 -> Binder
+Sketch001  -> Binder -> Part  -> Body001   -> Sketch001
+```
+
+A plain `recompute()` succeeded and every solid measured correct, but 8 objects
+stayed `Touched` however often it ran, and only a **forced** recompute surfaced
+it:
+
+```python
+doc.recompute()                    # NOT a cycle check
+doc.recompute(None, True, True)    # raises "The graph must be a DAG"
+```
+
+Bind to the **Body**, never to the container that holds the thing you are
+binding into. And when auditing sketch GeoIds: **−1 is the X axis, −2 the Y
+axis; external geometry starts at −3** — a `gid < 0` filter reports the axes as
+external references and sends you the wrong way.
+
+### Also: a macro that sets an expression only on creation is not idempotent
+
+Macro 38 set its pocket's `Length` expression inside the `if not present:`
+branch. Adding `NamePlateSink` then changed nothing on a re-run, because the
+branch was skipped — and the macro's own gate caught it (`floor 67.6550 !=
+67.4550`). **Re-assert driving expressions every run, outside the create
+branch.**
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -891,6 +1005,9 @@ middle of the plate instead of its surface.
 - **Footer:** `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
   equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg,
   `FooterReliefChamfer` 1.0
+- **Name plate** (macro 38): `NamePlateInset` 10.0, `BorderRadius` 5.0,
+  `NamePlateSink` **0.2** (holds the blank's floor below the flute bottoms; at 0 the floor
+  is tangent to flute 2 along the whole X edge and the exported STL self-intersects)
 - **Hinge chamfer** (macro 37): `HingeChamferSize` **3.6 (DERIVED =
   `min(HingeTabRadius; FloorThickness + WallThickness - ChamferWallKeep)`)**,
   `ChamferWallKeep` **0.4** (one nozzle width of rear wall the chamfer must leave at the
@@ -1123,7 +1240,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-37. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-41. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
