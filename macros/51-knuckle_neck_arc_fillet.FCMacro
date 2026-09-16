@@ -1,0 +1,310 @@
+# -*- coding: utf-8 -*-
+"""
+51-knuckle_neck_arc_fillet.FCMacro
+
+Kills the "tiny blip at the top arc transition" Bradley found on print 6's
+knuckles. It is a genuine geometric corner, not a print artifact.
+
+WHAT THE BLIP IS, MEASURED
+
+  Sectioning the lid knuckle and plotting radius against angle about the hinge
+  axis, the disc holds r = 5.000 exactly all the way round - and then:
+
+      angle   -37     -36     -35     -34     -33
+      radius  5.000   5.114   5.230   5.346   5.464
+
+  Climbing 0.116 mm per DEGREE, linearly. A tangent junction would grow as
+  R/cos(dtheta) = 5.0008 at one degree. So this is a HARD NON-TANGENT CORNER.
+
+  The cause is exact and derivable, not mysterious:
+
+      HingeNeckDrop 3.0 puts the neck's flat bottom at z = axis - 3.
+      That line chords the R5 disc at  atan2(-3, sqrt(5^2 - 3^2)) = -36.87 deg.
+      The arc's tangent there is 53 deg off horizontal; the neck's bottom is
+      horizontal. They meet in a 53 deg crease.
+
+  Two edges, one per knuckle, each HingeTabThickness long:
+
+      Edge at (+53, 35.5, 2)   and   (-53, 35.5, 2)
+
+  The OTHER transition on the same section (+42 deg -> +90 deg, radius
+  7.433 -> 5.021) converges on the circle asymptotically - a proper smooth
+  blend. Only this one corner is sharp, which matches "ONE tiny blip".
+
+THE CORNER IS CONCAVE. THE FILLET ADDS MATERIAL. THIS COSTS CLEARANCE.
+
+  This macro's first version argued the corner was convex, so the fillet could
+  "only increase clearance, never cause interference". THAT WAS WRONG, and the
+  measurement said so immediately:
+
+      R 0.8   panel volume 25792.147 -> 25792.343   (+0.196 mm3, ADDED)
+              swing gap at 90 deg      0.4000 -> 0.3987   TIGHTENED
+
+  CLAUDE.md already carries the rule - "Fillets fill concave edges" - learned
+  when raising the footer relief made the box's bottom-rear edge concave and
+  HengeFilet added 7.56 mm3 there. It should have been checked, not reasoned
+  about. A fillet's direction is a one-line measurement; an argument about it
+  is worth nothing.
+
+THE RADIUS IS BOUNDED BY HINGE CLEARANCE, NOT BY THE FLAT
+
+  The flat has 1.702 mm of run (Face2, y 35.500 .. 37.202), so geometry alone
+  would allow ~1.3. The real bound is tighter and is the full-open gap, which
+  macro 41's export gate refuses below one nozzle width:
+
+      R      panel mm3    gap at 90 deg   limiting contact
+      0.2    +0.014       0.4000          socket flat chord (-55.5, 27.986, 0.9)
+      0.4    +0.053       0.4000          socket flat chord, same point
+      0.6    +0.115       0.4000          MOVED to (55.5, 30.291, 10.263)
+      0.8    +0.196       0.3987          FAILS the 0.4 gate
+
+  0.6 is chosen because it is the largest tested size where the fillet is no
+  longer the limiting surface at all - the binding contact has moved elsewhere
+  in the socket - while still leaving 1.1 mm of the neck flat. It is a FREE
+  design input: a cosmetic blend sized by measurement, not derived.
+
+  => RAISING IT EATS FULL-OPEN CLEARANCE DIRECTLY. Re-measure the 90 deg gap
+     after any increase; the macro fails rather than shipping a tight hinge.
+
+EDGES ARE PICKED BY POSITION, EVERY RUN
+
+  Named-edge references have died twice in this project (Fillet004 outright;
+  PanelBottomChamfer silently re-resolved onto the WRONG edge). The target here
+  is derivable from Params - (Depth/2 - HingeAxisFromRear) + sqrt(HingeTabRadius^2
+  - HingeNeckDrop^2), HingeAxisFromBottom - HingeNeckDrop - so it is recomputed
+  and re-assigned on every run instead of trusted.
+
+Appended at the TIP of Body001, so no existing edge reference is disturbed.
+Idempotent: safe to re-run.
+"""
+
+import math
+import FreeCAD
+
+P = "<<Params>>#VarSet."
+TARGET = 0.6          # largest tested size at which the fillet stops being the
+                      # limiting surface at full open - see the table above
+NOZZLE = 0.4          # macro 41's export gate refuses a print-pose gap below this
+NAME = "KnuckleArcFillet"
+
+
+def check_body_order(body, problems):
+    feats = [o for o in body.Group if hasattr(o, "BaseFeature")]
+    roots = [o for o in feats if o.BaseFeature is None]
+    if len(roots) != 1:
+        problems.append("expected 1 chain root, found %d" % len(roots)); return
+    chain, seen, cur = [], set(), roots[0]
+    while cur is not None:
+        if cur.Name in seen:
+            problems.append("CYCLE at %s" % cur.Name); return
+        seen.add(cur.Name); chain.append(cur)
+        nxt = [o for o in feats if o.BaseFeature is cur]
+        if len(nxt) > 1:
+            problems.append("%s is BaseFeature of %d" % (cur.Name, len(nxt))); return
+        cur = nxt[0] if nxt else None
+    if [o.Name for o in feats] != [o.Name for o in chain]:
+        problems.append("Group order != BaseFeature chain")
+    if body.Tip is not chain[-1]:
+        problems.append("Tip %s != chain end %s" % (body.Tip.Name, chain[-1].Name))
+
+
+def chain_validity():
+    """Shape.isValid() per feature. o.State IS NOT THIS - nine features read
+    State 'Up-to-date' while their SHAPES were Invalid. Used as a REGRESSION
+    gate (fail if the count grows), since the debt is pre-existing."""
+    out = {}
+    for dn, bodies in (("MagicCardBox", ["Body"]), ("Lid", ["Body", "Body001"])):
+        doc = FreeCAD.getDocument(dn)
+        for bn in bodies:
+            b = doc.getObject(bn)
+            if b is None:
+                continue
+            out["%s/%s" % (dn, bn)] = [o.Name for o in b.Group
+                                       if hasattr(o, "BaseFeature")
+                                       and not o.Shape.isValid()]
+    return out
+
+
+def find_corner_edges(shape, ty, tz, tol=0.25):
+    hits = []
+    for i, e in enumerate(shape.Edges):
+        if type(e.Curve).__name__ != "Line":
+            continue
+        m = e.CenterOfMass
+        if abs(m.y - ty) < tol and abs(m.z - tz) < tol:
+            hits.append(("Edge%d" % (i + 1), round(m.x, 3), round(e.Length, 3)))
+    return hits
+
+
+def main():
+    ld = FreeCAD.getDocument("Lid")
+    mb = FreeCAD.getDocument("MagicCardBox")
+    pdoc = FreeCAD.getDocument("Params")
+    vs = pdoc.getObject("VarSet")
+    body = ld.getObject("Body001")
+    log, problems = [], []
+
+    if "NeckArcFilletRadius" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "NeckArcFilletRadius", "Hinge",
+                       "Blend at the non-tangent corner where the neck's flat bottom "
+                       "(HingeNeckDrop below the axis) chords the HingeTabRadius disc at "
+                       "-36.87 deg. Cosmetic: it removes the visible crease on the printed "
+                       "knuckle. A FREE input. The corner is CONCAVE, so this ADDS material "
+                       "and EATS full-open clearance: 0.6 holds the 90 deg gap at 0.4000, "
+                       "0.8 drops it to 0.3987 and fails the nozzle-width export gate. "
+                       "Re-measure the swing after any increase.")
+        log.append("added NeckArcFilletRadius")
+    vs.NeckArcFilletRadius = TARGET
+    pdoc.recompute()
+
+    D2 = float(vs.Depth.Value) / 2.0
+    ay = D2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    R = float(vs.HingeTabRadius.Value)
+    ND = float(vs.HingeNeckDrop.Value)
+    if ND >= R:
+        raise RuntimeError("HingeNeckDrop %.3f >= HingeTabRadius %.3f - the neck's bottom "
+                           "no longer chords the disc and this corner does not exist" % (ND, R))
+    half = math.sqrt(R * R - ND * ND)
+    ty, tz = ay + half, az - ND
+    log.append("corner at y=%.4f z=%.4f  (%.2f deg)" % (ty, tz,
+               math.degrees(math.atan2(-ND, half))))
+
+    # baseline, before touching anything
+    panel0 = body.Shape
+    boxS = mb.getObject("Body").Shape
+    j0 = round(boxS.distToShape(panel0)[0], 4)
+    valid0 = chain_validity()
+    log.append("shape-invalid BEFORE: %s" % ({k: len(v) for k, v in valid0.items()},))
+    v0 = round(panel0.Volume, 3)
+
+    # budget check against the ACTUAL flat, measured now
+    flat_run = None
+    for f in panel0.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        bb = f.BoundBox
+        if abs(bb.ZMin - tz) < 1e-6 and abs(bb.ZMax - tz) < 1e-6 and abs(bb.YMin - ty) < 1e-3:
+            flat_run = round(bb.YMax - bb.YMin, 4)
+            break
+    log.append("neck flat run: %s mm" % flat_run)
+    if flat_run is not None and TARGET > flat_run - 0.4:
+        raise RuntimeError("NeckArcFilletRadius %.3f leaves under 0.4 mm of the neck flat "
+                           "(%.3f mm available) - it would run into the panel junction"
+                           % (TARGET, flat_run))
+
+    fl = ld.getObject(NAME)
+    fresh = fl is None          # a re-run cannot use the volume-change gate: the
+                                # baseline is measured with the fillet ALREADY in
+    base_feat = body.Tip if fl is None else fl.BaseFeature
+    edges = find_corner_edges(base_feat.Shape, ty, tz)
+    if len(edges) != 2:
+        raise RuntimeError("expected 2 corner edges (one per knuckle), found %s" % (edges,))
+    log.append("edges found BY POSITION: %s" % (edges,))
+
+    if fl is None:
+        fl = body.newObject("PartDesign::Fillet", NAME)
+        fl.BaseFeature = base_feat
+        body.Tip = fl
+        log.append("created %s at the body tip" % NAME)
+    fl.Base = (base_feat, [e[0] for e in edges])      # re-assert EVERY run
+    fl.setExpression("Radius", P + "NeckArcFilletRadius")
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+    log.append("%s.Radius -> %.4f" % (NAME, float(fl.Radius.Value)))
+
+    # ---------------- verify ----------------
+    check_body_order(body, problems)
+    for dn in ("Lid", "MagicCardBox"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    panel = body.Shape
+    plate = ld.getObject("Body").Shape
+    for tag, s in (("panel", panel), ("plate", plate)):
+        if not (s.isValid() and s.isClosed() and len(s.Solids) == 1):
+            problems.append("%s is not a single valid closed solid" % tag)
+    # The corner is CONCAVE, so a working fillet ADDS material. The first version
+    # of this gate demanded a volume DECREASE and failed a fillet that was doing
+    # exactly the right thing.
+    log.append("panel volume %.3f -> %.3f (fillet added %.3f mm3 - concave corner)"
+               % (v0, panel.Volume, panel.Volume - v0))
+    if fresh and abs(panel.Volume - v0) < 1e-4:
+        problems.append("fillet changed nothing - it did not take")
+    if not fresh:
+        log.append("(re-run: volume-change gate skipped - the baseline already "
+                   "included the fillet)")
+
+    # THE CORNER MUST BE GONE: radius should now grow smoothly, not by 0.116/deg
+    xk = panel.BoundBox.XMax - 2.0
+    wires = panel.slice(FreeCAD.Vector(1, 0, 0), xk)
+    worst = None
+    for w in wires:
+        for e in w.Edges:
+            n = 40
+            prev = None
+            for i in range(n + 1):
+                p = e.valueAt(e.FirstParameter + (e.LastParameter - e.FirstParameter) * i / n)
+                r = math.hypot(p.y - ay, p.z - az)
+                th = math.degrees(math.atan2(p.z - az, p.y - ay))
+                if prev and abs(th - prev[0]) > 1e-6 and -45 < th < -25:
+                    rate = abs(r - prev[1]) / abs(th - prev[0])
+                    if worst is None or rate > worst[0]:
+                        worst = (round(rate, 4), round(th, 2))
+                prev = (th, r)
+    log.append("worst dr/dtheta in the -45..-25 deg band: %s  (was 0.116 mm/deg)" % (worst,))
+
+    j = round(boxS.distToShape(panel)[0], 4)
+    log.append("knuckle journal gap %.4f -> %.4f" % (j0, j))
+    if j < j0 - 1e-4:
+        problems.append("CLEARANCE TIGHTENED: %.4f -> %.4f" % (j0, j))
+
+    d = plate.distToShape(panel)[0]
+    if d > 1e-6 or plate.common(panel).Volume <= 0:
+        problems.append("lid bodies no longer fused (d=%.4f)" % d)
+
+    from FreeCAD import Vector, Rotation, Placement
+    gaps = []
+    for deg in (0.0, 4.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    valid1 = chain_validity()
+    log.append("shape-invalid AFTER:  %s" % ({k: len(v) for k, v in valid1.items()},))
+    for k in valid1:
+        if len(valid1[k]) > len(valid0.get(k, [])):
+            problems.append("SHAPE VALIDITY REGRESSED in %s: %d -> %d (new: %s)"
+                            % (k, len(valid0.get(k, [])), len(valid1[k]),
+                               sorted(set(valid1[k]) - set(valid0.get(k, [])))))
+    log.append("panel swing %s" % gaps)
+    if any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing interferes: %s" % gaps)
+    # THE GATE THAT CAUGHT THE R 0.8 MISTAKE. Filling a concave corner eats
+    # clearance, and macro 41 refuses to export a print-pose gap under one
+    # nozzle width - so this must fail HERE, not three steps later at export.
+    tight = [(d, g) for d, g, _ in gaps if g < NOZZLE - 1e-9]
+    if tight:
+        problems.append("gap below one nozzle width (%.2f) at %s - the fillet is "
+                        "eating full-open clearance; reduce NeckArcFilletRadius"
+                        % (NOZZLE, tight))
+
+    import MeshPart
+    mm = MeshPart.meshFromShape(Shape=panel, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    if not mm.isSolid():
+        problems.append("panel mesh not watertight")
+    if mm.hasNonManifolds():
+        problems.append("panel mesh non-manifold")
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems
+                               else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

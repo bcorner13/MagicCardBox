@@ -1,0 +1,164 @@
+# -*- coding: utf-8 -*-
+"""
+49-retire_orphaned_chamfer_params.FCMacro
+
+Retires the Params orphaned when Bradley replaced the two chamfers with his
+hand-drawn ramp, and follows the CASCADE that removal triggers.
+
+WHAT WENT DEAD AND WHY
+
+    HingeChamferSize    3.6    drove macro 37's PocketHingeChamfer  - DELETED
+    FooterReliefChamfer 1.0    drove the footer relief Chamfer      - DELETED
+
+  Both features were superseded by Sketch013 -> Pocket010, which does the same
+  job (breaking the rear-bottom overhang) with a smooth curve instead of two
+  flat facets, and does it better: flat down-facing area at z=0 went from
+  176.9 mm2 to 0.0.
+
+THE CASCADE IS THE POINT OF THIS MACRO
+
+  ChamferWallKeep 0.4 is referenced by NOTHING IN EITHER DOCUMENT. It is kept
+  alive solely by HingeChamferSize's own expression:
+
+      HingeChamferSize = min(HingeTabRadius; FloorThickness + WallThickness
+                                             - ChamferWallKeep)
+
+  So removing HingeChamferSize orphans ChamferWallKeep, which a single pass
+  would miss entirely - it reads as "in use" right up until the moment it
+  isn't. The macro therefore re-scans after every removal and keeps going
+  until the dead set stops growing. VarSet-INTERNAL expressions count as
+  references; macro 42 learned that and this repeats it.
+
+WHAT IS DELIBERATELY KEPT
+
+    RampMinWall 0.8    referenced by NO expression, and that is correct.
+
+  It is a GUARD, not a driver: macro 48 measures the built solid's rear wall
+  against it and refuses if breached. A naive "dead Param" sweep would delete
+  it and silently remove a safety check. Same species as ChamferWallKeep was
+  before its feature died - except this one still has a consumer, just not an
+  expression-shaped one.
+
+  => "Referenced by no expression" is NOT the same as "dead". Check whether a
+     MACRO reads it before removing anything.
+
+ALSO DEAD, AND DELIBERATELY NOT TOUCHED
+
+    HingeWrapRadius 5.5     FluteCountSide 15
+
+  Both predate this session and neither was orphaned by the chamfer removal, so
+  they are reported rather than removed. HingeWrapRadius in particular is
+  documented in CLAUDE.md as HingeTabRadius + HingeSwingClearance and may be
+  wanted if the wrap relief is ever re-parametrized.
+
+NOTE THE AUDIT WILL NOT HELP HERE. scripts/audit_parametric.py does NOT check
+for dead Params, despite CLAUDE.md claiming it does - verified by reading the
+script: it checks unconstrained sketches, underconstrained sketches, unbound
+sketch dimensions, DAG risk and unbound feature dimensions. Five checks, no
+Param sweep. Dead Params are a manual job.
+
+Idempotent: safe to re-run; does nothing once the Params are gone.
+"""
+
+import re
+import FreeCAD
+
+DOCS = ("MagicCardBox", "Lid", "MagicCardAssembly")
+RETIRE = ["HingeChamferSize", "FooterReliefChamfer"]
+KEEP_GUARDS = {"RampMinWall": "read by macro 48's rear-wall guard, not by any expression"}
+REPORT_ONLY = ["HingeWrapRadius", "FluteCountSide"]
+
+
+def references(vs, name):
+    """Every live reference to a Param - documents AND VarSet-internal expressions."""
+    hits = []
+    for dn in DOCS:
+        try:
+            d = FreeCAD.getDocument(dn)
+        except Exception:
+            continue
+        for o in d.Objects:
+            try:
+                eng = list(o.ExpressionEngine)
+            except Exception:
+                continue
+            hits += ["%s/%s.%s" % (dn, o.Name, p) for p, e in eng
+                     if re.search(r"\b%s\b" % name, e)]
+    hits += ["VarSet.%s" % k for k, e in vs.ExpressionEngine
+             if k != name and re.search(r"\b%s\b" % name, e)]
+    return hits
+
+
+def dead_set(vs):
+    skip = {"Label", "Label2", "ExpressionEngine", "Visibility", "Group",
+            "_ElementMapVersion"}
+    props = [p for p in vs.PropertiesList if p not in skip]
+    return sorted(p for p in props if not references(vs, p))
+
+
+def main():
+    pdoc = FreeCAD.getDocument("Params")
+    vs = pdoc.getObject("VarSet")
+    log = []
+
+    # 1. the two known orphans - each checked live, never removed on assumption
+    for name in RETIRE:
+        if name not in vs.PropertiesList:
+            log.append("%s already retired" % name)
+            continue
+        refs = references(vs, name)
+        if refs:
+            raise RuntimeError("%s is still referenced by %s - refusing to remove"
+                               % (name, refs))
+        vs.removeProperty(name)
+        log.append("retired %s" % name)
+    pdoc.recompute()
+
+    # 2. follow the cascade until it stops growing
+    for round_n in range(1, 6):
+        newly = [p for p in dead_set(vs)
+                 if p not in KEEP_GUARDS and p not in REPORT_ONLY]
+        if not newly:
+            break
+        for name in newly:
+            vs.removeProperty(name)
+            log.append("cascade round %d: retired %s (orphaned by the removal above)"
+                       % (round_n, name))
+        pdoc.recompute()
+
+    # 3. report what is left dead, and why each is being kept
+    left = dead_set(vs)
+    for name in left:
+        why = KEEP_GUARDS.get(name, "predates this session - reported, not removed")
+        log.append("KEPT %s = %s  (%s)" % (name, getattr(vs, name), why))
+
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+
+    # ---------------- verify ----------------
+    problems = []
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    boxS = mb.getObject("Body").Shape
+    for tag, sh in (("box", boxS), ("plate", ld.getObject("Body").Shape),
+                    ("panel", ld.getObject("Body001").Shape)):
+        if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+            problems.append("%s is not a single valid closed solid" % tag)
+    log.append("box %.2f mm3, params now %d"
+               % (boxS.Volume, len([p for p in vs.PropertiesList
+                                    if p not in ("Label", "Label2", "ExpressionEngine",
+                                                 "Visibility", "Group",
+                                                 "_ElementMapVersion")])))
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems
+                               else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

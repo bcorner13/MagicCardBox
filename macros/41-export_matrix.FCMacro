@@ -66,22 +66,40 @@ NOZZLE = 0.4
 BED = 350.0
 VOL_TOL = 0.01
 
-#        cards, flutes, label, tag
-MATRIX = [(100, False, False, "100-smooth"),
-          (100, True,  False, "100-fluted"),
-          (100, True,  True,  "100-fluted-label"),
-          (60,  False, False, "60-smooth"),
-          (60,  True,  False, "60-fluted"),
-          (60,  True,  True,  "60-fluted-label")]
+# CardPitch IS A PROPERTY OF THE SLEEVE, NOT OF THE DESIGN - so it lives in this
+# table beside CardCount, not as one global constant.
+#
+#   thin sleeve   true 0.6040   CardPitch 0.6200   slack 0.0160 mm/card
+#   Ryan's        true 0.6867   CardPitch 0.7033   slack 0.0163 mm/card
+#
+# Both carry the SAME per-card slack; they differ only in the sleeve measured.
+# Evidence: the printed 100 box holds 101 cards with ~2 mm still free at the top
+# (-> 0.604), while Ryan's 60 box came up 5 mm short (-> 0.687). A single global
+# pitch cannot satisfy both, and forcing one makes the 100 box hold ~114 cards.
+#
+# ASSUMPTION, stated rather than buried: the 60-card products are built for
+# Ryan's thicker sleeve and the 100-card products for the thin one. If a given
+# product needs the other sleeve, change its pitch HERE - that is the whole edit.
+THIN_SLEEVE = 0.62
+THICK_SLEEVE = 0.7033
 
-CANONICAL = (100, True, True, "100-fluted-label")
+#        cards, pitch,        flutes, label, tag
+MATRIX = [(100, THIN_SLEEVE,  False, False, "100-smooth"),
+          (100, THIN_SLEEVE,  True,  False, "100-fluted"),
+          (100, THIN_SLEEVE,  True,  True,  "100-fluted-label"),
+          (60,  THICK_SLEEVE, False, False, "60-smooth"),
+          (60,  THICK_SLEEVE, True,  False, "60-fluted"),
+          (60,  THICK_SLEEVE, True,  True,  "60-fluted-label")]
+
+CANONICAL = (100, THIN_SLEEVE, True, True, "100-fluted-label")
 
 
-def set_variant(cards, flutes, label):
+def set_variant(cards, pitch, flutes, label):
     mb = FreeCAD.getDocument("MagicCardBox")
     ld = FreeCAD.getDocument("Lid")
     vs = FreeCAD.getDocument("Params").getObject("VarSet")
     vs.CardCount = cards
+    vs.CardPitch = pitch
     mb.getObject("Pocket009").Suppressed = not flutes
     ld.getObject("Pocket009").Suppressed = not flutes
     ld.getObject("PocketNamePlate").Suppressed = not label
@@ -156,11 +174,11 @@ def tris_in_3mf(path):
 
 def run():
     results = []
-    for cards, flutes, label, tag in MATRIX:
-        row = {"tag": tag, "cards": cards, "flutes": flutes, "label": label,
-               "problems": []}
+    for cards, pitch, flutes, label, tag in MATRIX:
+        row = {"tag": tag, "cards": cards, "pitch": pitch, "flutes": flutes,
+               "label": label, "problems": []}
         try:
-            bad = set_variant(cards, flutes, label)
+            bad = set_variant(cards, pitch, flutes, label)
             if bad:
                 row["problems"].append("invalid after recompute: %s" % bad)
 
@@ -229,8 +247,8 @@ except Exception:
     out["error"] = traceback.format_exc()[-800:]
 finally:
     try:
-        set_variant(CANONICAL[0], CANONICAL[1], CANONICAL[2])
-        out["restored"] = CANONICAL[3]
+        set_variant(CANONICAL[0], CANONICAL[1], CANONICAL[2], CANONICAL[3])
+        out["restored"] = CANONICAL[4]
     except Exception:
         out["restored"] = "RESTORE FAILED"
     out["all_ok"] = bool(out["results"]) and all(r["ok"] for r in out["results"]) \

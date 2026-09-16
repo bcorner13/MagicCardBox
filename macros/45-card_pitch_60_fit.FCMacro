@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+45-card_pitch_60_fit.FCMacro
+
+*** SUPERSEDED THE SAME DAY - DO NOT RUN. Kept for the reasoning only. ***
+
+  This macro set ONE GLOBAL CardPitch. That premise was wrong, and the macro's
+  own docstring below says why without realising it: it lays out two capacity
+  measurements that contradict each other and calls the contradiction an
+  "accepted trade". It was not a trade. It was two DIFFERENT SLEEVES.
+
+  Bradley identified it: the sleeves Ryan used are thicker, and the printed 100
+  box still has ~2 mm free above its 101st card. So:
+
+      thin sleeve   true 0.6040   CardPitch 0.6200   slack 0.0160 mm/card
+      Ryan's        true 0.6867   CardPitch 0.7033   slack 0.0163 mm/card
+
+  The SAME per-card slack, applied to two different sleeves. Neither number was
+  ever wrong; they were measurements of different things being forced into one
+  Param. The loose single-card caliper reading of 0.69, which CLAUDE.md wrote
+  off as a 19 % overread from an uncompressed sleeve, lands almost exactly on
+  Ryan's 0.6867 - it was very likely measuring the thick sleeve all along.
+
+  => CardPitch is a property of the SLEEVE, not of the design. It now lives
+     per-variant in macro 41's MATRIX table, beside CardCount. Change a
+     product's sleeve there.
+
+  THE GENERAL LESSON, and it is the one this project keeps relearning from the
+  other direction: when two careful measurements of "the same" quantity
+  disagree, the default explanation is that they are NOT the same quantity.
+  Averaging them, or picking one and calling the difference a trade-off, buries
+  a real distinction inside a single knob. That is the coincidence trap in its
+  third form - here two things that must differ were given one Param, where
+  the print-3 defects gave one expression to two surfaces that had to differ.
+
+-------------------------------------------------------------------------------
+ORIGINAL DESCRIPTION (retained - the verification approach is still good)
+
+Raises CardPitch so a 60-card stack actually fits: the printed 60-card box is
+5 mm too short.
+
+    CardPitch  0.62  ->  0.703333        (mm per sleeved card, in a stack)
+
+    CardStackHeight = CardCount * CardPitch
+    Height          = CardStackHeight + CardClearance + FloorThickness
+
+     60 cards ->  stack 42.200   Height 45.200    (+5.000)   <- the fix
+    100 cards ->  stack 70.333   Height 73.333    (+8.333)   <- SIDE EFFECT
+
+WHY A SINGLE GLOBAL PITCH CANNOT SATISFY BOTH BOXES
+
+  This project now holds TWO capacity measurements that contradict each other,
+  and they are both real observations of real printed boxes:
+
+      100-card box   62 mm of stack held 101 cards   ->  0.614 mm/card
+       60-card box   60 cards need 42.2 mm           ->  0.703 mm/card
+
+  0.703 is above even the LOOSE single-card caliper reading of 0.69, which
+  CLAUDE.md records as overreading by ~19% because the sleeve is uncompressed.
+  A 60-stack compresses less than a 101-stack, so it should land BETWEEN 0.614
+  and 0.69 - not past the top of the range.
+
+  => Raising the global pitch to satisfy the 60 makes the 100 box hold roughly
+     113 cards. It stops being a 100-card box and becomes a loose one. That is
+     an accepted trade, made deliberately (Bradley, 2026-09-15), not an
+     oversight. If the 100 box should stay at 101 cards, the honest model is
+     TWO pitches - the compression genuinely differs with stack height - and
+     CardPitch becomes a function of CardCount rather than a constant.
+
+  The number is recorded for what it is: BACK-SOLVED from the 60-card box's
+  measured 5 mm shortfall, not read off a caliper. Dressing it up as a measured
+  card fact would be the LidTopThickness mistake again - a value that merely
+  evaluates correctly today with nothing recording where it came from.
+
+WHAT MOVES WHEN Height MOVES
+
+  Height drives the finger slot, the magnet pockets, the LidPlane datum, the
+  lid plate, the rear panel's top edge and the flute band. That path is well
+  travelled - CLAUDE.md records the box round-tripping 65 -> 40 -> 65 -> 40
+  with nothing Invalid - but Height 73.333 at CardCount 100 is a value this
+  model has never held. Both counts are therefore verified below, not assumed.
+
+  FluteStartZ stays absolute at 12.0 by design (it clears the knuckle step), so
+  the fluted band simply gets taller on both variants.
+
+WHY IT WRITES A REPORT FILE
+
+  Two card counts, each meshed and swing-tested, runs past the MCP bridge's
+  30 s response cap. The macro keeps running in FreeCAD after the response is
+  lost, so it writes REPORT as JSON and the caller polls for it. Same pattern
+  as macro 41.
+
+RESTORES THE CANONICAL STATE (CardCount 100) in a finally, always.
+
+Idempotent: safe to re-run.
+"""
+
+import json
+import os
+import traceback
+
+import FreeCAD
+import MeshPart
+from FreeCAD import Vector, Rotation, Placement
+
+REPORT = ("/private/tmp/claude-501/-Users-bradleycorner-Documents-3dPrinting-"
+          "Commercial-License-MagicCardBox/1bcbf292-4ad0-43ce-a1f9-e0bd8bc80efa/"
+          "scratchpad/card_pitch.json")
+
+TARGET_PITCH = 42.2 / 60.0        # 0.7033333... - back-solved from the 60-box shortfall
+NOZZLE = 0.4
+CANONICAL_COUNT = 100
+
+
+def docs():
+    return [FreeCAD.getDocument(n) for n in ("Params", "Lid", "MagicCardBox",
+                                             "MagicCardAssembly")]
+
+
+def recompute_all():
+    for d in docs():
+        d.recompute()
+
+
+def set_count(n):
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    vs.CardCount = n
+    recompute_all()
+
+
+def check_variant(cards):
+    """Every gate this model has learned to need, at one card count."""
+    set_count(cards)
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    row = {"cards": cards, "problems": []}
+
+    row["stack"] = round(float(vs.CardStackHeight.Value), 4)
+    row["height"] = round(float(vs.Height.Value), 4)
+    row["finger_slot_depth"] = round(float(vs.FingerSlotDepth.Value), 4)
+
+    for dn in ("Lid", "MagicCardBox"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                row["problems"].append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    boxS = mb.getObject("Body").Shape
+    plate = ld.getObject("Body").Shape
+    panel = ld.getObject("Body001").Shape
+    for tag, sh in (("box", boxS), ("plate", plate), ("panel", panel)):
+        if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+            row["problems"].append("%s is not a single valid closed solid" % tag)
+    row["box_mm3"] = round(boxS.Volume, 2)
+
+    # the two lid bodies must still interpenetrate, or the lid exports as two meshes
+    row["plate_panel_dist"] = round(plate.distToShape(panel)[0], 4)
+    row["plate_panel_overlap"] = round(plate.common(panel).Volume, 3)
+    if row["plate_panel_dist"] > 1e-6 or row["plate_panel_overlap"] <= 0:
+        row["problems"].append("lid bodies no longer fused")
+
+    # A VALID CLOSED SOLID IS NOT EVIDENCE IT CAN BE PRINTED (fifth-round lesson)
+    mm = MeshPart.meshFromShape(Shape=boxS, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    if not mm.isSolid():
+        row["problems"].append("box mesh not watertight")
+    if mm.hasNonManifolds():
+        row["problems"].append("box mesh non-manifold")
+
+    # the panel swing must stay FLAT at the journal fit - a number that collapses
+    # toward theta=0 is a jam however small it looks at 4 deg
+    ay = float(vs.Depth.Value) / 2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 4.0, 15.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    row["swing"] = gaps
+    if len(set(g for _, g, _ in gaps)) != 1:
+        row["problems"].append("panel swing is NOT flat: %s" % gaps)
+    if any(v > 1e-4 for _, _, v in gaps):
+        row["problems"].append("panel swing interferes: %s" % gaps)
+    if gaps[0][1] < NOZZLE - 1e-6:
+        row["problems"].append("swing gap %.4f below one nozzle width" % gaps[0][1])
+
+    # the print pose only works while these two stay equal (fourth-round section)
+    fh = float(vs.FooterHeight.Value)
+    lb = float(vs.LidBackThickness.Value)
+    row["bed_mismatch"] = round(abs(fh - lb), 4)
+    if row["bed_mismatch"] > 1e-6:
+        row["problems"].append("FooterHeight %.4f != LidBackThickness %.4f" % (fh, lb))
+
+    row["ok"] = not row["problems"]
+    return row
+
+
+out = {"before": None, "after": None, "variants": [], "restored": None, "error": None}
+try:
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    if "CardPitch" in dict(vs.ExpressionEngine):
+        raise RuntimeError("CardPitch is expression-driven; it must stay a free input")
+
+    out["before"] = {"CardPitch": round(float(vs.CardPitch), 6),
+                     "CardCount": int(vs.CardCount),
+                     "Height": round(float(vs.Height.Value), 4)}
+    vs.CardPitch = TARGET_PITCH
+    recompute_all()
+    out["after"] = {"CardPitch": round(float(vs.CardPitch), 6)}
+
+    for cards in (60, CANONICAL_COUNT):
+        out["variants"].append(check_variant(cards))
+except Exception:
+    out["error"] = traceback.format_exc()[-1200:]
+finally:
+    try:
+        set_count(CANONICAL_COUNT)
+        out["restored"] = CANONICAL_COUNT
+    except Exception:
+        out["restored"] = "RESTORE FAILED"
+    out["all_ok"] = (bool(out["variants"])
+                     and all(v["ok"] for v in out["variants"])
+                     and out["error"] is None)
+    try:
+        os.makedirs(os.path.dirname(REPORT), exist_ok=True)
+        with open(REPORT, "w") as fh:
+            json.dump(out, fh, indent=1)
+    except Exception:
+        pass
+    print(json.dumps(out, indent=1)[:3000])

@@ -611,6 +611,293 @@ treating it as unsupported perimeter**, at 0.2 mm layers and at 0.12 alike. The 
 geometry flag, not a defect report — five prints bear that out. h3liØ's reference box has the
 same joint with the same 0.38 mm gap over its own lid; what it lacks is one big flat face.
 
+---
+
+## EIGHTH ROUND — 2026-09-15 — the cantilever reaches ZERO, and one Param was two things
+
+Bradley replaced both chamfers with a hand-drawn B-spline ramp, and asked for a taller
+60-card box and a magnet pocket the magnets actually fit. Macros 45-49.
+
+```
+flat down-facing area at z=0     176.9  ->  0.0 mm2      (458.4 where round 7 began)
+minimum rear wall                0.983  ->  1.982 mm     it got THICKER, not thinner
+panel swing                      0.4000 flat, zero interference, unchanged throughout
+```
+
+### THE BIG ONE — `CardPitch` WAS TWO DIFFERENT MEASUREMENTS IN ONE KNOB
+
+The 60-card box came up 5 mm short. The obvious fix — raise `CardPitch` — was applied
+(macro 45) and its own gate reported both card counts clean. It was still wrong, and the
+macro's docstring contains the tell: it lays out two capacity measurements that contradict
+each other and calls the contradiction "an accepted trade".
+
+```
+printed 100 box   101 cards with ~2 mm still free  ->  0.6040 mm/card
+Ryan's 60 box     60 cards need 5 mm more          ->  0.6867 mm/card
+```
+
+**It was not a trade. It was two different sleeves.** Bradley identified it: the sleeves
+Ryan used are thicker. Neither number was ever wrong — they measure different objects.
+
+```
+thin sleeve   true 0.6040   CardPitch 0.6200   slack 0.0160 mm/card
+Ryan's        true 0.6867   CardPitch 0.7033   slack 0.0163 mm/card
+```
+
+The SAME per-card slack, applied to two sleeves. And the loose single-card caliper reading
+of **0.69**, which this file wrote off as a 19 % overread from an uncompressed sleeve,
+lands almost exactly on Ryan's 0.6867 — **it was very likely measuring the thick sleeve
+all along, and was never an error.**
+
+`CardPitch` now lives **per-variant in macro 41's MATRIX**, beside `CardCount`:
+
+```python
+THIN_SLEEVE = 0.62      # 100-card products
+THICK_SLEEVE = 0.7033   # 60-card products - Ryan's sleeves
+```
+
+So the 100 box keeps its proven `Height` 65 and the 60 gets 45.2. Forcing one global pitch
+would have made the 100 box hold ~114 cards. **Macro 45 is marked SUPERSEDED — DO NOT RUN.**
+
+> **THE RULE: when two careful measurements of "the same" quantity disagree, the default
+> explanation is that they are NOT the same quantity.** Averaging them, or picking one and
+> calling the difference a trade-off, buries a real distinction inside a single knob. This
+> is the coincidence trap in its third form — the print-3 defects gave one EXPRESSION to two
+> surfaces that had to differ; this gave one PARAM to two things that had to differ.
+
+### THE RAMP — three constraints that over-determine each other
+
+Bradley's `Sketch013` -> `Pocket010` is a cubic B-spline, vertical where it meets the rear
+face and landing nearly flat, swept `UpToFace`. It replaced `PocketHingeChamfer` (macro 37)
+and the footer `Chamfer`, and it is **better than both**: 176.9 -> 15.7 mm² of flat ledge
+before the rear wall change, 0.0 after.
+
+**A 45 deg exit angle is GEOMETRICALLY IMPOSSIBLE here, and that is not a tuning problem.**
+The curve must pass outboard of `(cavity face + RampMinWall)` at the cavity floor to keep
+the wall, and land inside the footer's reach at z = 0 or the ledge returns:
+
+```
+minWall  landing Yb   best exit angle   unsupported ledge
+0.8      29.0         19.0 deg          none
+0.8      31.0         27.8 deg          1.60 mm
+1.0      33.0         45.0 deg          3.60 mm
+```
+
+**You may have any two of {thick rear wall, steep exit, no ledge}. Never all three.** Every
+candidate Bézier forced to 45 deg reached y ≈ 31.5 at z = 2 — a *negative* wall, i.e. it
+deletes the rear wall rather than thinning it. Measured before building, not after.
+
+And it does not matter as much as it looks: print 5 established that **curved overhangs
+print and flat ones droop**. A shallow CURVED exit is fine; it was the flat ledge that sagged.
+
+### PARAMETRIZING A SPLINE — name the frame, not the control points
+
+Naming six control points would be wrong: they would drift independently and the curve
+would stop being smooth, which is its entire purpose. What works is that each interior pole
+is held by two `Distance` constraints to the frame lines, so it is an **offset from the
+frame** and the whole curve translates and keeps its shape when `Depth` moves.
+
+```
+RampBottomY 29  RampTopZ 8  RampOvershoot 2  RampUndercut 2     the frame
+RampPole1In/Up  RampPole2In/Up  RampPole3In/Up                  hand-tuned, MOVE TOGETHER
+RampMinWall 0.8                                                 a GUARD, not a driver
+```
+
+Binding the frame alone made the curve parametric — asserted with a phase-A no-op check
+(0.0000 mm³ drift). The six pole offsets are recorded as **free design inputs**, not dressed
+in a derivation that merely evaluates correctly today.
+
+### `RearWallThickness` 3.0 — and it FIXED the ramp rather than costing anything
+
+Bradley asked for a 3 mm rear wall. `WallThickness` could not carry it: it also drives the
+front wall, the hinge neck, and `Depth` itself.
+
+```
+Depth = CardWidth + 2*CardClearance + WallThickness + RearWallThickness = 73   (was 72)
+```
+
+The box gets **1 mm deeper** — interior must stay 68.000 for the cards, so a thicker rear
+wall pushes the rear face OUT rather than eating card space. Asserted: interior 68.000,
+front wall 2.000, rear wall 3.000.
+
+The payoff was larger than predicted. Moving the cavity face 34 -> 33.5 gave the ramp room:
+
+```
+ramp minimum wall    0.983 -> 1.982 mm     DOUBLED, and 2.5x the 0.8 guard
+flat area at z=0      15.7 -> 0.0 mm2      the ledge stopped existing
+```
+
+**Print height rises 1 mm**: print Z is `Depth + FooterHeight`, so 76 -> 77.
+
+### Magnets — a chamfer alone would NOT have fixed it
+
+```
+MagnetDia 4.00, MagnetFit 0.05 per side  ->  bore Ø4.100, measured at rim AND floor
+```
+
+0.05 mm per side is a CAD fit, not an FDM fit. Printed holes come out **undersize** —
+typically 0.1–0.3 mm on diameter, worst on small bores — so a nominal Ø4.100 prints near
+Ø3.9–4.0 and the magnet binds along the WHOLE DEPTH. A lead-in helps it START and then it
+still jams. Both were needed, and the fit is the load-bearing half:
+
+```
+MagnetFit    0.05 -> 0.15 per side      bore Ø4.100 -> Ø4.300
+MagnetLeadIn 0.3                        45 deg lead-in at each mouth
+```
+
+Walls 1.95 -> 1.85 mm each side; skin under the outer flute unchanged at 1.00 mm (it is
+`MagnetSkin - FluteDepth`, so widening the bore extends that region but cannot thin it).
+
+**Built as a TAPERED POCKET, not `PartDesign::Chamfer`** — a chamfer needs four named edge
+references, and this project has been bitten twice (Fillet004 died; PanelBottomChamfer
+silently re-resolved onto the WRONG edge). A tapered pocket references a sketch and a Param.
+The taper SIGN is determined by measurement, with an automatic flip if the cone came out
+widening.
+
+### Retired Params, and the cascade
+
+`HingeChamferSize` and `FooterReliefChamfer` died with the features Bradley deleted.
+Removing `HingeChamferSize` then orphaned **`ChamferWallKeep`**, which was kept alive only
+by `HingeChamferSize`'s own expression — it read as "in use" right up until it wasn't.
+Macro 49 re-scans after every removal until the dead set stops growing. 75 -> 72 Params.
+
+### Export
+
+All six variants re-exported clean, `all_ok: True`. Facet counts rose ~5x (5 636 -> 29 076
+on the fluted) because the ramp is a genuine curved surface. Volume deltas ≤ 0.007 %.
+
+| | 100-card | 60-card |
+|---|---|---|
+| Height | 65.0 | 45.2 |
+| bbox (print pose) | 116.81 × 134.26 × 77.0 | 116.81 × 114.46 × 77.0 |
+| facets smooth/fluted/label | 12 976 / 29 076 / 32 236 | 12 908 / 29 008 / 32 168 |
+
+---
+
+## NINTH ROUND — 2026-09-15 — print 6, and the check that had been lying all along
+
+Print 6 came off with the hinge free and the lid flush. Two defects, both fixed
+(macros 50, 51) — and the investigation turned up something worse than either.
+
+### ⚠️ `o.State` IS NOT `Shape.isValid()`. NINE FEATURES WERE BROKEN BEHIND "Up-to-date".
+
+```
+MagicCardBox/Body    9 of 23 features:  Shape.isValid() == False
+                                        "Unorientable shape"
+                     three of them also  isClosed() == False
+every one of them:   State == ['Up-to-date']
+```
+
+**Every macro in rounds 8 and 9 gated on `"Invalid" in o.State`, and every one
+reported "all checks pass".** So did `scripts/audit_parametric.py`, which does
+not look at shapes at all. So did all six export gates — because they check the
+TIP, and the tip is genuinely valid, closed, one solid, watertight, manifold and
+free of self-intersections. Six prints confirm it.
+
+```python
+o.State                  # recompute bookkeeping. NOT shape health.
+o.Shape.isValid()        # the actual question
+o.Shape.check(True)      # tells you WHAT is wrong ("Unorientable shape")
+```
+
+**The debt is PRE-EXISTING** — present in the saved file before this session, so
+neither Bradley's GUI edits nor macros 45-51 caused it. Macro 50 took it 9 -> 8.
+Macros 50 and 51 now carry `chain_validity()`, used as a REGRESSION gate: fail
+if the count GROWS. Copy that helper into anything that touches the box body.
+
+### DO NOT NAME A ROOT CAUSE FROM ONE READING
+
+"Root cause found: Pocket008" was stated here on a single measurement. It was
+wrong. Under a suppress/restore experiment the first-invalid **migrated to
+Pocket007** and stayed there across three repeat recomputes with the flags
+restored — an upstream feature cannot be caused by a downstream toggle, so the
+"first invalid" is not a causal signal at all. Repeat a diagnostic before
+building a story on it, especially one that moves under perturbation.
+
+### A VIEWPORT ARTIFACT MAY BE AN INTERMEDIATE FEATURE, NOT THE PART
+
+Bradley saw a spike near the socket after selecting `BackHengeFilet`. It is not
+in the printed geometry:
+
+```
+Fillet001 (BackHengeFilet)  valid=False  closed=FALSE   <- what was on screen
+Body tip                     valid=True   closed=True, 1 solid
+tip mesh: solid ✓  non-manifold ✗  self-intersecting ✗  1 component
+largest sliver in the tip: 0.00055 mm2  (0.02 mm across)
+```
+
+Selecting a mid-chain feature makes FreeCAD draw THAT feature's shape. **Before
+chasing a visual defect, check whether you are looking at the Tip.**
+
+### `NeckClip001` REMOVES NOTHING — AND CANNOT BE DELETED
+
+Bradley called it worthless. Measured at the TIP (the only valid place to
+measure), he was exactly right:
+
+```
+tip with NeckClip     137195.863
+tip without           137195.863      removes 0.000 mm3, no lumps
+tip valid without     FALSE           <- the catch
+```
+
+`PocketNeckClip` + `MirroredNeckClip` contribute **zero** material and are the
+features where shape validity RECOVERS. They are geometrically worthless and
+structurally load-bearing by accident. Removing them requires fixing the
+upstream invalidity first. `Pocket008` and `Mirrored002` are similarly
+near-redundant (-0.001 mm3) — `Pocket008` re-cuts `Pocket`'s exact profile with
+the same Length expression in the same direction, which is the coincident-surface
+trap in its fourth form.
+
+### `FooterLidClearance` 0.62 — the lid and footer nearly fused at the bed
+
+Measured in the print pose, across the bed plane:
+
+```
+z = bed+0.02 .. +0.20   box reaches 26.000 | lid starts 26.500 | gap 0.5000 FLAT
+```
+
+A flat 0.5 mm slot, both walls printing simultaneously, ~2 mm tall, in PETG.
+That is what welded. The gap WAS `HingeSwingClearance` exactly, by construction
+— but that Param drives **eight** things, seven of them inside the hinge Bradley
+reports as good, and raising it shrinks `PanelBottomFillet`, pushing the footer
+back the other way. So only `Sketch006.Constraints[7]` was rebound to a new knob.
+The z=0 footer reach did not move at all (that is `FooterReliefRadius`'s tangent
+point), so the ledge margin was unaffected.
+
+### `NeckArcFilletRadius` 0.6 — the knuckle blip, and a fillet that ADDS material
+
+```
+angle   -37     -36     -35     -34      <- the disc holds r=5.000 to -36.87 deg
+radius  5.000   5.114   5.230   5.346       then 0.116 mm/DEGREE. Tangent = 5.0008.
+```
+
+`HingeNeckDrop` 3.0 puts the neck's flat bottom at `z = axis - 3`, which chords
+the R5 disc at `atan2(-3, 4) = -36.87 deg`. A 53 deg crease, on both knuckles.
+
+**The corner is CONCAVE, so the fillet FILLS it and EATS clearance** — claimed
+here as convex and "can only improve clearance", which the first measurement
+disproved. Sized by sweep, not argument:
+
+```
+R 0.2/0.4  gap at 90 deg 0.4000, limiting contact = socket flat chord
+R 0.6      gap 0.4000, limiting contact MOVES elsewhere   <- chosen
+R 0.8      gap 0.3987   fails the nozzle-width export gate
+```
+
+After: the departure from the circle begins at -40 deg and ramps 0.003 ->
+0.013 -> 0.035 mm/deg. Tangent-continuous; the crease is gone.
+
+### Also learned
+
+- **`is_modified` and a clean audit both passed while the disk held none of this work.**
+  Bradley's ramp and three deletions existed ONLY in memory for the whole session. Diff
+  memory against disk with `zipfile` inside FreeCAD before trusting any status signal.
+- **The slicer's "floating cantilever" is not an island.** Rasterizing every layer of the
+  sliced gcode found **0 islands** in 348 layers, and layer 1 already spans the full
+  footprint. h3liØ's box has *more* unsupported area (255.6 mm²) and no warning.
+- **Creality's gcode lands in temp whether or not the export succeeds** — recover it from
+  `.../crealityprint_model/<Day>/<HH_MM_SS>#<pid>#<n>/Metadata/.<pid>.N.gcode`.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -917,7 +1204,7 @@ faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external ge
 
 | File | Role | Depends on | Status |
 |---|---|---|---|
-| `Params.FCStd` | VarSet — all parametric variables (36 today) | — | ✅ |
+| `Params.FCStd` | VarSet — all parametric variables (72 today) | — | ✅ |
 | `MagicCardBox.FCStd` | The box tub; hinge sockets in the side walls; 4-deep fillet chain | `Params.FCStd` | ✅ clean, tip `Fillet003` |
 | `Lid.FCStd` | Lid top plate + stepped rear panel + hinge knuckles | `Params.FCStd` | ✅ clean; 2 feature-attached datums remain |
 | `MagicCardAssembly.FCStd` | Assembly doc; `App::Link` to both parts, `Revolute` joint | `MagicCardBox.FCStd`, `Lid.FCStd` | ✅ audit clean |
@@ -959,10 +1246,13 @@ be designed for; it is not a slicer setting.
 still Params and still drive everything downstream, but they are no longer free numbers:
 
 ```
-Width  = CardLength      + 2*CardClearance + 2*SideWallThickness   = 111.0
-Depth  = CardWidth       + 2*CardClearance + 2*WallThickness       =  72.0
-Height = CardStackHeight +   CardClearance +   FloorThickness      =  65.0
+Width  = CardLength      + 2*CardClearance + 2*SideWallThickness           = 111.0
+Depth  = CardWidth       + 2*CardClearance + WallThickness + RearWallThickness = 73.0
+Height = CardStackHeight +   CardClearance +   FloorThickness              =  65.0
 ```
+
+`Depth` gained `RearWallThickness` (3.0) in the eighth round — front and rear walls are no
+longer the same knob. Interior stays **68.000**, asserted; the rear face moved OUT.
 
 Interior is therefore **94.0 x 68.0 x 63.0 mm**, verified from the solid, holding a
 92 x 66 x 62 stack with 1 mm all round and 1 mm headroom.
@@ -998,7 +1288,7 @@ To go back to free knobs, clear those three expressions.
 
   ```
   CardCount = 100            (integer - the product name)
-  CardPitch = 0.62           (mm per sleeved card, in a stack - measured)
+  CardPitch = 0.62           (mm per sleeved card - A PROPERTY OF THE SLEEVE, see below)
   CardStackHeight = CardCount * CardPitch
 
   100 cards -> CardStackHeight 62.0, Height 65.0     interior 95 x 68 x 63
@@ -1026,6 +1316,14 @@ To go back to free knobs, clear those three expressions.
   It lands between the loose 0.69 and the fully-compressed 0.58, which is what a
   partially-compressed stack should do — both calipers were right about their own case and
   wrong about this one. **Capacity is ~100 cards, by count, not by arithmetic.**
+
+  **RESOLVED 2026-09-15 — THE CALIPER READINGS WERE NEVER IN CONFLICT.** Everything above
+  tries to reconcile 0.58, 0.62 and 0.69 as one number measured three ways. They are not
+  one number: **`CardPitch` is a property of the SLEEVE.** The 0.69 dismissed here as a
+  19 % overread lands almost exactly on the 0.6867 that Ryan's thicker sleeves actually
+  need — it was measuring a different sleeve, and it was right. `CardPitch` now lives
+  per-variant in macro 41's MATRIX (`THIN_SLEEVE` 0.62 / `THICK_SLEEVE` 0.7033). See the
+  eighth-round section; the reasoning there supersedes the reconciliation attempts below.
 
   ```
   60 cards × 0.62  =  37.2 mm   ->  CardStackHeight ~37, Height ~40
@@ -1091,6 +1389,10 @@ To go back to free knobs, clear those three expressions.
   fluting (53 mm of flute becomes 28 mm at `Height` 40). Cosmetic, not a defect — but decide
   it deliberately when the variant is built.
 - **Geometry:** `Width`, `Depth`, `Height` (derived), `WallThickness` 2.0,
+  `RearWallThickness` **3.0** (new, macro 48 — the box REAR wall gets its own knob because
+  `WallThickness` also drives the front wall, the hinge neck and `Depth` itself. Raising it
+  pushes the rear face OUT, never into card space, and it is what let the ramp's minimum
+  wall double to 1.982 mm while the flat ledge went to zero),
   `SideWallThickness` **8.0** (was 6.0; raised by macro 27 — hinge web 0.60 → 2.60 mm and
   magnet wall margins 0.95 → 1.95 mm. Grows the box OUTWARD only; interior is unchanged),
   `FloorThickness` 2.0, `EdgeFilletRadius` 1.0,
@@ -1112,7 +1414,11 @@ To go back to free knobs, clear those three expressions.
   `MagnetFromFront` 8.0, `MagnetSkin` **1.7** (was 1.0 — the outer lid flute cuts
   `FluteDepth` 0.7 straight out of the skin, leaving **0.30 mm** over the magnet after the
   Width change; now 0.9995 mm worst case, measured under the flute),
-  `MagnetFit` 0.05 (per side on the radius)
+  `MagnetFit` **0.15** (per side on the radius; was 0.05 = a CAD fit that printed solid —
+  the magnets would not go in. Bore Ø4.100 -> Ø4.300, macro 46),
+  `MagnetLeadIn` **0.3** (new, macro 46 — depth of the 45 deg lead-in at each pocket mouth,
+  cut as a TAPERED POCKET so there is no named edge to go stale. An ASSEMBLY aid, not a
+  fit: the bore is what decides whether the magnet goes in)
 
 **`LidTopThickness` is separate from `WallThickness` on purpose — do not merge them.**
 `WallThickness` already means four unrelated things: the box front/rear walls
@@ -1130,16 +1436,24 @@ middle of the plate instead of its surface.
 - **Footer:** `FooterReliefRadius` **3.74** (macro 44 — the relief arc; a free design input,
   AT the lid's swept-envelope limit, so re-measure the swing if raised),
   `FooterHeight` **4.0 (DERIVED = `LidBackThickness`, macro 34 — they must stay
-  equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg,
-  `FooterReliefChamfer` 1.0
+  equal or the part will not sit flat in the print pose)**, `FooterTaperAngle` 36 deg
 - **Name plate** (macro 38): `NamePlateInset` 10.0, `BorderRadius` 5.0,
   `NamePlateSink` **0.2** (holds the blank's floor below the flute bottoms; at 0 the floor
   is tangent to flute 2 along the whole X edge and the exported STL self-intersects)
-- **Hinge chamfer** (macro 37): `HingeChamferSize` **3.6 (DERIVED =
-  `min(HingeTabRadius; FloorThickness + WallThickness - ChamferWallKeep)`)**,
-  `ChamferWallKeep` **0.4** (one nozzle width of rear wall the chamfer must leave at the
-  floor junction — a MANUFACTURING limit, not a clearance; at 0 the wall is a knife edge and
-  the mesh goes non-manifold while the solid still reads valid)
+- **Rear-bottom ramp** (Bradley's B-spline, bound by macro 48). The FRAME is parametric and
+  the curve is offsets from it, which is why the whole thing tracks `Depth`:
+  `RampBottomY` 29.0 (where it lands — must stay inside the footer's reach at z=0 or the
+  ledge returns), `RampTopZ` 8.0, `RampOvershoot` 2.0, `RampUndercut` 2.0,
+  `RampPole1In/Up` 2.08/7.39, `RampPole2In/Up` 2.49/3.96, `RampPole3In/Up` 4.41/1.97
+  (**hand-tuned curve inputs — MOVE THEM TOGETHER or the curve kinks**),
+  `RampMinWall` **0.8 — a GUARD, not a driver**: no expression references it; macro 48
+  measures the built solid's rear wall against it and refuses if breached. Do not "clean it
+  up" as a dead Param.
+- **RETIRED in the eighth round** (macro 49, with the cascade): `HingeChamferSize`,
+  `FooterReliefChamfer`, and `ChamferWallKeep` — the last of which was kept alive ONLY by
+  `HingeChamferSize`'s own expression and read as in-use until the moment it wasn't.
+  `HingeWrapRadius` 5.5 and `FluteCountSide` 15 are ALSO dead but predate that round; they
+  were reported rather than removed.
 - **Hinge:** `HingeTabRadius` 5.0 — **the single knob; `HingeAxisFromRear` and
   `HingeAxisFromBottom` are DERIVED from it** (see the identity below). `HingePinDia` 6.0,
   `HingePinLength` 3.0, `HingeTabThickness` 5.0, `HingeNeckDrop` 3.0, `RimRelief` 1.0, plus
@@ -1169,7 +1483,15 @@ At R = 5 it is 0.0000 at every angle with 0.400 mm from 30 deg on. See `macros/2
 - **Finger slot:** `FingerSlotWidth` 30.0, `FingerSlotDepth` 61.0 (runs to the floor as of
   2026-09-13 so the whole stack can be gripped)
 - **Clearances (one per interface, never merged):** `HingePinClearance` 0.4,
-  `HingeTabClearance` 0.4, `HingeSwingClearance` 0.5, `CardClearance` 1.0
+  `HingeTabClearance` 0.4, `HingeSwingClearance` 0.5, `CardClearance` 1.0,
+  `FooterLidClearance` **0.62** (new, macro 50 — box footer vs the folded-open lid WHERE
+  THEY MEET THE BED. Its own knob because HingeSwingClearance also drives seven
+  hinge-internal features, and raising that shrinks PanelBottomFillet and pushes the
+  footer back the other way. Bounded above by RampBottomY),
+  `NeckArcFilletRadius` **0.6** (new, macro 51 — blends the 53° crease where the neck's
+  flat bottom chords the knuckle disc at −36.87°. The corner is CONCAVE so this ADDS
+  material and EATS full-open clearance: 0.8 drops the 90° gap to 0.3987 and fails the
+  nozzle-width gate)
 
 **Still carrying the pin.** `HingePinDia` 6.0 and `HingePinLength` 3.0 are live: the box still
 has a 3 mm-radius pin standing in a **0.6 mm** web (`SideWallThickness 6 − (HingeTabThickness 5
@@ -1188,14 +1510,28 @@ After any FreeCAD edit, before considering the task done:
 python3 scripts/audit_parametric.py
 ```
 
-This script flags:
-- Sketches with 0 constraints
-- Sketches with dimensional constraints lacking expression bindings
-- Sketches attached to feature faces (DAG risk)
-- Params variables used nowhere (dead Params)
+This script flags **exactly five things** — read from the source 2026-09-15, not from
+memory:
+- Sketches with 0 constraints (`UNCONSTRAINED`)
+- Sketches with constraints but `FullyConstrained=false` (`UNDERCONSTRAINED`)
+- Sketch dimensional constraints with no expression binding (`UNBOUND DIMENSION`)
+- Sketches attached to feature faces (`DAG RISK`)
+- Feature numeric properties with no expression binding (`UNBOUND FEATURE DIM`)
 
-The script is authoritative. If it reports violations, fix them via a `macros/*.FCMacro`
-change before saving or committing — never by direct coordinate edits or FCStd XML surgery.
+**IT DOES NOT CHECK FOR DEAD PARAMS.** This file claimed it did — "Params variables
+used nowhere (dead Params)" — and that was simply false; there is no such check in the
+228-line script, and `grep -i "dead\|unused\|varset"` returns nothing. On 2026-09-15 the
+audit passed clean while the VarSet carried **five** unreferenced Params. Dead Params are
+a MANUAL job; macros 42 and 49 are the prior art.
+
+**And "referenced by no expression" is not the same as "dead".** `RampMinWall` is read by
+macro 48's rear-wall guard, never by an expression. A naive sweep would delete it and
+silently remove a safety check. Check whether a MACRO consumes it before removing
+anything.
+
+The script is authoritative for what it checks. If it reports violations, fix them via a
+`macros/*.FCMacro` change before saving or committing — never by direct coordinate edits
+or FCStd XML surgery.
 
 **Baseline at bootstrap (2026-09-13): 19 issues.** Any run reporting more than 19 means the
 change made things worse. **Current target: 0.** The four hand-added fillets regressed it to
@@ -1208,6 +1544,29 @@ bindings; it does not check clearances, swing interference, or gaps. The first p
 failure (4 mm of connection out of 105) happened while the audit was clean. Treat a clean
 audit as necessary, never sufficient — and for anything that moves, measure `distToShape`
 as well as `common().Volume`.
+
+### THE THREE CHECKS THAT PASS WHILE THE MODEL IS WRONG
+
+**0. `o.State` says nothing about shape health. Use `Shape.isValid()`.**
+
+Added 2026-09-15, and it is the one that hid the longest. Nine features in
+`MagicCardBox/Body` carry `Shape.isValid() == False` ("Unorientable shape",
+three also not closed) while every one of them reports `State ['Up-to-date']`.
+Every macro in rounds 8-9 gated on `"Invalid" in o.State` and reported "all
+checks pass"; the audit script never looks at shapes at all; the export gates
+check only the Tip, which really is clean.
+
+```python
+[o.Name for o in body.Group
+ if hasattr(o, "BaseFeature") and not o.Shape.isValid()]   # run this
+o.Shape.check(True)                                        # says WHAT is wrong
+```
+
+The debt is pre-existing and the Tip is valid, so gate on it as a REGRESSION
+(fail if the count grows) rather than pass/fail — `chain_validity()` in macros
+50 and 51 does exactly that. And note the corollary: **a mid-chain feature can
+look broken in the viewport while the part is fine.** Selecting a feature draws
+THAT feature's shape, not the body's.
 
 ### THE TWO CHECKS THAT PASS WHILE THE MODEL IS WRONG
 
@@ -1367,7 +1726,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-44. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-51. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 

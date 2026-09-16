@@ -1,0 +1,101 @@
+# -*- coding: utf-8 -*-
+"""
+47-restore_handdrawn_ramp.FCMacro
+
+SAFETY NET. Recreates Bradley's hand-drawn rear-bottom ramp (Sketch013 ->
+Pocket010) exactly as it was measured on 2026-09-15, before macro 48 rebuilds
+it on tangent constraints.
+
+WHY THIS EXISTS
+  The curve was drawn by hand in the GUI and was NEVER SAVED TO DISK - the
+  FCStd on disk has no Sketch013 and no Pocket010 at all. Macro 48 performs
+  surgery on it. A failed recompute in this project does NOT roll back (defect
+  D5), so "undo it if it goes wrong" is not available; the only recovery is
+  closing without saving, which would ALSO discard the thing being recovered.
+
+  This macro is the recovery path. Run it to put the as-drawn curve back.
+
+THE CURVE, AS DRAWN
+
+    degree 3, non-rational, knots [0, 1, 2] mults [4, 1, 4] - two segments
+    poles: (36, 8)  (35.92, 5.39)  (35.51, 1.96)  (33.59, -0.03)  (29, 0)
+
+    sketch X -> global Y,  sketch Y -> global Z   (verified from the placement)
+
+  Start tangent is P1-P0 = (-0.08, -2.61): essentially VERTICAL, so it meets the
+  rear face with no crease. End tangent is P4-P3 = (-4.59, 0.03): essentially
+  HORIZONTAL, so it lands flat. That flat landing is the one thing macro 48
+  changes - it is what leaves 9 of 25 sampled points under 45 deg.
+
+WHAT IT ACHIEVED (measured on the built solid, for comparison)
+
+    flat down-facing area at z=0     176.9 -> 15.7 mm2
+    rear wall minimum                0.983 mm at z=2 (the floor junction)
+    rear wall at z=4 / z=6 / z=8     1.637 / 1.897 / 2.000
+
+Idempotent: refuses if Sketch013 already exists, so it cannot silently
+duplicate geometry.
+"""
+
+import FreeCAD
+import Part
+import Sketcher
+from FreeCAD import Vector
+
+POLES = [(36.0, 8.0), (35.92, 5.39), (35.51, 1.96), (33.59, -0.03), (29.0, 0.0)]
+MULTS = [4, 1, 4]
+KNOTS = [0.0, 1.0, 2.0]
+DEGREE = 3
+
+LINES = [((29.0, 0.0), (29.0, -2.0)),
+         ((29.0, -2.0), (38.0, -2.0)),
+         ((38.0, -2.0), (38.0, 8.0)),
+         ((38.0, 8.0), (36.0, 8.0))]
+
+# the dimensional constraints as drawn, by (index, type, value) - for reference and
+# for the rebuild to re-apply; the solver recreates the rest from the geometry
+DIMS = [(22, "DistanceY", 2.0), (23, "DistanceX", 2.0), (24, "Distance", 9.0),
+        (25, "Distance", 29.0), (26, "DistanceY", 10.0),
+        (28, "Distance", 2.08), (29, "Distance", 2.49), (30, "Distance", 4.41),
+        (31, "Distance", 1.97), (32, "Distance", 3.96), (33, "Distance", 7.39)]
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    body = mb.getObject("Body")
+
+    if mb.getObject("Sketch013") is not None:
+        raise RuntimeError("Sketch013 already exists - nothing to restore. Delete it "
+                           "first if you really mean to rebuild the as-drawn curve.")
+
+    sk = body.newObject("Sketcher::SketchObject", "Sketch013")
+    sk.AttachmentSupport = [(mb.getObject("Origin").OutList[1], [""])] \
+        if False else [(mb.getObject("YZ_Plane"), [""])]
+    sk.MapMode = "FlatFace"
+
+    for (x0, y0), (x1, y1) in LINES:
+        sk.addGeometry(Part.LineSegment(Vector(x0, y0, 0), Vector(x1, y1, 0)), False)
+    for x, y in POLES:
+        sk.addGeometry(Part.Circle(Vector(x, y, 0), Vector(0, 0, 1), 1.0), True)
+    bs = Part.BSplineCurve()
+    bs.buildFromPolesMultsKnots([Vector(x, y, 0) for x, y in POLES],
+                                MULTS, KNOTS, False, DEGREE,
+                                [1.0] * len(POLES))
+    sk.addGeometry(bs, False)
+    mb.recompute()
+
+    pk = body.newObject("PartDesign::Pocket", "Pocket010")
+    pk.Profile = sk
+    pk.Type = "UpToFace"
+    pk.Midplane = False
+    pk.SideType = "Symmetric"
+    body.Tip = pk
+    mb.recompute()
+
+    print("restored the as-drawn ramp: Sketch013 + Pocket010\n"
+          "NOTE the UpToFace target and the sketch constraints must be re-picked by\n"
+          "hand - this macro restores the GEOMETRY, which is the part that cannot be\n"
+          "re-derived. Constraint values are recorded in DIMS above.")
+
+
+main()

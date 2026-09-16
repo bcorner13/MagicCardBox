@@ -1,0 +1,260 @@
+# -*- coding: utf-8 -*-
+"""
+50-footer_lid_bed_clearance.FCMacro
+
+Print 6 (PETG, black): the lid and the footer ALMOST FUSED where they meet the
+bed. Opens that one gap by 0.12 mm and touches nothing else.
+
+    FooterLidClearance = 0.62    (new)    was 0.50, borrowed from HingeSwingClearance
+
+WHAT ACTUALLY FUSED, MEASURED IN THE PRINT POSE
+
+  Folding the whole lid open 90 deg and probing across the bed plane:
+
+      z = bed+0.02   box reaches y 26.000 | lid starts y 26.500 | gap 0.5000
+      z = bed+0.10   box 26.000 | lid 26.500 | gap 0.5000
+      z = bed+0.20   box 26.000 | lid 26.500 | gap 0.5000
+      z = bed+0.80   box 26.039 | lid 26.526 | gap 0.4870
+
+  A FLAT 0.5000 for the first ~2 mm off the bed - a long parallel slot, both
+  walls printing simultaneously, in PETG. That is the band that welded.
+
+  The two sides are:
+      box   Sketch006.C7 = Depth/2 - HingeAxisFromRear - HingeTabRadius
+                           - HingeSwingClearance            = 26.000
+      lid   (Depth/2 - HingeAxisFromRear) - HingeAxisFromBottom + PanelWrapZ
+                                                             = 26.500
+  so the gap IS HingeSwingClearance, exactly, by construction.
+
+WHY NOT JUST RAISE HingeSwingClearance
+
+  Because it is used in EIGHT places plus two VarSet-internal expressions, and
+  SEVEN of them are inside the hinge - which Bradley reports is good and which
+  must not move:
+
+      Sketch009.C8            sealing rail stop
+      Pocket008.Length2       socket recut
+      SketchHingeWrap.C9/C10  panel inner face, wrap z
+      PocketKnuckleRelief     knuckle relief depth
+      SketchPanelRelief.C9    panel relief
+      Fillet001.Radius        PanelBottomFillet = LidBackThickness - HSC - HTC
+      HingeSocketFlatZ, HingeWrapRadius   (VarSet-internal)
+
+  Raising it to 0.62 would SHRINK PanelBottomFillet 3.1 -> 2.98, which grows the
+  lid's swept envelope and pushes the footer back the other way - the fix
+  fighting itself. This is the same knob CLAUDE.md already caught deciding "how
+  close to the pivot the lid may seat" while meaning "running clearance", and
+  the resolution then was the same: REMOVE THE DEPENDENCE, do not overload it
+  further.
+
+  => One knob, one concern. Only Sketch006.C7 is rebound.
+
+THE HEADROOM THIS SPENDS, AND WHY IT IS SAFE
+
+  Pulling the footer back moves its reach at z=0 from 29.396 to ~29.276, while
+  the ramp lands at RampBottomY 29.0. The landing must stay INSIDE the footer's
+  reach or the unsupported ledge returns, so the margin goes 0.396 -> 0.276 mm.
+  Still positive, and the macro MEASURES it rather than trusting the arithmetic.
+
+  => If FooterLidClearance is ever raised past ~0.88, RampBottomY has to come in
+     with it. The macro fails loudly rather than silently re-growing the ledge.
+
+MATERIAL NOTE. Every clearance in this model was sized for PLA. PETG bonds far
+more readily between layers, and prints 5 and 6 were PETG. 0.5 survived print 5
+and nearly welded on print 6 - the same nominal gap, so the difference is print
+variation, not design drift. 0.62 buys margin against that variation.
+
+Idempotent: safe to re-run.
+"""
+
+import FreeCAD
+import Part
+from FreeCAD import Vector, Rotation, Placement
+
+P = "<<Params>>#VarSet."
+TARGET = 0.62
+CON = 7
+EXPR = (P + "Depth / 2 - " + P + "HingeAxisFromRear - " + P + "HingeTabRadius - "
+        + P + "FooterLidClearance")
+
+
+def chain_validity():
+    """Shape.isValid() per feature, for every body in both documents.
+
+    o.State IS NOT THIS. On 2026-09-15 nine features in MagicCardBox/Body were
+    Invalid as SHAPES while every one of them reported State 'Up-to-date', and
+    every macro in this session gated on State and therefore saw nothing. The
+    debt is pre-existing and the TIP is clean, so this is used as a REGRESSION
+    gate - fail if the count grows - not as a pass/fail on the absolute number.
+    """
+    out = {}
+    for dn, bodies in (("MagicCardBox", ["Body"]), ("Lid", ["Body", "Body001"])):
+        doc = FreeCAD.getDocument(dn)
+        for bn in bodies:
+            b = doc.getObject(bn)
+            if b is None:
+                continue
+            bad = [o.Name for o in b.Group
+                   if hasattr(o, "BaseFeature") and not o.Shape.isValid()]
+            out["%s/%s" % (dn, bn)] = bad
+    return out
+
+
+def bed_gap(boxS, lid90, FH, x=0.0, dz=0.1):
+    z = -FH + dz
+    spans = {}
+    for tag, sh in (("box", boxS), ("lid", lid90)):
+        e = Part.makeLine(Vector(x, 10.0, z), Vector(x, 60.0, z))
+        cc = sh.common(e)
+        if not cc.Edges:
+            return None, None
+        spans[tag] = (min(s.BoundBox.YMin for s in cc.Edges),
+                      max(s.BoundBox.YMax for s in cc.Edges))
+    return round(spans["lid"][0] - spans["box"][1], 4), spans
+
+
+def footer_reach_z0(boxS, x=0.0):
+    e = Part.makeLine(Vector(x, 10.0, 0.0), Vector(x, 45.0, 0.0))
+    cc = boxS.common(e)
+    return round(max(s.BoundBox.YMax for s in cc.Edges), 4) if cc.Edges else None
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    pdoc = FreeCAD.getDocument("Params")
+    vs = pdoc.getObject("VarSet")
+    log, problems = [], []
+
+    if "FooterLidClearance" not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", "FooterLidClearance", "Clearances",
+                       "Gap between the box footer and the folded-open lid WHERE THEY MEET "
+                       "THE BED in the print pose. Its own knob: HingeSwingClearance used to "
+                       "supply it, but that Param also drives seven hinge-internal features "
+                       "and raising it shrinks PanelBottomFillet, which pushes the footer "
+                       "back the other way. Bounded above by RampBottomY - raising this past "
+                       "~0.88 re-grows the unsupported ledge.")
+        log.append("added FooterLidClearance")
+    vs.FooterLidClearance = TARGET
+    pdoc.recompute()
+
+    sk = mb.getObject("Sketch006")
+    c = sk.Constraints[CON]
+    if c.Type != "DistanceX":
+        raise RuntimeError("Sketch006.Constraints[%d] is %s, expected DistanceX - the "
+                           "constraint list has shifted; re-identify before binding"
+                           % (CON, c.Type))
+    before_val = round(c.Value, 4)
+
+    # baseline, before the change
+    boxS0 = mb.getObject("Body").Shape
+    panel0 = ld.getObject("Body001").Shape
+    D2 = float(vs.Depth.Value) / 2.0
+    ay = D2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    FH = float(vs.FooterHeight.Value)
+    lid0 = ld.getObject("Body").Shape.fuse(panel0).removeSplitter()
+    l90 = lid0.copy()
+    l90.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -90),
+                              Vector(0, ay, az)).multiply(l90.Placement)
+    g0, _ = bed_gap(boxS0, l90, FH)
+    reach0 = footer_reach_z0(boxS0)
+    knuckle0 = round(boxS0.distToShape(panel0)[0], 4)
+    valid0 = chain_validity()
+    log.append("shape-invalid features BEFORE: %s"
+               % ({k: len(v) for k, v in valid0.items()},))
+
+    sk.setExpression("Constraints[%d]" % CON, EXPR)
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+    log.append("Sketch006.Constraints[%d] %.4f -> %.4f (bound to FooterLidClearance)"
+               % (CON, before_val, sk.Constraints[CON].Value))
+
+    # ---------------- verify ----------------
+    boxS = mb.getObject("Body").Shape
+    panel = ld.getObject("Body001").Shape
+    plate = ld.getObject("Body").Shape
+    lid = plate.fuse(panel).removeSplitter()
+    lid90 = lid.copy()
+    lid90.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -90),
+                                Vector(0, ay, az)).multiply(lid90.Placement)
+
+    rows = []
+    for dz in (0.02, 0.1, 0.2, 0.4, 0.8):
+        g, _ = bed_gap(boxS, lid90, FH, 0.0, dz)
+        rows.append((round(dz, 2), g))
+    log.append("bed gap before %.4f -> after %s" % (g0, rows))
+    g_new = rows[1][1]
+    if g_new is None or abs(g_new - TARGET) > 1e-3:
+        problems.append("bed gap is %s, expected %.4f" % (g_new, TARGET))
+
+    reach = footer_reach_z0(boxS)
+    margin = round(reach - float(vs.RampBottomY.Value), 4)
+    log.append("footer reach at z=0: %.4f -> %.4f ; RampBottomY %.2f ; margin %.4f"
+               % (reach0, reach, float(vs.RampBottomY.Value), margin))
+    if margin <= 0:
+        problems.append("RAMP LANDING NOW OUTSIDE THE FOOTER (margin %.4f) - the "
+                        "unsupported ledge is back. Bring RampBottomY in." % margin)
+
+    # the hinge must be EXACTLY as printed - Bradley reports it good
+    knuckle = round(boxS.distToShape(panel)[0], 4)
+    log.append("knuckle journal gap %.4f -> %.4f" % (knuckle0, knuckle))
+    if abs(knuckle - knuckle0) > 1e-4:
+        problems.append("HINGE MOVED: journal gap %.4f -> %.4f" % (knuckle0, knuckle))
+
+    gaps = []
+    for deg in (0.0, 4.0, 45.0, 90.0):
+        cc = panel.copy()
+        cc.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                 Vector(0, ay, az)).multiply(cc.Placement)
+        gaps.append((deg, round(boxS.distToShape(cc)[0], 4),
+                     round(boxS.common(cc).Volume, 4)))
+    log.append("panel swing %s" % gaps)
+    if len(set(x for _, x, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing changed: %s" % gaps)
+
+    flat = 0.0
+    for f in boxS.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        if f.normalAt(0, 0).z > -0.99 or abs(f.BoundBox.ZMin) > 1e-6:
+            continue
+        flat += f.Area
+    log.append("flat down-facing at z=0: %.1f mm2" % flat)
+    if flat > 5.0:
+        problems.append("the unsupported ledge is back: %.1f mm2" % flat)
+
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                problems.append("%s/%s %s" % (dn, o.Name, list(st)))
+
+    # REGRESSION gate on SHAPE validity - State never sees this
+    valid1 = chain_validity()
+    log.append("shape-invalid features AFTER:  %s"
+               % ({k: len(v) for k, v in valid1.items()},))
+    for k in valid1:
+        if len(valid1[k]) > len(valid0.get(k, [])):
+            problems.append("SHAPE VALIDITY REGRESSED in %s: %d -> %d  (new: %s)"
+                            % (k, len(valid0.get(k, [])), len(valid1[k]),
+                               sorted(set(valid1[k]) - set(valid0.get(k, [])))))
+    for tag, sh in (("box", boxS), ("plate", plate), ("panel", panel)):
+        if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+            problems.append("%s is not a single valid closed solid" % tag)
+    import MeshPart
+    mm = MeshPart.meshFromShape(Shape=boxS, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    if not mm.isSolid():
+        problems.append("box mesh not watertight")
+    if mm.hasNonManifolds():
+        problems.append("box mesh non-manifold")
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems
+                               else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

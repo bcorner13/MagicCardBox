@@ -1,0 +1,328 @@
+# -*- coding: utf-8 -*-
+"""
+48-rear_wall_and_ramp_params.FCMacro
+
+Two changes that have to happen together:
+
+  A. Binds Bradley's hand-drawn rear-bottom ramp (Sketch013 -> Pocket010) to
+     Params. It was built in the GUI with every dimension a literal.
+  B. Gives the rear wall its own knob, RearWallThickness 2 -> 3.
+
+THEY CANNOT BE SPLIT. Step B moves Depth 72 -> 73, so the rear face goes from
+y = 36 to 36.5. The ramp's frame is hard-coded to 36/38/29, so doing B alone
+would leave the ramp 0.5 mm off the face it is supposed to meet. A is therefore
+applied first and asserted to move NOTHING, then B is applied.
+
+-------------------------------------------------------------------------------
+A. THE RAMP, PARAMETRIZED
+
+  sketch X -> global Y,  sketch Y -> global Z   (verified from the placement)
+
+    RampBottomY   29.0   where the curve lands, inside the footer's reach
+    RampTopZ       8.0   where it meets the rear face
+    RampOvershoot  2.0   how far the cut extends PAST the rear face
+    RampUndercut   2.0   how far it extends BELOW z = 0
+
+  Frame constraints:
+    [25] Distance  = RampBottomY
+    [23] DistanceX = RampOvershoot
+    [24] Distance  = Depth/2 + RampOvershoot - RampBottomY
+    [22] DistanceY = RampUndercut
+    [26] DistanceY = RampTopZ + RampUndercut
+
+  THE SPLINE POLES ARE NAMED BY WHAT THEY ARE, NOT INVENTED FROM PARAMS.
+  Each interior pole is held by two Distance constraints - one to the overshoot
+  line, one to the undercut line - so it is an OFFSET FROM THE FRAME, and the
+  whole curve translates and tracks when Depth moves. That is why binding the
+  frame alone is enough to make the curve parametric:
+
+    RampPole1In 2.08   RampPole1Up 7.39      -> pole at (35.92, 5.39)
+    RampPole2In 2.49   RampPole2Up 3.96      -> pole at (35.51, 1.96)
+    RampPole3In 4.41   RampPole3Up 1.97      -> pole at (33.59, -0.03)
+
+  These six are FREE DESIGN INPUTS - a curve tuned by hand and recorded as such.
+  They are NOT derived, because nothing in the Params lands on them and dressing
+  a hand-tuned number in a derivation that merely evaluates correctly today is
+  the LidTopThickness mistake this project has already paid for twice.
+
+  => THEY MOVE TOGETHER OR THE CURVE STOPS BEING SMOOTH. Editing one pole in
+     isolation puts a kink in a surface whose entire purpose is to be smooth.
+
+-------------------------------------------------------------------------------
+B. RearWallThickness - AND WHY NOT JUST RAISE WallThickness
+
+  WallThickness already means four unrelated things: the box front wall, the
+  hinge neck, the lid's Sketch003 offset, and it DRIVES Depth. Raising it to 3
+  would thicken the front wall, fatten the hinge neck and grow Depth by 2 mm -
+  three unrelated changes to fix one wall. Exactly the reasoning that gave
+  LidTopThickness and SideWallThickness their own knobs.
+
+    Depth = CardWidth + 2*CardClearance + WallThickness + RearWallThickness
+          = 66 + 2 + 2 + 3 = 73          (was 72)
+
+  THE BOX GETS 1 mm DEEPER, and that is the honest cost. The interior must stay
+  68 mm for the cards, so a thicker rear wall pushes the rear face OUT rather
+  than eating card space. Asserted below: interior stays 68.000.
+
+  Sketch003's two cavity faces were BOTH driven by `Depth/2 - WallThickness`.
+  They are now split - front keeps WallThickness, rear takes RearWallThickness.
+
+  WHY IT HELPS THE RAMP. The ramp's binding constraint is that the curve must
+  pass outboard of (cavity face + RampMinWall) at the cavity floor, while
+  landing inside the footer's reach. Moving the cavity face from 34 to 33.5
+  lengthens the available run:
+
+      rear wall 2 mm:  run 34.8 -> 29.0 = 5.8 mm over 2 mm  ->  19.0 deg
+      rear wall 3 mm:  run 34.3 -> 29.5 = 4.8 mm over 2 mm  ->  ~24 deg
+
+  A 45 deg exit remains IMPOSSIBLE and that is geometry, not tuning - see the
+  trade table in the seventh-round notes. You may have any two of {thick rear
+  wall, steep exit, no unsupported ledge}.
+
+  RampMinWall 0.8 is a GUARD, not a driver: the macro measures the built solid
+  and FAILS if the rear wall drops below it. Same species as ChamferWallKeep -
+  a knob whose only job is holding a degenerate case away from zero.
+
+Writes a JSON report: a Depth change recomputes four documents and meshes two
+solids, well past the MCP bridge's 30 s cap.
+
+Idempotent: safe to re-run. Every driving expression is re-asserted on every
+run, outside the create branch.
+"""
+
+import json
+import os
+import traceback
+
+import FreeCAD
+import Part
+import MeshPart
+from FreeCAD import Vector, Rotation, Placement
+
+REPORT = ("/private/tmp/claude-501/-Users-bradleycorner-Documents-3dPrinting-"
+          "Commercial-License-MagicCardBox/1bcbf292-4ad0-43ce-a1f9-e0bd8bc80efa/"
+          "scratchpad/rear_wall.json")
+
+P = "<<Params>>#VarSet."
+
+NEW_PARAMS = [
+    ("RearWallThickness", 3.0, "Box REAR wall. Its own knob because WallThickness also "
+     "drives the front wall, the hinge neck and Depth itself. Raising this pushes the "
+     "rear face OUT (Depth grows); it never eats card space."),
+    ("RampTopZ", 8.0, "Height at which the rear-bottom ramp meets the rear face."),
+    ("RampBottomY", 29.0, "Where the ramp lands. Must stay inside the footer's reach at "
+     "z=0 or an unsupported ledge reappears."),
+    ("RampOvershoot", 2.0, "How far the ramp cut extends past the rear face. Cosmetically "
+     "irrelevant; it only has to clear the material."),
+    ("RampUndercut", 2.0, "How far the ramp cut extends below z=0."),
+    ("RampMinWall", 0.8, "GUARD, not a driver. Minimum rear wall the ramp may leave. The "
+     "macro measures the built solid and refuses if it is breached."),
+    ("RampPole1In", 2.08, "Ramp spline pole 1, inboard from the overshoot line. One of six "
+     "hand-tuned curve inputs - MOVE THEM TOGETHER or the curve kinks."),
+    ("RampPole1Up", 7.39, "Ramp spline pole 1, above the undercut line."),
+    ("RampPole2In", 2.49, "Ramp spline pole 2, inboard from the overshoot line."),
+    ("RampPole2Up", 3.96, "Ramp spline pole 2, above the undercut line."),
+    ("RampPole3In", 4.41, "Ramp spline pole 3, inboard from the overshoot line."),
+    ("RampPole3Up", 1.97, "Ramp spline pole 3, above the undercut line."),
+]
+
+# Sketch013 constraint index -> expression
+RAMP_BINDINGS = {
+    25: P + "RampBottomY",
+    23: P + "RampOvershoot",
+    24: P + "Depth / 2 + " + P + "RampOvershoot - " + P + "RampBottomY",
+    22: P + "RampUndercut",
+    26: P + "RampTopZ + " + P + "RampUndercut",
+    28: P + "RampPole1In",
+    33: P + "RampPole1Up",
+    29: P + "RampPole2In",
+    32: P + "RampPole2Up",
+    30: P + "RampPole3In",
+    31: P + "RampPole3Up",
+}
+
+EXPECT_TYPE = {25: "Distance", 23: "DistanceX", 24: "Distance", 22: "DistanceY",
+               26: "DistanceY", 28: "Distance", 33: "Distance", 29: "Distance",
+               32: "Distance", 30: "Distance", 31: "Distance"}
+
+
+def measure():
+    """Everything this change could plausibly break, in one place."""
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    boxS = mb.getObject("Body").Shape
+    D2 = float(vs.Depth.Value) / 2.0
+    m = {"Depth": round(float(vs.Depth.Value), 4),
+         "Height": round(float(vs.Height.Value), 4),
+         "box_mm3": round(boxS.Volume, 2)}
+
+    # Interior must stay 68 for the cards.
+    # PROBE AT x=30, NOT x=0. The finger slot cuts the rear wall clean through for
+    # |x| < FingerSlotWidth/2, so a probe on the centreline finds only ONE span and
+    # reports no interior at all - which is how this gate false-failed on first run.
+    # x=30 is clear of the slot and lands between flutes, so the front wall reads its
+    # true 2.0 rather than 1.38 where a flute has taken FluteDepth out of it.
+    e = Part.makeLine(Vector(30.0, -D2 - 1, 20.0), Vector(30.0, D2 + 1, 20.0))
+    cc = boxS.common(e)
+    segs = sorted((round(s.BoundBox.YMin, 4), round(s.BoundBox.YMax, 4)) for s in cc.Edges)
+    merged = []
+    for a, b in segs:                       # face boundaries split the probe line
+        if merged and abs(a - merged[-1][1]) < 1e-6:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    m["y_solid_spans_at_z20"] = merged
+    if len(merged) >= 2:
+        m["interior_depth"] = round(merged[1][0] - merged[0][1], 4)
+        m["front_wall"] = round(merged[0][1] - merged[0][0], 4)
+        m["rear_wall_at_z20"] = round(merged[-1][1] - merged[-1][0], 4)
+
+    # rear wall down the ramp region, clear of the finger slot and the knuckles
+    inner = D2 - float(vs.RearWallThickness.Value) if "RearWallThickness" in vs.PropertiesList \
+        else D2 - float(vs.WallThickness.Value)
+    prof = []
+    for i in range(0, 25):
+        z = 2.0 + i * 0.25
+        e = Part.makeLine(Vector(20.0, inner + 0.001, z), Vector(20.0, 45.0, z))
+        cc = boxS.common(e)
+        if cc.Edges:
+            prof.append((round(z, 2), round(max(s.BoundBox.YMax for s in cc.Edges) - inner, 3)))
+    m["ramp_wall_profile"] = prof[::4]
+    m["ramp_wall_min"] = min(prof, key=lambda r: r[1]) if prof else None
+
+    # the thing the whole ramp exists to kill
+    flat = 0.0
+    for f in boxS.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        if f.normalAt(0, 0).z > -0.99 or abs(f.BoundBox.ZMin) > 1e-6:
+            continue
+        flat += f.Area
+    m["flat_down_facing_at_z0_mm2"] = round(flat, 1)
+
+    plate = ld.getObject("Body").Shape
+    panel = ld.getObject("Body001").Shape
+    m["solids_ok"] = all(s.isValid() and s.isClosed() and len(s.Solids) == 1
+                         for s in (boxS, plate, panel))
+    ay = D2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 4.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    m["swing"] = gaps
+    return m
+
+
+out = {"phaseA": None, "phaseB": None, "problems": [], "error": None}
+try:
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    pdoc = FreeCAD.getDocument("Params")
+    vs = pdoc.getObject("VarSet")
+    sk = mb.getObject("Sketch013")
+    if sk is None:
+        raise RuntimeError("Sketch013 is gone - run macro 47 to restore the ramp first")
+
+    for name, val, doc in NEW_PARAMS:
+        if name not in vs.PropertiesList:
+            vs.addProperty("App::PropertyLength", name, "Ramp" if name.startswith("Ramp")
+                           else "Geometry", doc)
+            setattr(vs, name, val)
+    pdoc.recompute()
+
+    # ---------- PHASE A: bind the ramp, assert it moves nothing ----------
+    before = measure()
+    for idx, expr in RAMP_BINDINGS.items():
+        c = sk.Constraints[idx]
+        if c.Type != EXPECT_TYPE[idx]:
+            raise RuntimeError("Sketch013.Constraints[%d] is %s, expected %s - the "
+                               "constraint list has shifted; re-identify before binding"
+                               % (idx, c.Type, EXPECT_TYPE[idx]))
+        sk.setExpression("Constraints[%d]" % idx, expr)
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+    afterA = measure()
+    out["phaseA"] = {"box_mm3_before": before["box_mm3"], "box_mm3_after": afterA["box_mm3"],
+                     "drift": round(afterA["box_mm3"] - before["box_mm3"], 4),
+                     "fully_constrained": sk.FullyConstrained}
+    if abs(afterA["box_mm3"] - before["box_mm3"]) > 1e-3:
+        out["problems"].append("PHASE A MOVED GEOMETRY: %.4f mm3 - binding must be a no-op"
+                               % (afterA["box_mm3"] - before["box_mm3"]))
+    if not sk.FullyConstrained:
+        out["problems"].append("Sketch013 is no longer fully constrained")
+
+    # ---------- PHASE B: split the rear wall off WallThickness ----------
+    vs.setExpression("Depth", "CardWidth + 2 * CardClearance + WallThickness "
+                              "+ RearWallThickness")
+    sk3 = mb.getObject("Sketch003")
+    # [8] and [9] were BOTH Depth/2 - WallThickness; identify the rear one by which
+    # constraint moves the +Y face, rather than trusting the index order
+    rear_idx = None
+    for idx in (8, 9):
+        g = sk3.Geometry
+        rear_idx = idx if sk3.Constraints[idx].Value > 0 else rear_idx
+    # both are positive magnitudes; disambiguate by the geometry they constrain
+    cand = []
+    for idx in (8, 9):
+        c = sk3.Constraints[idx]
+        gi = c.First
+        try:
+            gg = sk3.Geometry[gi]
+            xs = [gg.StartPoint.x, gg.EndPoint.x]
+            cand.append((idx, max(xs)))
+        except Exception:
+            cand.append((idx, 0.0))
+    cand.sort(key=lambda r: r[1])
+    front_idx, rear_idx = cand[0][0], cand[1][0]
+    out["cavity_faces"] = {"front_constraint": front_idx, "rear_constraint": rear_idx,
+                           "probe": cand}
+    sk3.setExpression("Constraints[%d]" % rear_idx, P + "Depth / 2 - " + P + "RearWallThickness")
+    sk3.setExpression("Constraints[%d]" % front_idx, P + "Depth / 2 - " + P + "WallThickness")
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+
+    afterB = measure()
+    out["phaseB"] = afterB
+
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                out["problems"].append("%s/%s %s" % (dn, o.Name, list(st)))
+    if not afterB["solids_ok"]:
+        out["problems"].append("a body is not a single valid closed solid")
+    if abs(afterB.get("interior_depth", 0) - 68.0) > 1e-3:
+        out["problems"].append("interior depth %s != 68.000 - the cards no longer fit"
+                               % afterB.get("interior_depth"))
+    mw = afterB.get("ramp_wall_min")
+    if mw and mw[1] < float(vs.RampMinWall.Value):
+        out["problems"].append("RAMP GUARD: rear wall %.3f at z=%.2f, below RampMinWall %.3f"
+                               % (mw[1], mw[0], float(vs.RampMinWall.Value)))
+    g = afterB["swing"]
+    if len(set(x for _, x, _ in g)) != 1 or any(v > 1e-4 for _, _, v in g):
+        out["problems"].append("panel swing changed: %s" % g)
+
+    boxS = mb.getObject("Body").Shape
+    for tag, sh in (("box", boxS), ("plate", ld.getObject("Body").Shape)):
+        mm = MeshPart.meshFromShape(Shape=sh, LinearDeflection=0.1,
+                                    AngularDeflection=0.5, Relative=False)
+        if not mm.isSolid():
+            out["problems"].append("%s mesh not watertight" % tag)
+        if mm.hasNonManifolds():
+            out["problems"].append("%s mesh non-manifold" % tag)
+except Exception:
+    out["error"] = traceback.format_exc()[-1500:]
+finally:
+    out["all_ok"] = not out["problems"] and out["error"] is None
+    try:
+        os.makedirs(os.path.dirname(REPORT), exist_ok=True)
+        with open(REPORT, "w") as fh:
+            json.dump(out, fh, indent=1)
+    except Exception:
+        pass
+    print(json.dumps(out, indent=1)[:3000])
