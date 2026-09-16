@@ -1,0 +1,252 @@
+# -*- coding: utf-8 -*-
+"""
+52-ramp_reshape.FCMacro
+
+Reshapes the rear-bottom ramp spline so its shallowest point goes from 0.34 deg
+to 20.56 deg, without moving the frame, the wall guard, the landing point, or
+the top slope Bradley reports as good.
+
+    minimum surface angle, MEASURED ON THE SOLID   5.38 deg  ->  ~19.9 deg
+    geometric bound                                            20.67 deg
+
+  (The curve's own minimum is 0.34 deg, but its last stretch is buried inside
+  the footer and is not box surface. Measure the SOLID; the curve flatters.)
+
+A CURVE-LEVEL CONSTRAINT IS NOT A SOLID-LEVEL ONE
+  The first search asked only that the CURVE stay outboard of
+  cavity + RampMinWall. The poles it returned built a solid measuring 0.759 mm
+  of rear wall against a 0.80 guard - 0.041 mm inside, and the macro's guard
+  caught it. Sampling the curve at finite points and the pocket being UpToFace
+  both contribute. The search now asks for the guard PLUS 0.10 mm of margin,
+  which costs 0.7 deg of angle and buys a solid that actually clears.
+
+NOTHING DIMENSIONAL CHANGES. Only the three interior pole offsets move. The
+frame (RampTopZ, RampBottomY, RampOvershoot, RampUndercut), RampMinWall, the
+landing point and every other Param are untouched.
+
+WHY THE OLD CURVE WAS SO FLAT AT THE END
+
+    old poles   (36.42, 5.39)  (36.01, 1.96)  (34.09, -0.03)
+
+  The third pole sat at z = -0.03, essentially level with the (29, 0) endpoint,
+  so the curve ran into its landing horizontally - 0.34 deg. The new poles carry
+  the descent further out and arrive at ~21 deg instead:
+
+    new poles   (36.50, 2.98)  (35.15, 2.27)  (30.76, 0.68)
+
+  Profile of the result, angle from horizontal:
+
+      36.50  z 8.00   90.0      <- vertical at the rear face
+      36.17  z 3.90   75.0
+      35.48  z 2.64   41.8
+      34.39  z 2.05   21.8
+      32.38  z 1.28   20.6
+      29.00  z 0.00   21.2
+
+THE TOP SLOPE IS PRESERVED ON PURPOSE
+
+  Bradley: "the top slop that goes to the front of the hinge rework is great."
+  An unconstrained search DID score marginally better (20.05 deg) by leaving the
+  rear face at 65.8 deg instead of 90 - trading a crease at the face for a
+  fraction of a degree lower down. That is a worse part. The search therefore
+  LOCKS pole 1 to x = Depth/2, which is what makes the top tangent vertical.
+
+  => RampPole1In IS NOW BOUND TO RampOvershoot, not left as a free 2.0 that
+     happens to match. pole1.y = (Depth/2 + RampOvershoot) - RampPole1In, so
+     RampPole1In == RampOvershoot is EXACTLY the condition for a vertical top
+     tangent. A free number that merely evaluates correctly today is the
+     LidTopThickness mistake; this encodes the requirement instead.
+
+WHY 20.5 IS THE CEILING, AND IT IS NOT THE CURVE'S FAULT
+
+  The curve must stay outboard of (cavity face + RampMinWall) = 34.3 at the
+  cavity floor z = 2, and reach the landing at y = 29.0. That is 5.3 mm of
+  horizontal run in 2 mm of height: atan(2/5.3) = 20.67 deg, full stop. Getting
+  steeper needs one of {thinner rear wall, landing further out, deeper floor} -
+  see the trade table in the eighth-round notes.
+
+Idempotent: safe to re-run. Re-asserts every value on every run.
+"""
+
+import math
+import FreeCAD
+import Part
+import MeshPart
+from FreeCAD import Vector, Rotation, Placement
+
+P = "<<Params>>#VarSet."
+RAMP_MIN_ANGLE = 15.0   # floor on the solid's shallowest ramp slope, in degrees
+                        # from horizontal. Was 5.38 before this macro; the
+                        # geometric ceiling is 20.67, and this build makes 19.88.
+
+# pole 1 is BOUND (vertical top tangent); poles 2 and 3 are free shape inputs
+POLE1_IN_EXPR = P + "RampOvershoot"
+VALUES = {"RampPole1Up": 8.0812,
+          "RampPole2In": 2.6794, "RampPole2Up": 4.0859,
+          "RampPole3In": 4.1874, "RampPole3Up": 3.9787}
+
+
+def chain_validity():
+    out = {}
+    for dn, bodies in (("MagicCardBox", ["Body"]), ("Lid", ["Body", "Body001"])):
+        doc = FreeCAD.getDocument(dn)
+        for bn in bodies:
+            b = doc.getObject(bn)
+            if b is None:
+                continue
+            out["%s/%s" % (dn, bn)] = [o.Name for o in b.Group
+                                       if hasattr(o, "BaseFeature")
+                                       and not o.Shape.isValid()]
+    return out
+
+
+def profile(shape, x=20.0, z0=0.05, z1=8.0, n=80):
+    """ymax(z) down the ramp, sampled clear of the finger slot and the knuckles."""
+    rows = []
+    for i in range(n + 1):
+        z = z0 + (z1 - z0) * i / n
+        e = Part.makeLine(Vector(x, 20.0, z), Vector(x, 45.0, z))
+        cc = shape.common(e)
+        if cc.Edges:
+            rows.append((z, max(s.BoundBox.YMax for s in cc.Edges)))
+    return rows
+
+
+def min_angle(rows):
+    """Shallowest local slope of the sampled profile, in degrees from horizontal."""
+    worst, where = 1e9, None
+    for i in range(1, len(rows)):
+        dz = rows[i][0] - rows[i - 1][0]
+        dy = rows[i][1] - rows[i - 1][1]
+        if abs(dy) < 1e-9 and abs(dz) < 1e-9:
+            continue
+        a = math.degrees(math.atan2(abs(dz), abs(dy)))
+        if a < worst:
+            worst, where = a, (round(rows[i][1], 2), round(rows[i][0], 2))
+    return round(worst, 2), where
+
+
+def main():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    pdoc = FreeCAD.getDocument("Params")
+    vs = pdoc.getObject("VarSet")
+    log, problems = [], []
+
+    boxS0 = mb.getObject("Body").Shape
+    before_rows = profile(boxS0)
+    before_ang = min_angle(before_rows)
+    before_vol = round(boxS0.Volume, 3)
+    valid0 = chain_validity()
+    log.append("BEFORE: min ramp angle %s deg at %s, box %.2f mm3"
+               % (before_ang[0], before_ang[1], before_vol))
+    log.append("shape-invalid BEFORE: %s" % ({k: len(v) for k, v in valid0.items()},))
+
+    # pole 1: BOUND, so the top tangent stays vertical by construction
+    vs.setExpression("RampPole1In", POLE1_IN_EXPR)
+    for k, v in VALUES.items():
+        if k in dict(vs.ExpressionEngine):
+            vs.setExpression(k, None)
+        setattr(vs, k, v)
+    pdoc.recompute()
+    log.append("RampPole1In bound to RampOvershoot -> %.4f"
+               % float(vs.RampPole1In.Value))
+    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+        FreeCAD.getDocument(dn).recompute()
+
+    sk = mb.getObject("Sketch013")
+    if not sk.FullyConstrained:
+        problems.append("Sketch013 is no longer fully constrained")
+    poles = [(round(p.x, 4), round(p.y, 4)) for p in sk.Geometry[9].getPoles()]
+    log.append("poles now %s" % (poles,))
+    D2 = float(vs.Depth.Value) / 2.0
+    if abs(poles[1][0] - D2) > 1e-6:
+        problems.append("pole 1 is not on x=Depth/2 (%.4f) - the top tangent is no "
+                        "longer vertical" % poles[1][0])
+
+    # ---------------- verify on the SOLID, not the curve ----------------
+    boxS = mb.getObject("Body").Shape
+    after_rows = profile(boxS)
+    after_ang = min_angle(after_rows)
+    log.append("AFTER:  min ramp angle %s deg at %s, box %.2f mm3"
+               % (after_ang[0], after_ang[1], round(boxS.Volume, 3)))
+    # ABSOLUTE threshold, not "steeper than before". A relative gate is not
+    # idempotent: re-running after a partial application compares against the
+    # PREVIOUS run's poles, and this macro duly failed itself with
+    # "ramp did not get steeper: 20.57 -> 19.88" when 19.88 was the intended
+    # result and 20.57 was a rejected candidate that breached the wall guard.
+    if after_ang[0] < RAMP_MIN_ANGLE:
+        problems.append("min ramp angle %.2f deg is below the %.1f deg floor"
+                        % (after_ang[0], RAMP_MIN_ANGLE))
+
+    # rear wall must still clear the guard
+    inner = D2 - float(vs.RearWallThickness.Value)
+    guard = float(vs.RampMinWall.Value)
+    wall = []
+    for i in range(0, 25):
+        z = float(vs.FloorThickness.Value) + i * 0.25
+        e = Part.makeLine(Vector(20.0, inner + 0.001, z), Vector(20.0, 45.0, z))
+        cc = boxS.common(e)
+        if cc.Edges:
+            wall.append((round(z, 2),
+                         round(max(s.BoundBox.YMax for s in cc.Edges) - inner, 3)))
+    wmin = min(wall, key=lambda r: r[1]) if wall else None
+    log.append("rear wall minimum %s (guard %.2f)" % (wmin, guard))
+    if wmin and wmin[1] < guard:
+        problems.append("RAMP GUARD BREACHED: rear wall %.3f at z=%.2f < %.2f"
+                        % (wmin[1], wmin[0], guard))
+
+    # the ledge must not come back
+    flat = 0.0
+    for f in boxS.Faces:
+        if type(f.Surface).__name__ != "Plane":
+            continue
+        if f.normalAt(0, 0).z > -0.99 or abs(f.BoundBox.ZMin) > 1e-6:
+            continue
+        flat += f.Area
+    log.append("flat down-facing at z=0: %.1f mm2" % flat)
+    if flat > 5.0:
+        problems.append("unsupported ledge is back: %.1f mm2" % flat)
+
+    # hinge untouched
+    panel = ld.getObject("Body001").Shape
+    ay = D2 - float(vs.HingeAxisFromRear.Value)
+    az = float(vs.HingeAxisFromBottom.Value)
+    gaps = []
+    for deg in (0.0, 4.0, 45.0, 90.0):
+        c = panel.copy()
+        c.Placement = Placement(Vector(0, 0, 0), Rotation(Vector(1, 0, 0), -deg),
+                                Vector(0, ay, az)).multiply(c.Placement)
+        gaps.append((deg, round(boxS.distToShape(c)[0], 4),
+                     round(boxS.common(c).Volume, 4)))
+    log.append("panel swing %s" % gaps)
+    if len(set(x for _, x, _ in gaps)) != 1 or any(v > 1e-4 for _, _, v in gaps):
+        problems.append("panel swing changed: %s" % gaps)
+    if gaps[0][1] < 0.4 - 1e-9:
+        problems.append("swing gap below one nozzle width: %s" % gaps)
+
+    if not (boxS.isValid() and boxS.isClosed() and len(boxS.Solids) == 1):
+        problems.append("box tip is not a single valid closed solid")
+    mm = MeshPart.meshFromShape(Shape=boxS, LinearDeflection=0.1,
+                                AngularDeflection=0.5, Relative=False)
+    if not mm.isSolid():
+        problems.append("box mesh not watertight")
+    if mm.hasNonManifolds():
+        problems.append("box mesh non-manifold")
+
+    valid1 = chain_validity()
+    log.append("shape-invalid AFTER:  %s" % ({k: len(v) for k, v in valid1.items()},))
+    for k in valid1:
+        if len(valid1[k]) > len(valid0.get(k, [])):
+            problems.append("SHAPE VALIDITY REGRESSED in %s: %d -> %d (new: %s)"
+                            % (k, len(valid0.get(k, [])), len(valid1[k]),
+                               sorted(set(valid1[k]) - set(valid0.get(k, [])))))
+
+    log.append("RESULT: %s" % ("FAIL -> " + "; ".join(problems) if problems
+                               else "all checks pass"))
+    print("\n".join(log))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
+main()

@@ -898,6 +898,82 @@ After: the departure from the circle begins at -40 deg and ramps 0.003 ->
 - **Creality's gcode lands in temp whether or not the export succeeds** — recover it from
   `.../crealityprint_model/<Day>/<HH_MM_SS>#<pid>#<n>/Metadata/.<pid>.N.gcode`.
 
+---
+
+## TENTH ROUND — 2026-09-16 — the ramp reshape (macro 52)
+
+The frame was never the limit; the CURVE was. Same frame, same wall guard, same
+landing, same `RampMinWall`, **no dimensional change whatsoever** — only the
+three interior spline poles moved:
+
+```
+old poles   (36.42, 5.39)  (36.01, 1.96)  (34.09, -0.03)
+new poles   (36.50, 6.08)  (35.82, 2.09)  (34.31,  1.98)
+
+min ramp angle, MEASURED ON THE SOLID   5.38 deg -> 19.88 deg
+geometric ceiling                                   20.67 deg
+rear wall minimum                       1.982 -> 0.853 mm  (guard 0.80)
+```
+
+The old third pole sat at `z = -0.03`, level with the `(29, 0)` endpoint, so the
+curve ran into its landing horizontally. The new one carries the descent outward
+and arrives at ~21 deg.
+
+### THE PAYOFF IS A REDISTRIBUTION, NOT A REDUCTION — say so
+
+```
+overhang band    before    after
+< 20 deg          410.7      0.0     <- eliminated
+20-30               0.0   1191.8
+30-45             240.2      0.0
+45-60             698.9    698.9
+> 60              128.7    128.7
+TOTAL            1515.3   2019.4     <- went UP
+```
+
+Everything under 20 deg is gone, and total unsupported area **rose 33 %** because
+a surface descending steadily at 20 deg is longer than one that collapses to
+flat. That is the right trade given print 5's finding that curved, steeper
+overhangs print while flat ones droop — but the total going up is a real cost
+and belongs in the record, not buried under the headline.
+
+### MEASURE THE SOLID. THE CURVE FLATTERS.
+
+The spline's own minimum angle is **0.34 deg**; the solid's is **5.38 deg**. The
+difference is that the curve's last stretch is buried inside the footer and is
+not box surface at all. Optimising or reporting against the curve overstates
+both the problem and the fix.
+
+### A CURVE-LEVEL CONSTRAINT IS NOT A SOLID-LEVEL ONE
+
+The first search asked only that the CURVE stay outboard of
+`cavity + RampMinWall`. Its winning poles built a solid measuring **0.759 mm** of
+rear wall against the 0.80 guard — 0.041 mm inside, caught by macro 52's guard.
+Finite sampling and the pocket being `UpToFace` both contribute. The search now
+adds **0.10 mm of margin**, costing 0.7 deg of angle and buying a solid that
+actually clears.
+
+### AN UNCONSTRAINED SEARCH WILL TRADE AWAY WHAT YOU LIKE
+
+Left free, the optimiser scored marginally BETTER (20.05 deg) by leaving the rear
+face at **65.8 deg instead of 90** — putting a crease exactly where Bradley had
+said the result was good, to buy half a degree lower down. Pole 1 is now locked
+to `x = Depth/2`.
+
+**`RampPole1In` is BOUND to `RampOvershoot`.** Since
+`pole1.y = (Depth/2 + RampOvershoot) - RampPole1In`, the equality
+`RampPole1In == RampOvershoot` **is** the vertical-top-tangent condition. Leaving
+it as a free 2.0 that happens to match would be the `LidTopThickness` mistake a
+fourth time.
+
+### A RELATIVE GATE IS NOT IDEMPOTENT
+
+Macro 52 first gated on "steeper than before" and then **failed itself** —
+`ramp did not get steeper: 20.57 -> 19.88` — where 19.88 was the intended result
+and 20.57 was a rejected candidate that had breached the wall guard on the prior
+run. Re-running compares against whatever the model currently holds, not the
+original. Gate on an ABSOLUTE floor (`RAMP_MIN_ANGLE` 15.0) and log the delta.
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -1444,8 +1520,10 @@ middle of the plate instead of its surface.
   the curve is offsets from it, which is why the whole thing tracks `Depth`:
   `RampBottomY` 29.0 (where it lands — must stay inside the footer's reach at z=0 or the
   ledge returns), `RampTopZ` 8.0, `RampOvershoot` 2.0, `RampUndercut` 2.0,
-  `RampPole1In/Up` 2.08/7.39, `RampPole2In/Up` 2.49/3.96, `RampPole3In/Up` 4.41/1.97
-  (**hand-tuned curve inputs — MOVE THEM TOGETHER or the curve kinks**),
+  `RampPole1In` **BOUND to `RampOvershoot`** (that equality IS the vertical-top-tangent
+  condition — see the tenth round; do not free it), `RampPole1Up` 8.0812,
+  `RampPole2In/Up` 2.6794/4.0859, `RampPole3In/Up` 4.1874/3.9787 — **optimised by macro
+  52, not hand-tuned; MOVE THEM TOGETHER or the curve kinks**,
   `RampMinWall` **0.8 — a GUARD, not a driver**: no expression references it; macro 48
   measures the built solid's rear wall against it and refuses if breached. Do not "clean it
   up" as a dead Param.
@@ -1726,7 +1804,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-51. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-52. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
