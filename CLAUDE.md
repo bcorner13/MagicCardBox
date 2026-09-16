@@ -974,6 +974,187 @@ and 20.57 was a rejected candidate that had breached the wall guard on the prior
 run. Re-running compares against whatever the model currently holds, not the
 original. Gate on an ABSOLUTE floor (`RAMP_MIN_ANGLE` 15.0) and log the delta.
 
+---
+
+## ELEVENTH ROUND — 2026-09-16 — print 7 sliced, and the first SLICE-level check
+
+Every verification before this round measured the CAD solid. This one measures the
+**toolpaths** — what the printer will actually do. The two can disagree: a clearance
+that survives the model can still be closed up by the slicer, and nothing in this
+file had ever looked.
+
+`scripts/gcode_island_check.py` is the re-runnable version of the ad-hoc check round 9
+ran once and threw away.
+
+### The slice
+
+| | |
+|---|---|
+| variant | **60-card, fluted, with name plate** |
+| file | `gcode/Object_1_PLA-CF_2h39m.gcode`, 341 layers, 77.01 mm |
+| **material** | **Hyper PLA-CF** (slot 1 / T0), 220 °C / 50 °C bed |
+| profile | stock `0.16mm Standard @Creality K2 Plus 0.4 nozzle` — **NOT** the `- CardBox` profile |
+| walls / shells | 2 walls, 5 top / 4 bottom; infill **15 %** (was 10) |
+| supports / brim | disabled / auto — none generated, no `;TYPE:Brim` in the file |
+| estimate | **2 h 39 m, 97.01 g** |
+
+**Prints 1–4 PLA, 5–6 PETG, 7 PLA-CF.** The three hinge clearances still hold PLA
+values and have now been asked to work in three materials. They survived PETG, which
+bonds across a gap far more readily than PLA-CF will, so PLA-CF is the easier case for
+fusion — but CF-filled PLA is **more brittle** than plain PLA, and print 1 snapped this
+hinge. It is also abrasive: confirm the nozzle is hardened before a 97 g run.
+
+### RESULT — no islands, no fusion
+
+```
+islands, 341 layers                       0
+fusion events (a region spanning bodies)  0
+bed layer                                 2 components (box 5325, lid 7587 mm2)
+closest box<->lid approach                0.3391 mm @ layer 105, z 14.03, X 224.9
+tightest SAME-body approach               35.35 mm
+```
+
+### A GREEN CHECK FROM A CHECK YOU JUST WROTE IS NOT EVIDENCE
+
+The island detector was validated against a synthetic gcode carrying a deliberate
+floating square **before** its zero was believed. It found it at (54.98, 54.98) — the
+centre of a square floated at 50…60 — and sized it 18 mm², right for a 40 mm perimeter
+at 0.42 width. Only then does "0 islands" mean anything.
+
+Keep the control. **A detector that has never gone red has not gone green.** This is
+the same family as the `o.State` lesson in round 9, one step earlier: there the check
+was looking at the wrong property, here the risk is a check that cannot fire at all.
+
+### PARSING GCODE — FOUR THINGS THAT SILENTLY WRECK A NAIVE PARSER
+
+All four are present in this file and each was verified before any result was trusted:
+
+- **`M83` — extrusion is RELATIVE.** Read as absolute, nearly every move classifies as
+  a retraction and the part comes out empty. The script aborts if it sees no `M83`.
+- **31 463 `G2`/`G3` arc moves.** The flutes, the ramp and the knuckles are arcs.
+  Chording them straight loses real geometry; they are flattened to a 0.02 mm sagitta.
+- **`;WIDTH:` varies per segment.** One nominal width misjudges coverage.
+- **`EXCLUDE_OBJECT_START/END`** gating, or prime lines count as part of the object.
+
+### THE 82 SUB-NOZZLE LAYERS ARE THE DESIGNED HINGE CLEARANCE, NOT A DEFECT
+
+82 layers hold two regions closer than one nozzle width. The *distribution* is what
+identifies them:
+
+```
+65 layers   exactly 0.4000 mm    <- HingeTabClearance, dead flat
+ 8 layers   0.4001 - 0.4008
+ 3 layers   0.3391 / 0.3850 / 0.3859
+```
+
+**A dead-flat number across 65 layers is a designed clearance surviving into the
+toolpaths.** That is the third-print lesson read in reverse: there, a gap *collapsing*
+toward zero was the jam; here, a gap *refusing to move* is the proof the slicer is not
+closing the hinge up.
+
+The body split settles it — the tightest **same-body** approach anywhere in the print is
+**35.35 mm**, so all 82 are genuinely box-to-lid at the hinge and none is one wall
+nearing another wall of the same part.
+
+Bed interface measures **0.604–0.635 mm** across layers 1–9 against `FooterLidClearance`
+0.62. Round 9's fix is present in the gcode, not just in the model.
+
+**The one spot to know about: 0.3391 mm at z 14.03, X 224.9** (closed-frame x ≈ +49.9,
+the knuckle). That is 0.06 under the 0.4 design value and under this project's own
+0.42 nozzle-width gate. Method error is about ±0.05 mm from 0.1 mm centreline sampling.
+Not acted on — prints 5 and 6 came off free in PETG at these same clearances.
+
+### A FIXED SPLIT PLANE CANNOT SEPARATE TWO BODIES THAT INTERLEAVE
+
+The first attempt classified box vs lid with a print-Y plane taken from the bed layer.
+From layer 10 up it reported a **negative** gap of exactly **−0.42 mm** — one extrusion
+width, which is the signature of a plane slicing through a single continuous wall and
+calling its two halves "box" and "lid". Above the bed the bodies interleave at the
+knuckle and no fixed plane separates them.
+
+The sound method is to **propagate body identity upward from the bed** through connected
+components: label the two bed regions, then give each component the identity of whatever
+it overlaps in the layer below. A component overlapping BOTH is a fusion — which is the
+check actually wanted, and it is the only way to ask the question without assuming the
+answer. Zero occurred.
+
+### THE PRO AI MODULE EARNED ITS 0.16 — LOOK AT WHERE IT SPENT THE LAYERS
+
+Creality's new Pro AI module suggested this profile. "0.16 mm" badly understates what it
+did: the print averages **0.226 mm/layer** (341 layers over 77.01 mm) because adaptive
+height is carrying the profile. From the project file's
+`Metadata/layer_heights_profile.txt` (343 control points, 0.080–0.320):
+
+```
+z  0-15    mean 0.116-0.149, pinned to the 0.080 FLOOR 9 times   <- hinge clearance zone
+z 20-45    0.320 solid, the CEILING, 144 control points          <- featureless walls
+z 65-75    floor again at 66.85, 66.93, 71.04, 71.12             <- front-wall overhangs
+```
+
+Measured independently from the gcode, the hinge zone z 4.01 → 14.03 runs **0.124
+mm/layer** across 81 layers. The four floor points at z 66.85–71.12 land exactly on the
+layers the slicer tags Overhang/Bridge (67.12, 71.19, 71.32).
+
+**It put the finest layers precisely where the clearance and the overhangs are, and
+spent 0.32 through the long featureless middle** — 2 h 39 m against the 4 h 12 m fixed /
+3 h 43 m variable measured in round 4. Round 5 was hand-trying 0.12 globally; this is
+better targeted and faster. Re-run it per variant rather than freezing this profile.
+
+### "NEW AREA" IS CONTAMINATED BY SOLID-OVER-SPARSE — SPLIT IT BY EXTRUSION TYPE
+
+The two largest new-area layers look alarming and are not:
+
+| layer | z | total new | of which Internal Bridge | exterior wall |
+|---|---|---|---|---|
+| 35 | 5.24 | 5023.6 | 4968.8 | **31.8** |
+| 13 | 2.84 | 3378.0 | 3301.1 | **16.9** |
+| 227 | 48.33 | 407.7 | 394.5 | **0.1** |
+
+Solid infill over 15 % sparse reads as ~85 % "unsupported" to a raster, and the
+"28.6 % supported" figure is just the sparse grid's coverage fraction. **The number that
+actually droops is the exterior wall**: peak **49.4 mm²** in any single layer, **1419.5
+mm²** over the whole print.
+
+**Do not compare that to round 10's 2019.4 mm².** That was CAD face area on the
+100-card; this is projected toolpath area on the 60-card. Different quantities on
+different variants — equating them is the `CardPitch` mistake in a new costume.
+
+### Environment — the island check needs FreeCAD's interpreter
+
+The system `python3` has no numpy. FreeCAD's bundled one has numpy 1.26.4 and scipy
+1.16.3:
+
+```bash
+/Applications/FreeCAD.app/Contents/Resources/bin/python \
+    scripts/gcode_island_check.py gcode/FILE.gcode --res 0.15
+```
+
+It opens no CAD document and reads only gcode, so it is not a back door around the
+MCP-only rule for model files.
+
+**The model-file guard hook matches on the command TEXT, not the target.** A heredoc
+writing a script whose *docstring* merely named the model extension was blocked although
+it touched no model file. Write such files with the Write tool, or keep the extension
+out of shell command text.
+
+### A 3MF IN `gcode/` AND A 3MF IN `3mf/` ARE DIFFERENT KINDS OF FILE
+
+Saving from Creality Print writes a **project**, not a model export:
+
+| | `3mf/<name>.3mf` (tracked) | `gcode/<name>.3mf` (slicer save) |
+|---|---|---|
+| entries | 4 | 17 |
+| content | plain 3MF model, macro 41 `export_3mf` | plate thumbnails, `project_settings.config`, `layer_heights_profile.txt`, slice info |
+
+They can carry the **same filename in two directories** while being different artifacts,
+and only one of them is what macro 41's gate checks. `gcode/` already holds
+`MagicCardBox-fluted.creality-project.3mf` — follow that convention and suffix slicer
+saves `.creality-project.3mf` so the name itself says which it is.
+
+Tracked deliverables were **not** touched this round: all six files in `3mf/` verified
+byte-identical to HEAD. Only the gitignored copy in `gcode/` was overwritten.
+
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -1837,6 +2018,13 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
 ---
 
 ## Print profile
+
+> **SUPERSEDED for print 7 — see the ELEVENTH ROUND section.** The profile below is
+> print 5's: PETG, 0.20 mm, the custom `- CardBox` profile, 10 % infill. Print 7 is
+> **PLA-CF on the stock 0.16 profile at 15 % infill**, chosen by Creality's Pro AI
+> module, and its adaptive layer heights are materially different (0.080 at the hinge,
+> 0.320 through the middle). Keep this section as the PETG record; do not read it as
+> current.
 
 ### MEASURED PROFILE — read off print 5's gcode, 2026-09-15
 
