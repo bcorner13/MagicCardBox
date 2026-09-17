@@ -8,6 +8,18 @@
 # Slicer output — regenerable, not a tracked deliverable
 gcode/*
 
+# Root-level 3MFs — NOT the tracked deliverables.
+# These are working files: the printer-params base for the 3D_Printer_3mf_Workflow
+# macro, and that macro's own export. They share a name shape with the real
+# deliverables in 3mf/ while being a different kind of artifact (a Creality
+# *project*, ~17 zip entries, carrying project_settings.config and a
+# geometry-specific layer_heights_profile.txt) — see the eleventh-round section
+# of CLAUDE.md.
+#
+# Anchored with a leading slash so it matches the ROOT ONLY. Do NOT relax this to
+# `*.3mf`: that would cover 3mf/*.3mf, which ARE tracked, published deliverables.
+/*.3mf
+
 # macOS
 .DS_Store
 
