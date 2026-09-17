@@ -35,6 +35,10 @@ WHY IT WRITES A REPORT FILE
   (observed repeatedly this session), so it writes REPORT as JSON and the
   caller polls for it. The cap stops mattering.
 
+  REPORT lands at  <project>/gcode/export_matrix.json  — poll that.
+  It used to be a session-specific temp path; see the note beside REPORT for
+  why a path that keeps working is not the same as a path that is correct.
+
 THE TWO SWITCHES
   flutes    Pocket009.Suppressed  in BOTH MagicCardBox and Lid
   label     PocketNamePlate.Suppressed in Lid
@@ -58,9 +62,17 @@ import MeshPart
 from FreeCAD import Vector
 
 PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
-REPORT = ("/private/tmp/claude-501/-Users-bradleycorner-Documents-3dPrinting-"
-          "Commercial-License-MagicCardBox/1bcbf292-4ad0-43ce-a1f9-e0bd8bc80efa/"
-          "scratchpad/export_matrix.json")
+# Beside the project, NOT in a session scratchpad.
+#
+# This was pinned to /private/tmp/.../<session-uuid>/scratchpad/ — a path whose
+# UUID died with the session that created it. The macro went on WORKING, because
+# makedirs(exist_ok=True) happily recreated the dead directory, so it wrote a
+# perfectly good report somewhere nobody would ever look. A caller polling the
+# obvious location would have concluded the export had failed.
+#
+# gcode/ is gitignored (`gcode/*`), so the report stays untracked and
+# regenerable, which is what it is.
+REPORT = os.path.join(PROJ, "gcode", "export_matrix.json")
 
 NOZZLE = 0.4
 BED = 350.0
