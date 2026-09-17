@@ -1,0 +1,289 @@
+# -*- coding: utf-8 -*-
+"""
+53 - Split MagnetFit into per-ORIENTATION knobs.
+
+WHY
+---
+Measured on print 8 (PLA-CF), all four magnet bores modelled at Ø4.300:
+
+    box bores   3.75 - 3.80 mm   loses 0.50-0.55   <- SMALLER THAN THE Ø4.00 MAGNET
+    lid bores   4.05 - 4.25 mm   loses 0.05-0.25
+
+The box magnet physically cannot be inserted.  Same Param, same nominal, same
+printer, same material -- and 0.4 mm apart, because THEY PRINT IN DIFFERENT
+ORIENTATIONS.  The lid is folded 90 deg open, so the two pocket axes end up
+perpendicular in print space.  Measured on the sliced mesh:
+
+    bore about Y (HORIZONTAL in print)  dia 4.299  ctr X=+/-51.50 Z=30.50   = BOX
+    bore about Z (VERTICAL   in print)  dia 4.299  ctr X=+/-51.50 Y=-46.32  = LID
+
+A horizontal bore has an unsupported arc over its top and comes out far
+undersize; a vertical bore is a plain circle on every layer and tracks nominal.
+
+**This is the coincidence trap in its FIFTH form in this model** - one Param
+given to two things that are not the same quantity.  Compare `CardPitch` being
+two different sleeves (round 8), and the print-3 defects giving one EXPRESSION
+to two surfaces that had to differ.  `MagnetFit` was never one number.
+
+WHAT THIS DOES
+--------------
+    MagnetFitHorizontal  0.35   BOX pockets - print-horizontal bore, big loss
+    MagnetFitVertical    0.15   LID pockets - print-vertical bore, small loss
+    MagnetFit                   RETIRED, after re-scanning for references
+
+and rebinds all EIGHT constraints, including the two LEAD-IN sketches, which a
+guess would have missed:
+
+    MagicCardBox/SketchMagnetBox      [2],[5]  MagnetDia/2 + MagnetFitHorizontal
+    MagicCardBox/SketchMagnetLeadBox  [2],[5]  ... + MagnetLeadIn
+    Lid/SketchMagnetLid               [2],[5]  MagnetDia/2 + MagnetFitVertical
+    Lid/SketchMagnetLeadLid           [2],[5]  ... + MagnetLeadIn
+
+WHY THE LID IS LEFT AT 0.15
+---------------------------
+Its problem is SPREAD, not mean: 4.05-4.25 is a 0.20 mm range, as large as the
+clearance wanted.  Tightening the mean to kill the slop at 4.25 pushes the low
+end under Ø4.00 and trades a loose magnet for one that will not fit.  The
+variance is a process property; no Param fixes it.  Splitting the knob is what
+makes "leave the lid alone" expressible at all.
+
+GATES - measured off the SOLIDS, never off the Params
+-----------------------------------------------------
+  * bore diameters == MagnetDia + 2*fit, per orientation, found as CYLINDER
+    faces rather than trusted from the expressions
+  * LID VOLUME EXACTLY UNCHANGED.  MagnetFitVertical == the old MagnetFit, so
+    the lid must not move at all.  A no-op assertion, same as macro 48 phase A.
+  * box wall margins either side of the widened bore >= WALL_MIN
+  * chain_validity() as a REGRESSION gate (round 9): the box body carries
+    pre-existing Shape.isValid()==False features behind 'Up-to-date'.  Fail if
+    the count GROWS; do not fail on it being non-zero.
+
+Re-runnable.  Values are set ONLY on creation, so tuning MagnetFitHorizontal by
+hand and re-running will not stomp it -- and the gates compare against the
+CURRENT Param values, not hard-coded numbers (round 10: gate on the intent, not
+on a remembered result).
+
+DOES NOT SAVE.  Review, then save by hand.
+"""
+import FreeCAD as App
+
+BOX, LID, PAR = "MagicCardBox", "Lid", "Params"
+WALL_MIN = 1.50          # mm of side wall that must remain either side of the box bore
+TOL = 0.01
+
+NEW = [
+    ("MagnetFitHorizontal", 0.35,
+     "Magnets",
+     "Bore fit per side for pockets whose axis prints HORIZONTAL (the BOX). "
+     "Large because a horizontal bore has an unsupported top arc: measured "
+     "3.75-3.80 printed from a 4.300 model on print 8."),
+    ("MagnetFitVertical", 0.15,
+     "Magnets",
+     "Bore fit per side for pockets whose axis prints VERTICAL (the LID). "
+     "Small because a vertical bore tracks nominal: measured 4.05-4.25 from "
+     "4.300. Limited by SPREAD not mean - do not tighten."),
+]
+
+REBIND = [
+    (BOX, "SketchMagnetBox",     ["Constraints[2]", "Constraints[5]"],
+     "<<Params>>#VarSet.MagnetDia / 2 + <<Params>>#VarSet.MagnetFitHorizontal"),
+    (BOX, "SketchMagnetLeadBox", ["Constraints[2]", "Constraints[5]"],
+     "<<Params>>#VarSet.MagnetDia / 2 + <<Params>>#VarSet.MagnetFitHorizontal"
+     " + <<Params>>#VarSet.MagnetLeadIn"),
+    (LID, "SketchMagnetLid",     ["Constraints[2]", "Constraints[5]"],
+     "<<Params>>#VarSet.MagnetDia / 2 + <<Params>>#VarSet.MagnetFitVertical"),
+    (LID, "SketchMagnetLeadLid", ["Constraints[2]", "Constraints[5]"],
+     "<<Params>>#VarSet.MagnetDia / 2 + <<Params>>#VarSet.MagnetFitVertical"
+     " + <<Params>>#VarSet.MagnetLeadIn"),
+]
+
+
+def log(m):
+    App.Console.PrintMessage("[53] %s\n" % m)
+
+
+def chain_validity(doc):
+    """{feature: isValid} for shape-bearing features. State is NOT shape health."""
+    out = {}
+    for o in doc.Objects:
+        if not hasattr(o, "BaseFeature"):
+            continue
+        try:
+            out[o.Name] = bool(o.Shape.isValid())
+        except Exception:
+            out[o.Name] = False
+    return out
+
+
+def bad(v):
+    return sorted(k for k, ok in v.items() if not ok)
+
+
+def tip_of(doc, body_label):
+    for o in doc.Objects:
+        if o.TypeId == "PartDesign::Body" and (o.Label == body_label or o.Name == body_label):
+            return o
+    return None
+
+
+def cylinders(shape, axis_idx, rmin, rmax):
+    """-> [(radius, centre)] for cylindrical faces whose axis is along axis_idx."""
+    found = []
+    for f in shape.Faces:
+        s = f.Surface
+        if type(s).__name__ != "Cylinder":
+            continue
+        ax = [abs(s.Axis.x), abs(s.Axis.y), abs(s.Axis.z)]
+        if ax[axis_idx] < 0.99:
+            continue
+        if rmin <= s.Radius <= rmax:
+            found.append((s.Radius, s.Center))
+    return found
+
+
+def main():
+    docs = {n: App.getDocument(n) for n in (BOX, LID, PAR)}
+    vs = docs[PAR].getObject("VarSet")
+    if vs is None:
+        raise RuntimeError("Params#VarSet not found")
+
+    before = {n: chain_validity(docs[n]) for n in (BOX, LID)}
+    lid_body = tip_of(docs[LID], "LidBack") or tip_of(docs[LID], "Body001")
+    lid_vol_before = None
+    try:
+        lid_part_vols_before = [o.Shape.Volume for o in docs[LID].Objects
+                                if o.TypeId == "PartDesign::Body"]
+        lid_vol_before = sum(lid_part_vols_before)
+    except Exception:
+        pass
+
+    # ---- 1. Params ------------------------------------------------------
+    for name, val, grp, doc in NEW:
+        if name in vs.PropertiesList:
+            log("Param %s exists = %s (left alone)" % (name, getattr(vs, name)))
+        else:
+            vs.addProperty("App::PropertyLength", name, grp, doc)
+            setattr(vs, name, val)
+            log("Param %s CREATED = %s" % (name, val))
+
+    # ---- 2. Rebind -- ALWAYS, not only on creation (round 6) -------------
+    for dn, objname, paths, expr in REBIND:
+        o = docs[dn].getObject(objname)
+        if o is None:
+            raise RuntimeError("%s/%s not found" % (dn, objname))
+        for p in paths:
+            o.setExpression(p, expr)
+        log("rebound %s/%s %s" % (dn, objname, ",".join(paths)))
+
+    for d in docs.values():
+        d.recompute()
+
+    # ---- 3. Retire MagnetFit, but only if genuinely unreferenced ---------
+    refs = []
+    for dn, d in docs.items():
+        for o in d.Objects:
+            try:
+                ee = o.ExpressionEngine or []
+            except Exception:
+                ee = []
+            for path, expr in ee:
+                if "MagnetFit" in expr and "MagnetFitHorizontal" not in expr \
+                        and "MagnetFitVertical" not in expr:
+                    refs.append("%s/%s.%s = %s" % (dn, o.Name, path, expr))
+    if refs:
+        log("MagnetFit STILL REFERENCED, not retiring:")
+        for r in refs:
+            log("    " + r)
+    elif "MagnetFit" in vs.PropertiesList:
+        vs.removeProperty("MagnetFit")
+        log("Param MagnetFit RETIRED (0 references in all 3 documents)")
+    else:
+        log("Param MagnetFit already absent")
+
+    for d in docs.values():
+        d.recompute()
+
+    # ---- 4. GATES, measured off the solids -------------------------------
+    dia = float(vs.MagnetDia)
+    fh, fv = float(vs.MagnetFitHorizontal), float(vs.MagnetFitVertical)
+    want_box, want_lid = dia + 2 * fh, dia + 2 * fv
+    fails = []
+
+    # both pockets are bored along CLOSED-frame Z; print orientation differs,
+    # but in the model both are Z-axis cylinders.
+    box_tip = None
+    for o in docs[BOX].Objects:
+        if o.TypeId == "PartDesign::Body":
+            box_tip = o
+    bore_box = cylinders(box_tip.Shape, 2, want_box / 2 - 0.3, want_box / 2 + 0.3)
+    got = sorted(set(round(2 * r, 4) for r, _ in bore_box))
+    log("BOX bores found: %s   (want %.3f)" % (got, want_box))
+    if not got or min(abs(g - want_box) for g in got) > TOL:
+        fails.append("box bore %s != %.3f" % (got, want_box))
+
+    lid_bodies = [o for o in docs[LID].Objects if o.TypeId == "PartDesign::Body"]
+    lid_got = []
+    for b in lid_bodies:
+        for r, c in cylinders(b.Shape, 2, want_lid / 2 - 0.3, want_lid / 2 + 0.3):
+            lid_got.append(round(2 * r, 4))
+    lid_got = sorted(set(lid_got))
+    log("LID bores found: %s   (want %.3f)" % (lid_got, want_lid))
+    if not lid_got or min(abs(g - want_lid) for g in lid_got) > TOL:
+        fails.append("lid bore %s != %.3f" % (lid_got, want_lid))
+
+    # wall either side of the widened box bore
+    try:
+        half_w = float(vs.Width) / 2.0
+        swt = float(vs.SideWallThickness)
+        cx = half_w - swt / 2.0
+        inboard = (cx - want_box / 2.0) - (half_w - swt)
+        outboard = half_w - (cx + want_box / 2.0)
+        log("BOX bore wall margins: inboard %.3f  outboard %.3f  (min %.2f)"
+            % (inboard, outboard, WALL_MIN))
+        if min(inboard, outboard) < WALL_MIN:
+            fails.append("box wall margin %.3f < %.2f" % (min(inboard, outboard), WALL_MIN))
+    except Exception as e:
+        log("wall margin check skipped: %s" % e)
+
+    # LID MUST NOT HAVE MOVED
+    if lid_vol_before is not None:
+        lid_vol_after = sum(o.Shape.Volume for o in docs[LID].Objects
+                            if o.TypeId == "PartDesign::Body")
+        d_lid = lid_vol_after - lid_vol_before
+        log("LID volume %.4f -> %.4f   delta %.6f mm3" % (lid_vol_before, lid_vol_after, d_lid))
+        if abs(d_lid) > 1e-3 and abs(fv - 0.15) < 1e-9:
+            fails.append("lid moved by %.6f mm3 but MagnetFitVertical is unchanged" % d_lid)
+
+    # regression gate on shape validity
+    for n in (BOX, LID):
+        after = chain_validity(docs[n])
+        b0, b1 = bad(before[n]), bad(after)
+        log("%s invalid features: %d -> %d" % (n, len(b0), len(b1)))
+        if len(b1) > len(b0):
+            fails.append("%s invalid count GREW %d -> %d: %s"
+                         % (n, len(b0), len(b1), sorted(set(b1) - set(b0))))
+
+    # solids still sane
+    for n in (BOX, LID):
+        for o in docs[n].Objects:
+            if o.TypeId != "PartDesign::Body":
+                continue
+            sh = o.Shape
+            if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+                fails.append("%s/%s not a single valid closed solid" % (n, o.Name))
+
+    log("-" * 58)
+    if fails:
+        log("FAILED:")
+        for f in fails:
+            log("   " + f)
+        log("Nothing saved. Close without saving to revert (D5: a failed")
+        log("recompute does NOT roll back).")
+    else:
+        log("ALL GATES PASS.")
+        log("box bore %.3f (was 4.300) -> expect ~%.2f printed" % (want_box, want_box - 0.525))
+        log("lid bore %.3f unchanged   -> prints 4.05-4.25" % want_lid)
+        log("NOT SAVED - review, then save by hand.")
+
+
+main()

@@ -1902,8 +1902,16 @@ To go back to free knobs, clear those three expressions.
   `MagnetFromFront` 8.0, `MagnetSkin` **1.7** (was 1.0 — the outer lid flute cuts
   `FluteDepth` 0.7 straight out of the skin, leaving **0.30 mm** over the magnet after the
   Width change; now 0.9995 mm worst case, measured under the flute),
-  `MagnetFit` **0.15** (per side on the radius; was 0.05 = a CAD fit that printed solid —
-  the magnets would not go in. Bore Ø4.100 -> Ø4.300, macro 46),
+  `MagnetFit` — **RETIRED by macro 53. It was ONE knob for TWO ORIENTATIONS.** Split into:
+  `MagnetFitHorizontal` **0.35** (the BOX pockets, whose axis prints HORIZONTAL; bore
+  Ø4.700) and `MagnetFitVertical` **0.15** (the LID pockets, axis prints VERTICAL; bore
+  Ø4.300, unchanged). Measured on print 8 at a shared Ø4.300: box printed **3.75–3.80**,
+  i.e. *smaller than the Ø4.00 magnet* and impossible to insert, while the lid printed
+  4.05–4.25. A horizontal bore has an unsupported top arc and loses 0.50–0.55; a vertical
+  bore tracks nominal and loses 0.05–0.25. **Do not tighten the lid** — its problem is
+  SPREAD (0.20 mm range), not mean, and tightening pushes the low end under Ø4.00.
+  (History: 0.05 was a CAD fit that printed solid; macro 46 took it to 0.15, Ø4.100 ->
+  Ø4.300, which fixed the lid and left the box still unusable.),
   `MagnetLeadIn` **0.3** (new, macro 46 — depth of the 45 deg lead-in at each pocket mouth,
   cut as a TAPERED POCKET so there is no named edge to go stale. An ASSEMBLY aid, not a
   fit: the bore is what decides whether the magnet goes in)
