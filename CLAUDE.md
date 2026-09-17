@@ -1155,6 +1155,237 @@ Tracked deliverables were **not** touched this round: all six files in `3mf/` ve
 byte-identical to HEAD. Only the gitignored copy in `gcode/` was overwritten.
 
 
+---
+
+## TWELFTH ROUND — 2026-09-16 — print 8 in PLA-CF, and where the droop actually is
+
+Print 8 came off with the hinge free, the lid flush, both magnet bores open, and the
+flutes and name plate clean. **PLA-CF works** — a third material on clearances still
+holding PLA values. Bradley's one complaint: "still some slight overhang issues in the
+underside of the hinge."
+
+`scripts/mesh_overhang_audit.py` answers that by measuring the SLICED MESH rather than
+the CAD solid, which sidesteps reconstructing the print-pose transform entirely — a 3MF
+object mesh is already in print orientation.
+
+### THE 60-CARD HEIGHT IS CONFIRMED WITH REAL CARDS
+
+Bradley, with a sleeved deck loaded: **"the 60 card height is perfect."** The stack fills
+to the rim with a card lying level on top.
+
+That is the round-8 `CardPitch` resolution validated by the object rather than by
+arithmetic. `CardCount` 60 x `THICK_SLEEVE` 0.7033 -> `CardStackHeight` 42.2,
+`Height` 45.2 — derived from a per-variant sleeve pitch, on the finding that the thin and
+thick sleeves are **different quantities** and were never one number measured three ways.
+Both sleeve pitches have now produced a correct box: 101 cards in the 100 at 0.62, and a
+correct 60 at 0.7033.
+
+**This closes the longest-running open question in the file.** Card dimensions had been
+wrong every single time they were inferred rather than measured; they are now derived from
+a measured per-sleeve pitch and both variants check out against real decks.
+
+### WHERE THE OVERHANG IS — and it is not spread out
+
+```
+whole part, true overhangs     3136.6 mm2
+of which in the hinge band     2669.0 mm2      85%
+```
+
+Inside the hinge band the worst-lying material:
+
+```
+z  3.2-6.4    775.77 mm2   the RAMP
+z  9.6-12.8    21.35 mm2
+z 12.8-16.0    44.70 mm2
+```
+
+**Only 1.92 mm2 of the entire hinge is genuinely flat** — two ~1 mm2 shelves at
+z 6.001 and z 12.399, |x| ~52 (the knuckles). Against the 458.4 mm2 this started at in
+round 7, the flat ledge problem is finished.
+
+Those two are almost certainly `HingeSocketFlatZ`'s chord and `HingeNeckDrop`'s flat
+neck bottom — **deliberate** flats that each fixed a measured interference (macro 23
+cleared 2.25 mm3 at 90 deg with that chord). Chasing 1.92 mm2 risks reopening a solved
+problem. Leave them.
+
+### THE REMAINING DROOP IS THE RAMP, AND THE LEVER IS LAYER HEIGHT
+
+The 776 mm2 at z 3.2-6.4 bottoms out at **19.9 deg** — round 10 targeted 19.88 and the
+geometric ceiling is 20.67. The geometry is out of room: round 8 established you may
+have any two of {thick rear wall, steep exit, no ledge}, never all three.
+
+What is NOT out of room is layer height. Per-layer outward step is `h / tan(19.9 deg)`
+= `h x 2.762`, against a 0.42 mm extrusion:
+
+```
+h        step      unsupported
+0.16     0.442     105%     <- each layer entirely in air
+0.12     0.331      79%
+0.112    0.309      74%     <- what print 7/8 actually gave the ramp
+0.08     0.221      53%
+```
+
+Painting **0.08 across print z 4-8** costs about 14 extra layers. A flat 0.12 over the
+whole part costs ~300. The fix is local because the defect is local.
+
+Speed is NOT the missing lever: `enable_overhang_speed` is 1 with the 4/4 bucket at
+10 mm/s, so the ramp already crawls.
+
+### A BED-CONTACT FACE IS NOT AN OVERHANG
+
+The first run reported **12 980 mm2** in the 0-10 deg band and made the part look
+catastrophic. That is layer 1 — down-facing, perfectly flat, and resting on the plate.
+Excluded, the real total is 3136.6 mm2.
+
+Two independent methods then agreed on it: **12 915.5 mm2** from the mesh against
+**12 911.72 mm2** from macro-free island rasterisation of the gcode — 0.03%. Worth
+keeping as a cross-check whenever either number is in doubt.
+
+Same class of error one step earlier: the 3MF object mesh is **centred on the origin,
+not bed-referenced**. Filtering "z 0..16" without offsetting measures the MIDDLE of the
+part and reports 0.3 mm2 of nothing. The script re-references z; do not hand-roll it.
+
+### A TRUE PLANE AND A CYLINDER TANGENT BOTH READ 0 DEG. THEY ARE NOT THE SAME.
+
+Round 5 warned against chasing the bore apex with a bigger radius. The discriminator is
+cheap and belongs in every overhang audit:
+
+```
+true plane        one exact normal, z spread 0.0000
+cylinder tangent  normals fan out over a finite band
+```
+
+**Do not classify on normal COUNT alone.** The 41.6 mm2 patch below was called a
+cylinder tangent because it carried 4 distinct normals — which turned out to be 4 stray
+facets out of 602, the other 598 being exactly (0,0,-1). Weight by area, or check the
+z spread.
+
+### OPEN — a 41.61 mm2 flat at print z 67, the LARGEST on the part, outside the hinge
+
+Surfaced only because the audit was re-run without a band filter:
+
+```
+z 67.000   41.61 mm2   602 facets   598 of them normal exactly (0,0,-1)
+           x -40.28..40.23   y 56.40..57.20   (a 0.80 mm step)
+           7 patches, gaps spaced 4.3 mm = THE FLUTE PITCH
+```
+
+So it is a narrow ledge ~80 mm wide that the flutes cut through over `|x| < 12`. It is
+**20x the total flat area in the hinge**, and every round since the seventh has been
+optimising the hinge while this sat unmeasured. The slicer already knows about it — it
+tags Overhang/Bridge at z 67.12 and the adaptive profile pins 0.080 at z 66.85/66.93.
+
+**NOT IDENTIFIED.** Naming the feature needs mapping print z 67 back to the closed
+frame; that was not done, and guessing it would be the round-9 "root cause from one
+reading" mistake. Next round: identify it before touching anything else.
+
+### h3liØ's RECIPE — verified from the MakerWorld originals
+
+He publishes **per-printer variants**, which is why any single file is a bad sample:
+
+| file | printer | profile | layer | infill | adaptive |
+|---|---|---|---|---|---|
+| `card_deck_box.3mf` | Bambu X1C | 0.16mm Optimal @BBL X1C | 0.16 | gyroid 10% | none |
+| `card_deck_box_25mm_orig.3mf` | Bambu H2D | 0.16mm Balanced Quality | 0.16 | gyroid 10% | none |
+| `card_deck_box_20mm.3mf` | Creality K2 Plus | 0.12mm Standard | 0.12 | gyroid 10% | none |
+
+His published notes agree: PLA-CF and matte PLA, 0.4 nozzle, 0.16 layer, 10% gyroid.
+Three independent sources. The invariants are **gyroid at 10%** and **no adaptive layer
+height anywhere**; the 0.12 appears only in the Creality variant.
+
+**Print 7/8 was ALSO nominally 0.16 — but adaptive pushed the actual average to 0.226
+with 144 control points pinned at the 0.32 ceiling.** So the difference is not that he
+prints finer, it is that he prints CONSISTENTLY.
+
+**Copying his flat 0.16 would make our ramp worse** (105% unsupported vs the 74% adaptive
+already gives it). His recipe suits a part whose overhangs are small, curved and
+distributed. **Copy the gyroid 10%; do not copy the layer height.**
+
+Also noted: `outer_wall_speed` 60 on the H2D variant against 200 on the others and on
+print 8 — 3.3x, on the surface you actually look at.
+
+### THE PROVENANCE TRAP — a downloaded reference folder held OUR OWN slices
+
+This produced two wrong statements in one session and is the round's cheapest lesson.
+
+`h3liØ/Home Decor/Card Deck Box/` contained `deck_box_25mm_PLA_3h4m.gcode` and
+`card_deck_box_25mm.3mf`, both of which look like the author's work. Both were
+**Bradley's**: they carry `print_settings_id = ClockFace`, his own profile. Settings read
+off them were attributed to h3liØ and were not his.
+
+Then, sampling `card_deck_box_25mm.3mf` alone gave "grid everywhere, no gyroid" — stated
+as a conclusion about the whole folder. The **20mm** file had gyroid all along.
+
+```
+check FIRST:  print_settings_id / printer_settings_id   <- whose profile is this?
+              an STL carries NO settings at all
+              a multi-file reference needs ALL files read before any generalisation
+```
+
+Same shape as round 9's "do not name a root cause from one reading", applied to
+provenance rather than causation. CLAUDE.md rule 5 covers reference geometry being
+disposable; it did not cover checking who made the file you are reading.
+
+### MAGNETS — his depth is a DEFECT for us, and it confirms `MagnetProud`
+
+Measured on his original meshes (byte-identical geometry to his STLs — 10 048 and 9 970
+triangles match exactly):
+
+```
+h3liØ rear/front   Ø4.19-4.20 x 2.160 deep, straight cylinder
+h3liØ side walls   Ø4.44 mouth, DOMED bottom, r 2.09 -> 0 over 1.95 mm
+ours               Ø4.300 x 1.505 deep, flat bottom, magnet 0.075 PROUD
+```
+
+**Bradley, from the part in hand: at his depth the magnets seat BELOW the rim and never
+touch.** That is exactly the failure `MagnetProud` was introduced to prevent in the
+fourth round — the magnet faces must meet directly, not through two layers of plastic.
+**His depth is wrong for us. Do not copy it.** Our depth decision is confirmed, not
+challenged.
+
+**And his bore is TIGHTER than ours** (Ø4.20 vs Ø4.30), so "copy his clearance" is
+backwards as well. There is nothing to take from his magnet design except possibly the
+domed pocket bottom, which removes the flat unsupported ceiling a blind bore otherwise
+has.
+
+**The open question is the DIAMETER, and copying cannot settle it.** Printed bores come
+out undersize and the amount is a property of this printer, profile and material — not
+of anyone's model. It needs a calibration coupon stepping bore diameter against the
+actual magnet, which would also serve every future project. Measure the printed bore
+before touching `MagnetFit`; if it reads near the modelled Ø4.30 the problem is not the
+fit and widening it would be wrong.
+
+(Measurement note: a naive cluster scan reports his pocket as "0.53-0.72 deep". That is
+an artifact — the two rim rings sit 2.16 mm apart, further than the 2.0 mm cluster
+radius, so they split into separate clusters. The axial profile trace is the reliable
+read.)
+
+### `overhang_optimization` — a real key, and UNVERIFIED
+
+```
+overhang_optimization            0     <- in print 7/8; the checkbox in Variable Layer Height
+slowdown_for_curled_perimeters   0     <- a genuine anti-droop feature, also off
+make_overhang_printable          0     <- LEAVE OFF: it reshapes geometry to force <55 deg
+```
+
+`overhang_optimization` appears in the project settings but **not** in the stock process
+profile, so it is per-project, same family as `layer_heights_profile.txt`. Given it lives
+in the Variable Layer Height dialog it probably biases adaptive layers thinner at
+overhangs — the automatic version of the band paint. **That is inference, not verified.**
+Settle it by toggling it, re-slicing, and diffing the generated
+`Metadata/layer_heights_profile.txt` against print 8's.
+
+### Environment
+
+`scripts/mesh_overhang_audit.py` needs numpy + scipy, so it runs on FreeCAD's
+interpreter like the island check:
+
+```bash
+/Applications/FreeCAD.app/Contents/Resources/bin/python \
+    scripts/mesh_overhang_audit.py MagicCardBox.3mf --band 0 16 --detail
+```
+
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
