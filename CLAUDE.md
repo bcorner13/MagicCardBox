@@ -1385,13 +1385,261 @@ interpreter like the island check:
     scripts/mesh_overhang_audit.py MagicCardBox.3mf --band 0 16 --detail
 ```
 
+---
+
+## THIRTEENTH ROUND — 2026-09-23 — a fillet that was being DELETED, not clipped
+
+Bradley added `Lid/Fillet002` in the GUI "after Pocket for additional strength and to
+follow the curve of the box", and reported that PanelRelief cuts into it.
+
+It does not cut into it. **It erases it.**
+
+```
+gusset added by Fillet002     17.1681 mm3   bbox x 50.5..55.5, y 32.5..36.5, z 10..14
+surviving in the final part    0.000000 mm3
+percent surviving              0.0000 %
+```
+
+Fillet002 sits at position 5 of 11 in the chain, and `PocketPanelRelief` is a **full-width
+ThroughAll** cut of `y in [26.5, 37], z in [10, 48.553]`. The fillet's material lies wholly
+inside that box, so all of it goes.
+
+### THE COINCIDENCE TRAP, FIFTH FORM — a fillet taken on a face that a later feature MOVES
+
+The previous four were two surfaces sharing one expression, two surfaces that had to stay
+coplanar not sharing one, one Param meaning two measurements, and `Pocket008` re-cutting
+`Pocket`'s own profile. This one is new:
+
+```
+Fillet002 taken on the panel face at   y = Depth/2                      = 36.5
+PocketPanelRelief then MOVES it to     y = Depth/2 + HingeSwingClearance = 37.0
+```
+
+The fillet was correct where it was built. The relief relocated the very face it was
+blending and took the blend with it. **A dress-up feature is only safe upstream of a cut if
+that cut does not touch either of its two faces — check the cut's REGION against the
+fillet's material, not just its chain position.**
+
+And the reason it went unnoticed: nothing complains. Fillet002 is valid, `Up-to-date`,
+expression-bound (`HingeTabRadius - RimRelief`), and the audit passes. It simply
+contributes nothing.
+
+> **The measurement that settles it in one line:**
+> `feat.Shape.cut(feat.BaseFeature.Shape).common(body.Tip.Shape).Volume`
+> — how much of what a feature ADDS actually survives to the tip. Run it on any dress-up
+> feature that sits upstream of a cut.
+
+### THE FIX — `PanelNeckGusset`, appended at the TIP
+
+Built on the corner the relief actually leaves behind: `KnuckleArcFillet` Edge26/Edge32,
+each 5.0 mm, at `(+/-50.5..55.5, 37, 10)`. At the tip it disturbs no existing named-edge
+reference (macro 24's flutes, macro 37's chamfer — same reasoning) and suppressing it
+restores the previous shape exactly.
+
+**Bradley's X placement was already right, and the box says why.** Measured box rear-wall
+reach over z 10..14:
+
+```
+x  45  47  48  49  50   ->  y = 36.500   SOLID REAR WALL
+x  51  53               ->  y = 29.5 .. 35.4   socket breakout
+```
+
+A gusset anywhere inboard of the socket floor (x = 50.1) drives straight into the box when
+closed. That is *why* `PocketPanelRelief` is full width — it is not lazy, it is the
+constraint.
+
+### `GussetTangentKeep` — THE DEGENERATE BOUNDARY, MEASURED, NOT ARGUED
+
+The neck top runs from the journal's tangent point to the relieved panel face:
+
+```
+from  y = Depth/2 - HingeAxisFromRear   = 31.5     journal R5 top, (31.5, 10)
+to    y = Depth/2 + HingeSwingClearance = 37.0     relieved panel face
+width =     HingeAxisFromRear + HingeSwingClearance = 5.5      <- Depth cancels
+```
+
+A fillet of radius R has its tangent point at `y = 37 - R`, so `R = 5.5` lands it exactly on
+the journal's top. That equality **is** the tangency condition (same species as
+`RampPole1In == RampOvershoot`). It is also unbuildable:
+
+```
+R       4.50  5.00  5.30  5.40  5.45  5.49  5.499  5.4999  5.5
+builds   ok    ok    ok    ok    ok    ok    ok     ok     FAIL
+```
+
+It consumes the neck-top face exactly and OCC refuses, failing at 5.5 and nowhere below.
+
+```
+GussetTangentKeep  0.05   FREE DESIGN INPUT - a GUARD, not a clearance
+PanelGussetRadius  5.45   DERIVED = HingeAxisFromRear + HingeSwingClearance
+                                    - GussetTangentKeep
+```
+
+0.05 because printed roughness here is +/-0.05-0.1 mm, so the residual is below what the
+part can express. Third member of the family after `ChamferWallKeep` and `RampMinWall`:
+**a knob whose only job is to hold a degenerate case away from zero.**
+
+> **DO NOT REUSE `HingeWrapRadius`.** It is also 5.5, and also
+> `HingeTabRadius + HingeSwingClearance` (since `HingeAxisFromRear == HingeTabRadius`). It
+> is DEAD and it means something else — a radius about the HINGE AXIS. The gusset arc is
+> centred at (31.55, 15.45). Same number, different concept; this project's single most
+> repeated failure mode.
+
+### THE 0.05 RESIDUAL DOES NOT BREAK TANGENCY — and the proof is cheap
+
+Measured section at x = 53:
+
+```
+Circle R=5.4500 C=(31.5500,15.4500)   (37,15.45)->(31.55,10)   gusset arc
+Line   (31.5000,10.0000)->(31.5500,10.0000)  L=0.0500          link
+Circle R=5.0000 C=(31.5000, 5.0000)   top at (31.5,10)         journal
+```
+
+A circle's tangent is perpendicular to the centre->point ray, so **an arc is horizontal at a
+point iff its centre is directly above or below it.** The journal's centre is directly below
+its top; the link is horizontal; the gusset's centre is directly above its lower end. One
+shared tangent direction — G1 continuous. The 0.05 mm is a vanishingly short horizontal
+segment, not a corner.
+
+That is the same construction the box uses on the other side of the joint:
+
+```
+box   socket bore R5.4  ->  BackHengeFilet  ->  rear face
+lid   journal    R5.0   ->  gusset R5.45    ->  panel face
+```
+
+**Assert G1 from the arc CENTRES, not by eye or by a zero-length-flat test.** Macro 55's
+first gate demanded `residual_flat == 0`, which is both unbuildable and the wrong question.
+
+### Result
+
+```
+volume added  +63.7421 mm3   (analytic 2*(1-pi/4)*R^2*HingeTabThickness = 63.7421, delta -0.0000)
+swing 0..75   gusset gap 0.4000   LidBack gap 0.4000   interference 0.000000
+swing 90      gusset gap 0.4874   LidBack gap 0.4000   interference 0.000000
+mesh @0.02    4382 facets, solid, manifold, no self-intersections
+```
+
+The LidBack-vs-box gap stays **flat at 0.4000 across the whole swing** — unchanged. The
+gusset's own closest approach is also 0.4000, because its lower end sits essentially on the
+journal circle, so it costs no hinge clearance at all.
+
+### ⚠️ A JOINT REFERENCE THAT RE-RESOLVES ONTO THE WRONG FACE — D4's SILENT HALF
+
+This is the round's most dangerous finding. Appending one feature took `Body001` from 21 to
+23 faces, and the assembly joint's stored `Body001.Face20` **silently re-resolved**:
+
+```
+before   Plane,    area 36.3168 = pi*3.4^2, centre ( 53.5, 31.5,  5.0)   pin-hole end disc
+after    Cylinder, R=0.600,               centre (-50.5, 35.79, 1.4)   KnuckleArcFillet,
+                                                                        OPPOSITE SIDE
+```
+
+No `?`. Nothing Invalid. Joint State `['Up-to-date']`. `Placement1` still read
+(53.5, 31.5, 5) because FreeCAD had not re-derived it yet — **so every available check said
+fine.** The moment the assembly was recomputed, Placement1 was re-derived from the wrong
+face and the lid link jumped to X 73..184.
+
+**And it cannot be fixed by restoring the placement.** Captured P1/P2, restored them,
+recomputed — and it re-derived from the bad reference again. As long as the Reference is
+wrong, every recompute re-breaks it. The REFERENCE must be repaired.
+
+**Macro 05 would NOT have caught this.** Its gate was `is_dead(ref)`, testing for the `?`
+FreeCAD writes on an unresolvable subelement. Ours resolved fine — to the wrong face — so
+the macro would have printed "nothing was dead" on a broken joint. Upgraded 2026-09-23 to
+`needs_repair()`, which repairs on **dead OR mismatched-against-geometry**. Its `find_disc()`
+geometry lookup was already correct and located `Face22` (lid, disc r 3.4) and `Face170`
+(box, disc r 3.0) without help.
+
+> This is the seventh round's `PanelBottomChamfer` lesson — *a named reference that
+> re-resolves to the wrong thing is worse than one that dies, because nothing complains* —
+> now proven to apply to **assembly joint faces**, not just fillet edges. After appending
+> ANY feature to a body the assembly references, re-check the joint's faces BY GEOMETRY.
+
+### `is_modified` LIED THREE MORE TIMES IN ONE SESSION
+
+1. `Fillet002` existed **only in memory**; `Lid.FCStd` on disk had never seen it, while
+   `isTouched()` was False and nothing was Touched. Hours of GUI work, one crash from gone.
+   (Macro 54 was written as the replay BEFORE anything was recomputed, per round 4.)
+2. After macro 41, `Params` in memory held `CardCount 100 / CardPitch 0.62` while disk held
+   `60 / 0.7033` — **all four documents reported nothing Touched.**
+3. The only reliable test remains: read `Document.xml` out of the saved file with `zipfile`
+   inside FreeCAD and diff it against memory. It found all of the above in one call.
+
+### Macro 41's `finally` restores a CANONICAL variant — NOT "what you had"
+
+`CANONICAL = 100-fluted-label`. The saved state was **60**-fluted-label. So a plain export
+run silently leaves memory on a different card count from disk, with nothing Touched to say
+so. Set the variant back deliberately after running it, or save.
+
+### Three mistakes of mine worth not repeating
+
+- **A point-sampling scan locked FreeCAD for ~4 minutes.** `isInside` over ~750k points
+  starved the bridge until it finished; even `1+1` timed out. It must not be killed — the
+  unsaved `Fillet002` was still in memory. Use `slice()` + edge geometry, which answered the
+  same question in 0.2 s and gave exact curve types and radii instead of sampled points.
+- **A macro whose baseline is `body.Tip` is not idempotent.** On the second run the tip IS
+  the new feature, so the volume gate measured 0.0000 for a gusset that was present and
+  correct. Take the baseline from `feat.BaseFeature`, which is right on both passes.
+- **A hard-coded gate floor rejected the design value.** `GAP_FLOOR = 0.42 - 0.02` failed a
+  measured 0.4000 — which IS `HingeTabClearance`, the documented healthy value. Gate against
+  the Param, not a remembered constant.
+
+### Left deliberately undone
+
+`Fillet002` now contributes 0.000 mm3 and is dead weight, but it was NOT removed. Deleting
+it changes the shape that `Mirrored`, `Fillet001` (Edge47) and `KnuckleArcFillet`
+(Edge16/Edge31) are computed on, and this project has twice had named-edge references
+silently re-resolve. Retiring it is its own pass, with a by-position re-check of those three
+references afterwards.
+
+### Exports
+
+All six variants rebuilt, `all_ok: True`, every file's hash changed.
+
+```
+tag                 gap  bbox                     facets  3mf_tris  comp  on_z   vol_cm3   vd%
+100-smooth          0.4  116.81 x 134.26 x 77.0    15188     15188     2   0.0     194.40  0.006
+100-fluted          0.4  116.81 x 134.26 x 77.0    31288     31288     2   0.0     186.57  0.005
+100-fluted-label    0.4  116.81 x 134.26 x 77.0    34448     34448     2   0.0     183.94  0.005
+60-smooth           0.4  116.81 x 114.46 x 77.0    15132     15132     2   0.0     155.97  0.003
+60-fluted           0.4  116.81 x 114.46 x 77.0    31232     31232     2   0.0     149.92  0.001
+60-fluted-label     0.4  116.81 x 114.46 x 77.0    34392     34392     2   0.0     147.29  0.001
+```
+
+Bounding boxes are **unchanged** from the eighth round — the gusset fills an internal corner,
+so it costs nothing in envelope or bed space. Facets rose ~2220 per variant.
+
+**The gusset is genuinely in the files, and the volume gate is too loose to prove it.**
+Measured mesh-vs-solid delta is 0.001 % on 60-fluted; a MISSING gusset would read
+`63.7421 / 149920 = 0.042 %` — forty times larger, but still well inside the 1 % tolerance.
+Same weakness the sixth round found when a stale file missing the whole name plate passed at
++0.95 %. Read the delta, do not just check that it passed.
+
+### Footer — asked and answered, 2026-09-23
+
+"Is there a protrusion off the bottom of the footer?" **No. `ZMin` is exactly -4.0000 =
+-`FooterHeight`.** The footprint flares monotonically and linearly going down:
+
+```
+z  0.000  ->  X +/-55.5000,  Y -36.5000 .. 29.000
+z -3.999  ->  X +/-58.4054,  Y -39.4054 .. 25.880
+```
+
+2.9062 mm per side over 4 mm, which is exactly
+`FooterHeight * tan(FooterTaperAngle) = 4.0 * tan(36 deg)`. That is the designed flared foot
+(design direction item 3), not a spur. The rear edge moves the other way (29.000 -> 25.880):
+that is the footer relief clearing the folded-open lid. A blue rectangle running past the
+part in a screenshot is FreeCAD's **selection bounding box**, not geometry.
+
+---
 
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
 | D2 — `Width`, panel grew off-centre | ✅ fixed (side effect of the D7 rebuild) |
 | D3 — `Height`, panel grew downward | ✅ fixed (same) |
-| D4 — assembly joint dies on face renumbering | ⚠️ recurs by design; re-run macro 05 |
+| D4 — assembly joint dies on face renumbering | ⚠️ recurs by design; re-run macro 05. **It also has a SILENT half** — the stored name can land on a different VALID face, with no `?`, nothing Invalid and State `Up-to-date`, and only break on the next recompute. Macro 05 was upgraded 2026-09-23 to catch that; see the thirteenth round |
 | D5 — failed recompute does not roll back | ⚠️ still true in general — reload from disk |
 | D6 — `Depth`, panel did not track | ✅ fixed (macro 11) |
 | D7 — lid could not rotate at all | ✅ fixed (macros 07/08/10/12) |
@@ -1580,6 +1828,13 @@ Current hinge, after the 2026-09-13 rebuild:
   profile has two valid solver solutions and flips.
 - **Rear panel** starts at `PanelBottomZ`, not at Z=0; the box's own rear wall shows below
   it. That is forced, not cosmetic.
+- **Gusset** (`PanelNeckGusset`, macro 55, the body's TIP): an R `PanelGussetRadius` fillet
+  on the two knuckle corner edges where the neck's top face meets the relieved panel face,
+  at `(±50.5…55.5, 37, 10)`. It exists **only** across the knuckles, because the box's rear
+  wall is solid at y = 36.5 out to x = 50 and only falls away inside the socket breakout at
+  x ≥ 51 — a gusset any further inboard hits the box when closed. It adds 63.74 mm³ and
+  costs **no** hinge clearance: its lower end sits on the journal circle, so the swing stays
+  flat at 0.4000.
 
 
 - **Box** (`MagicCardBox.FCStd` → `Part` "Box001" → `Body` "Box") is the tub: a padded
@@ -1692,10 +1947,10 @@ faces. `MagicCardBox/Sketch003` still references `Mirrored.Face3` as external ge
 
 | File | Role | Depends on | Status |
 |---|---|---|---|
-| `Params.FCStd` | VarSet — all parametric variables (72 today) | — | ✅ |
-| `MagicCardBox.FCStd` | The box tub; hinge sockets in the side walls; 4-deep fillet chain | `Params.FCStd` | ✅ clean, tip `Fillet003` |
-| `Lid.FCStd` | Lid top plate + stepped rear panel + hinge knuckles | `Params.FCStd` | ✅ clean; 2 feature-attached datums remain |
-| `MagicCardAssembly.FCStd` | Assembly doc; `App::Link` to both parts, `Revolute` joint | `MagicCardBox.FCStd`, `Lid.FCStd` | ✅ audit clean |
+| `Params.FCStd` | VarSet — all parametric variables (**77** today) | — | ✅ |
+| `MagicCardBox.FCStd` | The box tub; hinge sockets in the side walls; 4-deep fillet chain | `Params.FCStd` | ✅ clean, tip `Fillet003`. **8 features carry `Shape.isValid() == False`** — pre-existing round-9 debt, unchanged; the tip is clean |
+| `Lid.FCStd` | Lid top plate + stepped rear panel + hinge knuckles | `Params.FCStd` | ✅ clean; tip `PanelNeckGusset`, 12 features, **0 shape-invalid**; 2 feature-attached datums remain |
+| `MagicCardAssembly.FCStd` | Assembly doc; `App::Link` to both parts, `Revolute` joint | `MagicCardBox.FCStd`, `Lid.FCStd` | ✅ audit clean; joint faces `Body001.Face22` / `Body.Face170` — **re-check BY GEOMETRY after any feature is appended to either body** |
 
 **Verified state, 2026-09-13 after the print-failure round** (all measured in-memory via the
 MCP bridge, all three documents recomputing clean, nothing Touched):
@@ -1976,6 +2231,18 @@ At R = 5 it is 0.0000 at every angle with 0.400 mm from 30 deg on. See `macros/2
   `HingeFilletRadius` 5.0 **(DERIVED from `HingeAxisFromBottom`; concentricity — do not
   hand-set, see the header)**, `BackHingeFilletRadius` **8.0** (was 4.0; macro 36 — spreads the socket-recess ramp over 7.89 mm instead of 4.88, ~63° → ~50°),
   `RimFilletRadius` 0.8, `EdgeBreakRadius` 0.6
+- **LidBack gusset** (macro 55, 2026-09-23 — blends the hinge neck's top face into the
+  relieved rear-panel face, on the two knuckle corner edges at `(±50.5…55.5, 37, 10)`, so the
+  lid's profile rolls off the journal the way the box's rolls off its bore):
+  `PanelGussetRadius` **5.45 (DERIVED = `HingeAxisFromRear + HingeSwingClearance -
+  GussetTangentKeep`** — the first two terms ARE the neck-top width, and that equality IS the
+  tangency condition; do not free it),
+  `GussetTangentKeep` **0.05 — a GUARD, not a clearance.** At 0 the fillet consumes the
+  neck-top face exactly and **OCC refuses to build it** (measured: builds at 5.4999, fails at
+  5.5). Same family as `ChamferWallKeep` and `RampMinWall`.
+  **NOT `HingeWrapRadius`** — that is also 5.5 and also `HingeTabRadius +
+  HingeSwingClearance`, but it is DEAD and means a radius about the HINGE AXIS; the gusset
+  arc is centred at (31.55, 15.45).
 - **Flutes:** `FluteCountFront` 24, `FluteCountSide` 15, `FluteRadius` 2.5, `FluteDepth` 0.7,
   `FluteMargin` 6.0, `FluteStartZ` 12.0
 - **Finger slot:** `FingerSlotWidth` 30.0, `FingerSlotDepth` 61.0 (runs to the floor as of
@@ -2043,7 +2310,7 @@ failure (4 mm of connection out of 105) happened while the audit was clean. Trea
 audit as necessary, never sufficient — and for anything that moves, measure `distToShape`
 as well as `common().Volume`.
 
-### THE THREE CHECKS THAT PASS WHILE THE MODEL IS WRONG
+### THE CHECKS THAT PASS WHILE THE MODEL IS WRONG — 0: SHAPE HEALTH
 
 **0. `o.State` says nothing about shape health. Use `Shape.isValid()`.**
 
@@ -2066,11 +2333,12 @@ The debt is pre-existing and the Tip is valid, so gate on it as a REGRESSION
 look broken in the viewport while the part is fine.** Selecting a feature draws
 THAT feature's shape, not the body's.
 
-### THE TWO CHECKS THAT PASS WHILE THE MODEL IS WRONG
+### THE CHECKS THAT PASS WHILE THE MODEL IS WRONG — 1-4: CLEARANCE, STRUCTURE, REACH
 
-Both of these were learned the expensive way on 2026-09-13. They share a shape: the obvious
-test returns green because it is looking somewhere the defect is not. Run them BY HAND after
-any change to a moving interface or a feature tree — no script here catches either.
+Learned the expensive way, 1 and 2 on 2026-09-13, 3 and 4 on 2026-09-23. They all share one
+shape: **the obvious test returns green because it is looking somewhere the defect is not.**
+Run them BY HAND after any change to a moving interface or a feature tree — no script here
+catches any of them.
 
 **1. A zero gap is not an interference. Measure `distToShape`, not just `common().Volume`.**
 
@@ -2129,6 +2397,31 @@ Whenever a macro reorders features or inserts one mid-chain, rebuild BOTH and th
 chain from its root and refuses if any feature is unreachable or in a cycle, if
 `Group != chain`, or if `Tip` is not the chain end. **Run it against every body in the
 document, not just the one you touched.** Macro 24 does the reorder correctly; copy from it.
+
+**3. A feature can be valid, bound, Up-to-date AND CONTRIBUTE NOTHING. Ask what survives to
+the tip.**
+
+Added 2026-09-23. `Lid/Fillet002` was valid, expression-bound, `Up-to-date`, audit-clean —
+and 100 % of the 17.1681 mm³ it added was removed by a later full-width cut. Nothing in this
+project's toolchain asks the question, so ask it directly:
+
+```python
+added    = feat.Shape.cut(feat.BaseFeature.Shape)        # what this feature ADDS
+survives = added.common(body.Tip.Shape).Volume            # how much reaches the part
+```
+
+Run it on any dress-up feature (fillet/chamfer) that sits UPSTREAM of a cut. And note the
+trap is not merely chain order: the cut had **moved the very face the fillet was blending**
+(`y = Depth/2` → `y = Depth/2 + HingeSwingClearance`). Compare the cut's REGION against the
+feature's material, not just their positions in the tree.
+
+**4. After appending ANY feature, re-check the assembly joint's faces BY GEOMETRY.**
+
+Face counts shift, and a stored joint reference can re-resolve onto a different VALID face —
+no `?`, nothing Invalid, State `Up-to-date`, and the placement still reads correctly until
+the next recompute re-derives it and throws the assembly across the screen. Restoring the
+placement does NOT fix it; the reference must be repaired. `macros/05-repair_hinge_joint`
+does this and was upgraded 2026-09-23 to catch the silent case. See the thirteenth round.
 
 **Exemptions and known blind spots:**
 
@@ -2224,7 +2517,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-52. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-55. Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 

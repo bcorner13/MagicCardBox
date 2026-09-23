@@ -1,0 +1,578 @@
+# -*- coding: utf-8 -*-
+"""
+55 - PanelNeckGusset : make the LidBack's curve follow the line of Box001
+=========================================================================
+
+THE PROBLEM (measured 2026-09-23, not inferred)
+-----------------------------------------------
+Bradley added Lid/Fillet002 after Pocket "for additional strength and to follow
+the curve of the box", and reported that PanelRelief cuts into it.
+
+It does not cut into it. It ERASES it:
+
+    gusset added by Fillet002        17.1681 mm3
+      (bbox x 50.5..55.5, y 32.5..36.5, z 10..14)
+    surviving in the final part       0.000000 mm3
+    percent surviving                 0.0000 %
+
+Fillet002 sits at chain position 5 of 11:
+
+    Pocket -> Fillet002 -> Mirrored -> PocketHingeWrap -> PocketKnuckleRelief
+           -> Fillet001 -> PocketPanelRelief -> KnuckleArcFillet
+
+and PocketPanelRelief is a ThroughAll/Symmetric cut of the rectangle
+
+    y in [Depth/2 - HingeAxisFromRear - HingeTabRadius,  Depth/2 + HingeSwingClearance]
+        = [26.5, 37]
+    z in [PanelBottomZ, Height + LidSeatClearance + LidTopThickness]
+        = [10, 48.553]                                        FULL WIDTH IN X
+
+The fillet's material (y 32.5..36.5, z 10..14) lies wholly inside that box, so
+100% of it is removed. This is the coincident-region trap in yet another form:
+the fillet was taken on the panel face at y = Depth/2 = 36.5, and the relief
+then MOVED that face to y = Depth/2 + HingeSwingClearance = 37, taking the
+fillet with it.
+
+THE FIX
+-------
+Build the gusset AFTER the relief, at the TIP of the body, on the corner the
+relief actually leaves behind:
+
+    KnuckleArcFillet Edge26  (55.5, 37, 10) -> (50.5, 37, 10)   +X knuckle
+    KnuckleArcFillet Edge32  (-50.5, 37, 10) -> (-55.5, 37, 10)  -X knuckle
+
+Appended at the TIP on purpose: it disturbs no existing named-edge reference
+(same reasoning as macro 24's flute reorder and macro 37's chamfer), and it can
+be suppressed to recover the previous shape exactly.
+
+Fillet002 IS DELIBERATELY LEFT IN PLACE. It now contributes 0.000 mm3 and is
+dead weight, but removing it would change the shape that Mirrored, Fillet001
+(Edge47) and KnuckleArcFillet (Edge16/Edge31) are computed on, and this project
+has twice been bitten by named-edge references silently re-resolving onto the
+WRONG edge (Fillet004 died; PanelBottomChamfer moved to the panel's TOP while
+still called PanelBottomChamfer). Retiring it is a separate pass that must
+re-check those three references BY POSITION.
+
+WHY R = HingeAxisFromRear + HingeSwingClearance, AND WHY THAT IS NOT A
+COINCIDENCE
+----------------------------------------------------------------------
+The flat neck top at z = PanelBottomZ runs from the journal's tangent point out
+to the relieved panel face:
+
+    from  y = Depth/2 - HingeAxisFromRear      = 31.5   (journal R5 top, (31.5,10))
+    to    y = Depth/2 + HingeSwingClearance    = 37.0   (relieved panel face)
+    width =     HingeAxisFromRear + HingeSwingClearance = 5.5      <- Depth cancels
+
+A fillet of radius R on the (37, 10) corner has its tangent point at y = 37 - R.
+Setting R equal to that width puts the tangent point exactly on (31.5, 10) --
+the journal's top, where the journal's tangent is already horizontal. So the
+profile becomes G1-continuous:
+
+    journal R5.0 (convex) -> gusset R5.5 (concave) -> panel face
+
+which is the SAME construction the box uses on the other side of the joint:
+
+    socket bore R5.4 -> BackHengeFilet -> rear face
+
+That equality IS the tangency condition, exactly as RampPole1In == RampOvershoot
+IS the vertical-top-tangent condition (tenth round). It is bound, not left as a
+free 5.5 that happens to match.
+
+    !! DO NOT REUSE HingeWrapRadius FOR THIS !!
+    HingeWrapRadius is also 5.5 and is also HingeTabRadius + HingeSwingClearance
+    (HingeAxisFromRear == HingeTabRadius is a hard requirement). It is a DEAD
+    Param and it means something else: the radius, about the HINGE AXIS, at
+    which the panel's inner face clears the journal. The gusset arc is centred
+    at (31.5, 15.5), not on the axis. Same number, different concept -- this
+    project's single most repeated failure mode.
+
+GussetTangentKeep -- THE DEGENERATE BOUNDARY IS NOT A SAFE LIMIT (MEASURED)
+---------------------------------------------------------------------------
+R = neck-top width = 5.5 consumes the neck-top face EXACTLY, and OCC refuses it.
+Swept, not guessed:
+
+    R        4.50  4.80  5.00  5.20  5.30  5.40  5.45  5.49  5.499  5.4999  5.5
+    builds    ok    ok    ok    ok    ok    ok    ok    ok    ok      ok     FAIL
+
+It fails at exactly 5.5 and nowhere below. Same species as ChamferWallKeep
+(fifth round): a knob whose only job is to hold a degenerate case away from
+zero. Sitting at 5.4999 would "work" while being one rounding step from a
+failed recompute that does NOT roll back (D5), so:
+
+    GussetTangentKeep  0.05   FREE DESIGN INPUT - a GUARD, not a clearance
+    PanelGussetRadius  5.45   DERIVED = HingeAxisFromRear + HingeSwingClearance
+                                        - GussetTangentKeep
+
+0.05 mm because printed roughness on this machine is +/-0.05-0.1 mm (fifth
+round), so the residual is below what the part can even express.
+
+AND THE RESIDUAL FLAT DOES NOT BREAK TANGENCY -- measured at x = 53:
+
+    Circle R=5.4500 C=(31.5500,15.4500)  (37,15.45)->(31.55,10)   gusset arc
+    Line   (31.5000,10.0000)->(31.5500,10.0000)  L=0.0500         link
+    Circle R=5.0000 C=(31.5000, 5.0000)  top at (31.5,10)         journal
+
+The journal's centre sits directly BELOW its top point, so its tangent there is
+horizontal. The link is horizontal. The gusset arc's centre sits directly ABOVE
+its lower end, so its tangent there is horizontal too. All three share one
+tangent direction -> the profile is G1 continuous exactly as intended, and the
+0.05 mm link is a vanishingly short horizontal segment, not a corner. The gate
+below asserts this from the two arc CENTRES rather than eyeballing it.
+
+This macro gates hard on shape validity AND on the exported-quality mesh
+(manifold + self-intersection), because "valid, closed, one solid" passed on
+geometry with a zero-thickness knife edge through it once already.
+
+WHY IT IS SAFE IN X ONLY AT THE KNUCKLES
+----------------------------------------
+Measured box rear-wall reach over z 10..14:
+
+    x  45  47  48  49  50   ->  y = 36.500   SOLID REAR WALL
+    x  51  53               ->  y = 29.5 .. 35.4   (socket breakout)
+
+The gusset lives only on the two 5 mm knuckle edges (|x| 50.5..55.5), inside the
+socket breakout where the box falls away. A gusset anywhere inboard of x = 50.1
+would drive straight into the box's rear wall when closed -- which is precisely
+why PocketPanelRelief is full width.
+
+IDEMPOTENT. Safe to re-run. Edges are re-found BY POSITION every run and the
+Radius expression is re-asserted outside the create branch (macro 38's bug).
+WRITES A JSON REPORT so the MCP bridge's 30 s response cap does not matter
+(sixth-round pattern): the macro keeps running in FreeCAD after the response is
+lost, and the caller polls for the file.
+
+NOTHING IS SAVED.
+"""
+
+import json
+import math
+import os
+import time
+
+import FreeCAD as App
+
+# ----------------------------------------------------------------- settings
+DOC_NAME   = "Lid"
+BODY_NAME  = "Body001"
+FEAT_NAME  = "PanelNeckGusset"
+PARAM_NAME = "PanelGussetRadius"
+KEEP_NAME  = "GussetTangentKeep"
+KEEP_VALUE = 0.05
+PARAM_EXPR = ("<<Params>>#VarSet.HingeAxisFromRear "
+              "+ <<Params>>#VarSet.HingeSwingClearance "
+              "- <<Params>>#VarSet." + KEEP_NAME)
+RADIUS_EXPR = "<<Params>>#VarSet." + PARAM_NAME
+
+REPORT = os.path.join(os.path.dirname(os.path.abspath(
+    App.getDocument(DOC_NAME).FileName)), "macros", "55-report.json")
+
+SWING_ANGLES  = [0.0, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0]
+# The healthy signature for this joint is a FLAT HingeTabClearance (0.4000)
+# across 0-90 deg with zero interference (fourth round). The floor is therefore
+# the design clearance itself, less a float epsilon -- NOT a nozzle width. A
+# hard-coded 0.40 floor rejects a measured 0.4000 on the last bit.
+GAP_EPS       = 1e-3
+MESH_DEV      = 0.02          # fine: the default ~0.1 smears away thin defects
+
+log = []
+
+
+def p(msg):
+    log.append(str(msg))
+    App.Console.PrintMessage("[55] %s\n" % msg)
+
+
+class Abort(RuntimeError):
+    pass
+
+
+def write_report(status, extra=None):
+    data = {"macro": "55-panel_neck_gusset", "status": status,
+            "when": time.strftime("%Y-%m-%d %H:%M:%S"), "log": log}
+    if extra:
+        data.update(extra)
+    try:
+        with open(REPORT, "w") as fh:
+            json.dump(data, fh, indent=2, default=str)
+    except Exception as exc:                      # pragma: no cover
+        App.Console.PrintError("[55] could not write report: %s\n" % exc)
+
+
+# ---------------------------------------------------------------- documents
+doc = App.getDocument(DOC_NAME)
+params = App.getDocument("Params")
+boxdoc = App.getDocument("MagicCardBox")
+if doc is None or params is None or boxdoc is None:
+    raise Abort("Lid, Params and MagicCardBox must all be open")
+vs = params.getObject("VarSet")
+body = doc.getObject(BODY_NAME)
+if body is None:
+    raise Abort("no %s in %s" % (BODY_NAME, DOC_NAME))
+
+G = lambda n: float(getattr(vs, n))
+
+
+def chain_invalid(b):
+    """Names of features whose SHAPE is invalid. o.State is NOT shape health
+    (ninth round: 9 features read 'Up-to-date' while Shape.isValid() is False)."""
+    bad = []
+    for o in b.Group:
+        if not hasattr(o, "BaseFeature"):
+            continue
+        try:
+            if not o.Shape.isValid():
+                bad.append(o.Name)
+        except Exception:
+            bad.append(o.Name)
+    return bad
+
+
+try:
+    # ------------------------------------------------------- 0. baselines
+    before_invalid = chain_invalid(body)
+    old_tip = body.Tip
+    p("current tip %s  invalid-in-chain=%d %s"
+      % (old_tip.Name, len(before_invalid), before_invalid))
+    # NB: the baseline shape is captured further down, from `base` -- NOT from
+    # body.Tip. On a re-run the tip IS this feature, and measuring against it
+    # reports a 0.0000 delta for a gusset that is present and correct.
+
+    # ------------------------------------------------ 1. the Param + expr
+    # The GUARD first: R = neck-top width is the DEGENERATE boundary (OCC fails
+    # at exactly 5.5, builds at 5.4999). This holds us off it. It is a free
+    # design input, NOT a clearance and NOT derived from anything -- do not
+    # invent a derivation that merely evaluates to 0.05 today.
+    if KEEP_NAME not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", KEEP_NAME, "Hinge",
+                       "GUARD. How much of the hinge neck's top face the gusset "
+                       "must leave behind. At 0 the fillet consumes the face "
+                       "exactly and OCC refuses to build it (measured: fails at "
+                       "5.5, builds at 5.4999). 0.05 is below this machine's "
+                       "+/-0.05-0.1 mm printed roughness, and because the "
+                       "leftover segment is HORIZONTAL - as are both adjoining "
+                       "arcs' tangents - it does not break G1 continuity. Same "
+                       "species as ChamferWallKeep / RampMinWall.")
+        setattr(vs, KEEP_NAME, KEEP_VALUE)
+        p("added Param %s = %.4f (guard)" % (KEEP_NAME, KEEP_VALUE))
+    else:
+        p("Param %s already present = %.4f" % (KEEP_NAME, G(KEEP_NAME)))
+    if G(KEEP_NAME) <= 0.0:
+        raise Abort("%s must be > 0; at 0 the fillet is degenerate and will not "
+                    "build" % KEEP_NAME)
+
+    if PARAM_NAME not in vs.PropertiesList:
+        vs.addProperty("App::PropertyLength", PARAM_NAME, "Hinge",
+                       "Radius of the gusset blending the hinge neck's top face "
+                       "into the relieved rear-panel face. DERIVED = neck-top "
+                       "width - GussetTangentKeep, which lands the tangent "
+                       "point on the journal's top point (less the guard) -> G1 "
+                       "continuous, mirroring the box's "
+                       "bore->BackHengeFilet->rear-face roll. NOT "
+                       "HingeWrapRadius, which shares the value 5.5 but is a "
+                       "radius about the hinge axis.")
+        p("added Param %s" % PARAM_NAME)
+    else:
+        p("Param %s already present" % PARAM_NAME)
+    # re-assert EVERY run, outside the create branch
+    vs.setExpression(PARAM_NAME, PARAM_EXPR)
+    params.recompute()
+    R = G(PARAM_NAME)
+    p("%s = %.4f  (HingeAxisFromRear %.3f + HingeSwingClearance %.3f)"
+      % (PARAM_NAME, R, G("HingeAxisFromRear"), G("HingeSwingClearance")))
+
+    # ------------------------------------- 2. expected corner edges, by Params
+    depth   = G("Depth")
+    width   = G("Width")
+    tab_th  = G("HingeTabThickness")
+    z_corner = G("PanelBottomZ")
+    y_corner = depth / 2.0 + G("HingeSwingClearance")
+    y_tangent = depth / 2.0 - G("HingeAxisFromRear")
+    neck_top_width = y_corner - y_tangent
+    p("corner at y=%.4f z=%.4f ; neck top spans y %.4f..%.4f (width %.4f)"
+      % (y_corner, z_corner, y_tangent, y_corner, neck_top_width))
+
+    if abs(R - (neck_top_width - G(KEEP_NAME))) > 1e-9:
+        raise Abort("R %.4f != neck-top width %.4f - %s %.4f - the tangency "
+                    "identity is broken; the expression no longer describes "
+                    "the geometry"
+                    % (R, neck_top_width, KEEP_NAME, G(KEEP_NAME)))
+
+    # the two knuckle corner edges, |x| from width/2 - tab_th to width/2
+    want = []
+    for sgn in (+1.0, -1.0):
+        want.append(App.Vector(sgn * (width / 2.0 - tab_th / 2.0), y_corner, z_corner))
+
+    def find_by_position(shape, mids, length, tol=0.02):
+        names = []
+        for mid in mids:
+            hits = []
+            for i, e in enumerate(shape.Edges, start=1):
+                if abs(e.Length - length) > tol:
+                    continue
+                if type(e.Curve).__name__ != "Line":
+                    continue
+                m = e.valueAt((e.FirstParameter + e.LastParameter) / 2.0)
+                if (m - mid).Length <= tol:
+                    hits.append("Edge%d" % i)
+            if len(hits) != 1:
+                raise Abort("expected 1 edge at %s, got %d: %s"
+                            % (tuple(round(c, 3) for c in mid), len(hits), hits))
+            names.append(hits[0])
+        return names
+
+    # ------------------------------------------------------ 3. create / update
+    feat = doc.getObject(FEAT_NAME)
+    created = False
+    if feat is None:
+        feat = body.newObject("PartDesign::Fillet", FEAT_NAME)
+        created = True
+        p("created %s" % FEAT_NAME)
+    else:
+        p("%s already present - re-asserting" % FEAT_NAME)
+
+    # base = whatever the tip is, EXCLUDING ourselves
+    base = old_tip if old_tip is not feat else feat.BaseFeature
+    if base is None or base is feat:
+        raise Abort("cannot determine a base feature for %s" % FEAT_NAME)
+
+    # BASELINE, taken from the feature the gusset sits on. Correct on a first
+    # run (base == old tip) and on a re-run (base == our own BaseFeature).
+    base_shape = base.Shape.copy()
+    old_vol = base_shape.Volume
+    p("baseline = %s vol=%.4f" % (base.Name, old_vol))
+
+    edges = find_by_position(base.Shape, want, tab_th)
+    p("corner edges re-found BY POSITION on %s: %s" % (base.Name, edges))
+
+    feat.Base = (base, edges)
+    feat.UseAllEdges = False
+    feat.BaseFeature = base
+    feat.setExpression("Radius", RADIUS_EXPR)     # ALWAYS, not only on create
+    p("Radius expression asserted: %s" % RADIUS_EXPR)
+
+    grp = [o for o in body.Group if o is not feat]
+    grp.append(feat)
+    body.Group = grp
+    body.Tip = feat
+
+    doc.recompute()
+
+    # ------------------------------------------------------------- 4. GATES
+    if "Invalid" in feat.State:
+        raise Abort("%s is Invalid after recompute" % FEAT_NAME)
+
+    sh = feat.Shape
+    if not sh.isValid():
+        raise Abort("%s shape is NOT valid - R=%.4f is the degenerate boundary "
+                    "(it consumes the neck-top face exactly). Back the radius "
+                    "off with a keep-margin Param, as ChamferWallKeep does."
+                    % (FEAT_NAME, R))
+    if not sh.isClosed():
+        raise Abort("%s shape is not closed" % FEAT_NAME)
+    if len(sh.Solids) != 1:
+        raise Abort("%s has %d solids, expected 1" % (FEAT_NAME, len(sh.Solids)))
+
+    # -- structural: Group order vs BaseFeature chain (macro 25's cycle)
+    feats = [o for o in body.Group if hasattr(o, "BaseFeature")]
+    roots = [o for o in feats if o.BaseFeature is None]
+    if len(roots) != 1:
+        raise Abort("expected exactly 1 chain root, found %d" % len(roots))
+    order, seen, cur = [], set(), roots[0]
+    while cur is not None:
+        if cur.Name in seen:
+            raise Abort("BaseFeature chain contains a CYCLE at %s" % cur.Name)
+        seen.add(cur.Name)
+        order.append(cur)
+        nxt = [o for o in feats if o.BaseFeature is cur]
+        if len(nxt) > 1:
+            raise Abort("chain forks at %s" % cur.Name)
+        cur = nxt[0] if nxt else None
+    if len(order) != len(feats):
+        raise Abort("%d features unreachable from the chain root"
+                    % (len(feats) - len(order)))
+    if [o.Name for o in order] != [o.Name for o in feats]:
+        raise Abort("Group order != BaseFeature chain\n chain %s\n group %s"
+                    % ([o.Name for o in order], [o.Name for o in feats]))
+    if body.Tip is not order[-1]:
+        raise Abort("Tip %s is not the chain end %s" % (body.Tip.Name, order[-1].Name))
+    p("chain OK: %d features, Group == BaseFeature chain, Tip == chain end"
+      % len(order))
+
+    # -- shape-validity REGRESSION (must not grow; debt is pre-existing)
+    after_invalid = chain_invalid(body)
+    p("invalid-in-chain after=%d %s" % (len(after_invalid), after_invalid))
+    if len(after_invalid) > len(before_invalid):
+        raise Abort("shape-invalid feature count GREW %d -> %d : %s"
+                    % (len(before_invalid), len(after_invalid), after_invalid))
+
+    # -- volume: two knuckles x (1 - pi/4) R^2 x HingeTabThickness
+    expect = 2.0 * (1.0 - math.pi / 4.0) * R * R * tab_th
+    got = sh.Volume - old_vol
+    p("volume added %+.4f mm3 (analytic %.4f, delta %.4f)"
+      % (got, expect, got - expect))
+    if abs(got - expect) > 0.05 * max(expect, 1.0):
+        raise Abort("added volume %.4f is not the expected gusset %.4f"
+                    % (got, expect))
+
+    # -- TANGENCY: the whole point of the chosen radius.
+    # Section at the middle of the +X knuckle and confirm the flat neck top has
+    # gone and an R arc meets the journal at (y_tangent, z_corner).
+    x_probe = width / 2.0 - tab_th / 2.0
+    arcs, flats = [], []
+    for w in sh.slice(App.Vector(1, 0, 0), x_probe):
+        for e in w.Edges:
+            a, b = e.FirstParameter, e.LastParameter
+            pm = e.valueAt((a + b) / 2.0)
+            t = type(e.Curve).__name__
+            if t == "Circle":
+                # NO z-filter here: the journal arc's midpoint sits near z=4,
+                # well below the corner, and the G1 proof needs its centre.
+                c = e.Curve
+                arcs.append((round(c.Radius, 4), round(c.Center.y, 4),
+                             round(c.Center.z, 4)))
+            elif t == "Line" and abs(pm.z - z_corner) < 1e-6:
+                flats.append(round(e.Length, 4))
+    p("section at x=%.2f : arcs=%s  residual z=%.1f flats=%s"
+      % (x_probe, arcs, z_corner, flats))
+
+    # (a) the gusset arc exists where the identity says it must
+    want_centre = (round(R, 4), round(y_corner - R, 4), round(z_corner + R, 4))
+    if want_centre not in arcs:
+        raise Abort("gusset arc R=%.4f centred (%.4f, %.4f) not found in the "
+                    "section; got %s" % (want_centre + (arcs,)))
+
+    # (b) the residual flat is exactly the guard - no more, no less
+    residual_flat = max(flats) if flats else 0.0
+    p("residual flat on the neck top = %.4f mm (guard %s = %.4f)"
+      % (residual_flat, KEEP_NAME, G(KEEP_NAME)))
+    if abs(residual_flat - G(KEEP_NAME)) > 1e-3:
+        raise Abort("residual flat %.4f != %s %.4f - the gusset is not landing "
+                    "where the identity predicts"
+                    % (residual_flat, KEEP_NAME, G(KEEP_NAME)))
+
+    # (c) G1 CONTINUITY, asserted from the arc CENTRES rather than eyeballed.
+    # A circle's tangent at a point is perpendicular to the centre->point ray.
+    # So an arc has a HORIZONTAL tangent at a point iff its centre is directly
+    # above or below that point. Journal top (y_tangent, z_corner): centre must
+    # be directly below. Gusset lower end (y_corner - R, z_corner): centre must
+    # be directly above. The flat between them is horizontal by construction.
+    # All three horizontal => one shared tangent direction => G1.
+    journal_c = (round(G("HingeTabRadius"), 4), round(y_tangent, 4),
+                 round(G("HingeAxisFromBottom"), 4))
+    if journal_c not in arcs:
+        raise Abort("journal arc R=%.4f centred (%.4f, %.4f) not in the "
+                    "section; got %s - cannot prove G1"
+                    % (journal_c + (arcs,)))
+    # journal centre directly BELOW its top point
+    if abs(journal_c[1] - y_tangent) > 1e-6 or journal_c[2] >= z_corner:
+        raise Abort("journal arc centre %s is not directly below (%.4f, %.4f); "
+                    "its tangent there is not horizontal"
+                    % (journal_c[1:], y_tangent, z_corner))
+    # gusset centre directly ABOVE its lower end
+    if abs(want_centre[1] - (y_corner - R)) > 1e-6 or want_centre[2] <= z_corner:
+        raise Abort("gusset arc centre %s is not directly above (%.4f, %.4f); "
+                    "its tangent there is not horizontal"
+                    % (want_centre[1:], y_corner - R, z_corner))
+    p("G1 confirmed: journal centre directly BELOW (%.4f,%.1f), gusset centre "
+      "directly ABOVE (%.4f,%.1f), %.4f mm horizontal link between -> one "
+      "shared tangent" % (y_tangent, z_corner, y_corner - R, z_corner,
+                          residual_flat))
+
+    # ------------------------------------------------- 5. SWING (the real gate)
+    # CLAUDE.md rule 1b: gate on the SPECIFIC mating pair. Measure the GUSSET
+    # itself, and separately keep the whole LidBack-vs-box gap at its flat 0.400.
+    boxshape = boxdoc.getObject("Body").Shape
+    gusset = sh.cut(base_shape)
+    p("gusset solid: vol=%.4f bbox x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f"
+      % (gusset.Volume, gusset.BoundBox.XMin, gusset.BoundBox.XMax,
+         gusset.BoundBox.YMin, gusset.BoundBox.YMax,
+         gusset.BoundBox.ZMin, gusset.BoundBox.ZMax))
+
+    axis_pt = App.Vector(0.0, depth / 2.0 - G("HingeAxisFromRear"),
+                         G("HingeAxisFromBottom"))
+    axis_dir = App.Vector(1.0, 0.0, 0.0)
+
+    def rotated(shape, deg):
+        c = shape.copy()
+        # opening is -deg about +X: at 90 deg the panel must swing rearward
+        # and BELOW the bed (asserted below)
+        c.rotate(axis_pt, axis_dir, -deg)
+        return c
+
+    chk = rotated(sh, 90.0)
+    if chk.BoundBox.ZMin > -1.0:
+        raise Abort("rotation sense is wrong: at 90 deg ZMin=%.3f, expected the "
+                    "panel to swing below the bed" % chk.BoundBox.ZMin)
+
+    swing = []
+    worst_gap, worst_ang = 1e9, None
+    worst_int = 0.0
+    for ang in SWING_ANGLES:
+        g = rotated(gusset, ang)
+        lb = rotated(sh, ang)
+        gap_g = boxshape.distToShape(g)[0]
+        gap_l = boxshape.distToShape(lb)[0]
+        vol_g = boxshape.common(g).Volume
+        vol_l = boxshape.common(lb).Volume
+        swing.append({"deg": ang,
+                      "gusset_gap": round(gap_g, 4),
+                      "gusset_interf": round(vol_g, 6),
+                      "lidback_gap": round(gap_l, 4),
+                      "lidback_interf": round(vol_l, 6)})
+        p("  %5.1f deg  gusset gap %8.4f  interf %10.6f   |  LidBack gap %8.4f  interf %10.6f"
+          % (ang, gap_g, vol_g, gap_l, vol_l))
+        if gap_l < worst_gap:
+            worst_gap, worst_ang = gap_l, ang
+        worst_int = max(worst_int, vol_l, vol_g)
+
+    gap_floor = G("HingeTabClearance") - GAP_EPS
+    if worst_int > 1e-4:
+        raise Abort("INTERFERENCE %.6f mm3 during the swing" % worst_int)
+    if worst_gap < gap_floor:
+        raise Abort("LidBack-vs-box gap fell to %.4f mm at %.1f deg (floor "
+                    "%.4f = HingeTabClearance)"
+                    % (worst_gap, worst_ang, gap_floor))
+    gaps = [s["lidback_gap"] for s in swing]
+    if max(gaps) - min(gaps) > 0.002:
+        raise Abort("LidBack-vs-box gap is NOT flat across the swing: %s\n"
+                    "A gap that collapses toward 0 deg is a jam (third round)."
+                    % gaps)
+    p("LidBack-vs-box gap FLAT at %.4f mm across 0-90 deg, zero interference"
+      % gaps[0])
+
+    # --------------------------------------------- 6. MESH (round 5's lesson)
+    # "A VALID CLOSED SOLID IS NOT EVIDENCE THAT IT CAN BE PRINTED."
+    mesh_info = None
+    try:
+        import MeshPart
+        m = MeshPart.meshFromShape(Shape=sh, LinearDeflection=MESH_DEV,
+                                   AngularDeflection=0.05, Relative=False)
+        mesh_info = {"facets": m.CountFacets,
+                     "solid": bool(m.isSolid()),
+                     "non_manifold": bool(m.hasNonManifolds()),
+                     "self_intersect": bool(m.hasSelfIntersections())}
+        p("mesh @dev %.3f: %s" % (MESH_DEV, mesh_info))
+        if not m.isSolid() or m.hasNonManifolds() or m.hasSelfIntersections():
+            raise Abort("MESH check failed: %s - the BRep passed but the part "
+                        "would not export cleanly (fifth round)" % mesh_info)
+    except ImportError:
+        p("MeshPart unavailable - mesh gate SKIPPED (report it as not run)")
+
+    p("tip %s: valid=%s closed=%s solids=%d vol=%.4f"
+      % (body.Tip.Name, sh.isValid(), sh.isClosed(), len(sh.Solids), sh.Volume))
+    p("OK - %s built (created=%s). NOTHING SAVED." % (FEAT_NAME, created))
+    write_report("OK", {"radius": R, "created": created,
+                        "volume_added": round(got, 4),
+                        "volume_expected": round(expect, 4),
+                        "residual_flat": residual_flat,
+                        "arcs_at_knuckle": arcs,
+                        "swing": swing, "mesh": mesh_info,
+                        "invalid_before": before_invalid,
+                        "invalid_after": after_invalid})
+
+except Exception as exc:
+    import traceback
+    p("ABORT: %s" % exc)
+    write_report("ABORT", {"error": str(exc),
+                           "traceback": traceback.format_exc()})
+    raise

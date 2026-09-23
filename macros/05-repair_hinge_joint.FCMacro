@@ -11,6 +11,13 @@ The joint stores its references as NAMED FACES — `Box001: Body.Face21`,
 stops resolving (FreeCAD rewrites it as `Body.?Face21`, the `?` marking it dead), and the
 joint goes Invalid. Adding the footer relief pocket did exactly that.
 
+...BUT THAT IS ONLY THE LOUD HALF OF D4. Renumbering can also land the stored name on a
+DIFFERENT, PERFECTLY VALID FACE. Then there is no `?`, nothing goes Invalid, the joint
+reads Up-to-date, and the breakage only appears on the next recompute, when FreeCAD
+re-derives the joint frame from the wrong face and flings the assembly across the screen.
+Macro 55 (2026-09-23) triggered exactly that. See `needs_repair()` below — this macro was
+upgraded then, because as originally written it would have printed "nothing was dead".
+
 Rather than hard-coding a replacement face number — which would just break again on the
 next feature — this macro finds the correct faces BY GEOMETRY:
 
@@ -112,13 +119,51 @@ def is_dead(ref):
     return any("?" in s for s in ref[1])
 
 
+def needs_repair(ref, want_sub):
+    """Repair when the reference is DEAD *or* silently points somewhere else.
+
+    UPGRADED 2026-09-23 -- and this macro would NOT have caught the failure that
+    prompted it.
+
+    Adding PanelNeckGusset at the tip of Body001 (macro 55) took its face count
+    21 -> 23, and the stored `Body001.Face20` SILENTLY re-resolved:
+
+        before   Plane,    area 36.3168 = pi*3.4^2, centre (53.5, 31.5, 5)
+                 -> the blind pin-hole's end disc, the correct face
+        after    Cylinder, R=0.600, centre (-50.5, 35.7895, 1.4)
+                 -> KnuckleArcFillet, on the OPPOSITE side of the box
+
+    No '?'. Nothing Invalid. Joint State ['Up-to-date']. Placement1 still read
+    (53.5, 31.5, 5) because FreeCAD had not re-derived it yet -- so every check
+    said fine. The moment the assembly was recomputed, Placement1 was re-derived
+    from the wrong face and the lid link jumped to X 73..184.
+
+    is_dead() alone therefore reported "nothing was dead" on a joint that was
+    bound to the wrong geometry. A reference that re-resolves onto the WRONG
+    face is worse than one that dies, because nothing complains (seventh round,
+    PanelBottomChamfer -- same lesson, now for assembly joints).
+
+    So: compare the stored name against the face located BY GEOMETRY, and repair
+    on mismatch as well as on death.
+    """
+    if is_dead(ref):
+        return True
+    return list(ref[1]) != [want_sub, want_sub]
+
+
 repaired = []
-if is_dead(j.Reference2):
-    j.Reference2 = (link_box, ["Body." + box_face, "Body." + box_face])
-    repaired.append("Reference2 -> Body.%s" % box_face)
-if is_dead(j.Reference1):
-    j.Reference1 = (link_lid, ["Body001." + lid_face, "Body001." + lid_face])
-    repaired.append("Reference1 -> Body001.%s" % lid_face)
+want2 = "Body." + box_face
+want1 = "Body001." + lid_face
+if needs_repair(j.Reference2, want2):
+    why = "dead" if is_dead(j.Reference2) else "pointed at %s, geometry says %s" % (
+        list(j.Reference2[1]), want2)
+    j.Reference2 = (link_box, [want2, want2])
+    repaired.append("Reference2 -> %s (%s)" % (want2, why))
+if needs_repair(j.Reference1, want1):
+    why = "dead" if is_dead(j.Reference1) else "pointed at %s, geometry says %s" % (
+        list(j.Reference1[1]), want1)
+    j.Reference1 = (link_lid, [want1, want1])
+    repaired.append("Reference1 -> %s (%s)" % (want1, why))
 
 # Writing a reference makes FreeCAD re-derive the joint frames. Put them back.
 #
@@ -164,7 +209,9 @@ print("  pin end disc : %.3f -> box candidates %s" % (r_pin, box_hits))
 print("  hole end disc: %.3f -> lid candidates %s" % (r_hole, lid_hits))
 print("  before: Ref1=%s" % ref1_before)
 print("          Ref2=%s  State=%s" % (ref2_before, state_before))
-print("  repaired: %s" % (", ".join(repaired) if repaired else "nothing was dead"))
+print("  repaired: %s" % (", ".join(repaired) if repaired
+                          else "nothing needed repair "
+                               "(both references resolve AND match the geometry)"))
 print("  after : Ref1=%s" % str(j.Reference1))
 print("          Ref2=%s" % str(j.Reference2))
 print("  Placement1 set: %s" % j.Placement1)

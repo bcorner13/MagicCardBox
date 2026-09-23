@@ -1,0 +1,213 @@
+# -*- coding: utf-8 -*-
+"""
+54 - CAPTURE Lid/Fillet002 ("the LidBack strength fillet") AS FOUND
+====================================================================
+
+WHY THIS MACRO EXISTS
+---------------------
+On 2026-09-23 Bradley reported adding a fillet to LidBack "after Pocket for
+additional strength and to follow the curve of the box". Measured at the start
+of that session:
+
+    Lid.FCStd on disk        : no Fillet002
+    Lid in memory            : Fillet002 present, Up-to-date, valid
+    d.isTouched()            : False          <- LIED
+    objects with "Touched"   : none           <- LIED
+    Params / MagicCardBox    : byte-clean against disk
+
+That is the round-4 UNSAVED-SESSION TRAP verbatim (see CLAUDE.md). One crash
+and the work is gone, with every status signal reporting "fine". This macro is
+the replay, written BEFORE anything was recomputed, exactly as macro 33 was.
+
+It is a pure capture: it reproduces the as-found state and nothing else. It is
+NOT the fix for the PanelRelief-cuts-into-the-fillet problem.
+
+WHAT Fillet002 IS (measured, not inferred)
+------------------------------------------
+    TypeId      PartDesign::Fillet
+    Base        Pocket, ["Edge4"]
+    Edge4       LINE, length 5.000, from (50.5, 36.5, 10) to (55.5, 36.5, 10)
+                -> the horizontal edge at the foot of the rear panel's INNER
+                   face (y = Depth/2 = 36.5), at z = PanelBottomZ = 10, across
+                   the +X knuckle (x 50.5 .. 55.5 = HingeTabThickness wide).
+    Radius      4.0, BOUND: <<Params>>#VarSet.HingeTabRadius
+                          - <<Params>>#VarSet.RimRelief
+    Chain       Pocket -> Fillet002 -> Mirrored
+    Effect      +17.168 mm3 (20494.267 -> 20511.435). Volume goes UP, so it is
+                filling a CONCAVE corner. That is the "additional strength".
+
+EDGE IS RE-FOUND BY POSITION, NOT BY NAME
+-----------------------------------------
+"Edge4" is not trusted. This project has been bitten twice by named-edge refs
+(Fillet004 died; PanelBottomChamfer silently re-resolved onto the WRONG edge --
+see the seventh round). The edge is located by matching a straight 5 mm edge
+whose midpoint lands on (53, 36.5, 10) within tolerance, derived from Params so
+it tracks Depth / PanelBottomZ / HingeTabThickness.
+
+IDEMPOTENT. Safe to re-run. The Radius expression is re-asserted on EVERY run,
+outside the create branch -- macro 38 shipped that bug (see the sixth round).
+"""
+
+import FreeCAD as App
+
+DOC_NAME  = "Lid"
+BODY_NAME = "Body001"
+FEAT_NAME = "Fillet002"
+BASE_NAME = "Pocket"          # the feature the fillet is taken on
+NEXT_NAME = "Mirrored"        # the feature that must follow it in the chain
+
+RADIUS_EXPR = ("<<Params>>#VarSet.HingeTabRadius "
+               "- <<Params>>#VarSet.RimRelief")
+
+TOL = 1e-6
+
+
+def p(msg):
+    App.Console.PrintMessage("[54] %s\n" % msg)
+
+
+def fail(msg):
+    raise RuntimeError("[54] ABORT: %s" % msg)
+
+
+# ---------------------------------------------------------------- documents
+doc = App.getDocument(DOC_NAME)
+if doc is None:
+    fail("document %s is not open" % DOC_NAME)
+params = App.getDocument("Params")
+if params is None:
+    fail("Params document is not open (cross-doc expressions would break)")
+vs = params.getObject("VarSet")
+
+body = doc.getObject(BODY_NAME)
+base = doc.getObject(BASE_NAME)
+nxt  = doc.getObject(NEXT_NAME)
+if body is None or base is None or nxt is None:
+    fail("expected %s / %s / %s in %s" % (BODY_NAME, BASE_NAME, NEXT_NAME, DOC_NAME))
+
+
+# -------------------------------------------------- expected edge, from Params
+# inner face of the rear panel; knuckle spans the outer HingeTabThickness in X
+depth        = float(vs.Depth)
+width        = float(vs.Width)
+panel_bot_z  = float(vs.PanelBottomZ)
+tab_thick    = float(vs.HingeTabThickness)
+
+exp_len = tab_thick
+exp_mid = App.Vector(width / 2.0 - tab_thick / 2.0,   # 53.0
+                     depth / 2.0,                     # 36.5
+                     panel_bot_z)                     # 10.0
+p("expecting a %.3f mm straight edge at %s" % (exp_len, tuple(round(c, 4) for c in exp_mid)))
+
+
+def find_edge(shape, mid, length, tol=0.05):
+    """Locate a straight edge by LENGTH + MIDPOINT. Names are not trusted."""
+    hits = []
+    for i, e in enumerate(shape.Edges, start=1):
+        if abs(e.Length - length) > tol:
+            continue
+        try:
+            if type(e.Curve).__name__ != "Line":
+                continue
+        except Exception:
+            continue
+        m = e.valueAt((e.FirstParameter + e.LastParameter) / 2.0)
+        if (m - mid).Length <= tol:
+            hits.append("Edge%d" % i)
+    return hits
+
+
+hits = find_edge(base.Shape, exp_mid, exp_len)
+if len(hits) != 1:
+    fail("expected exactly 1 matching edge on %s, found %d: %s"
+         % (BASE_NAME, len(hits), hits))
+edge_name = hits[0]
+p("edge re-found BY POSITION as %s on %s" % (edge_name, BASE_NAME))
+
+
+# ------------------------------------------------------------------ create
+created = False
+feat = doc.getObject(FEAT_NAME)
+if feat is None:
+    feat = body.newObject("PartDesign::Fillet", FEAT_NAME)
+    created = True
+    p("created %s" % FEAT_NAME)
+else:
+    p("%s already present - re-asserting" % FEAT_NAME)
+
+# Base + chain position are re-asserted every run (idempotent, self-healing)
+feat.Base = (base, [edge_name])
+feat.UseAllEdges = False
+
+# ------------------------------------------- expression: ALWAYS re-assert
+# (macro 38 set its expression only inside the create branch and silently
+#  became a no-op on re-run -- do not repeat that)
+feat.setExpression("Radius", RADIUS_EXPR)
+p("Radius expression asserted: %s" % RADIUS_EXPR)
+
+
+# ------------------------------------------ splice into the feature chain
+# PartDesign carries TWO orderings (BaseFeature chain AND Group). Both must
+# agree or FreeCAD silently rewrites one from the other later (see macro 25's
+# cycle). Rebuild both, then verify.
+feat.BaseFeature = base
+nxt.BaseFeature = feat
+
+grp = list(body.Group)
+if feat in grp:
+    grp.remove(feat)
+grp.insert(grp.index(nxt), feat)
+body.Group = grp
+p("chain spliced: %s -> %s -> %s" % (BASE_NAME, FEAT_NAME, NEXT_NAME))
+
+doc.recompute()
+
+
+# ------------------------------------------------------------------- gates
+def chain_from_root(b):
+    """Walk the BaseFeature chain from its root. Returns [] on a cycle."""
+    feats = [o for o in b.Group if hasattr(o, "BaseFeature")]
+    roots = [o for o in feats if o.BaseFeature is None]
+    if len(roots) != 1:
+        return []
+    order, seen, cur = [], set(), roots[0]
+    while cur is not None:
+        if cur.Name in seen:
+            return []
+        seen.add(cur.Name)
+        order.append(cur)
+        nxts = [o for o in feats if o.BaseFeature is cur]
+        if len(nxts) > 1:
+            return []
+        cur = nxts[0] if nxts else None
+    return order if len(order) == len(feats) else []
+
+
+order = chain_from_root(body)
+if not order:
+    fail("BaseFeature chain is broken or cyclic")
+grp_feats = [o for o in body.Group if hasattr(o, "BaseFeature")]
+if [o.Name for o in order] != [o.Name for o in grp_feats]:
+    fail("Group order != BaseFeature chain\n  chain: %s\n  group: %s"
+         % ([o.Name for o in order], [o.Name for o in grp_feats]))
+if body.Tip is not order[-1]:
+    fail("Tip %s is not the chain end %s" % (body.Tip.Name, order[-1].Name))
+
+if "Invalid" in feat.State:
+    fail("%s is Invalid" % FEAT_NAME)
+if not feat.Shape.isValid():
+    fail("%s shape is not valid" % FEAT_NAME)
+
+# the fillet must ADD material (concave corner => strength), not remove it
+d_vol = feat.Shape.Volume - base.Shape.Volume
+p("volume delta vs %s: %+.4f mm3 (expect ~ +17.17, must be > 0)" % (BASE_NAME, d_vol))
+if d_vol <= 0:
+    fail("fillet removed material (%.4f) - it is not filling the concave corner"
+         % d_vol)
+
+p("radius evaluates to %.4f mm (HingeTabRadius %.3f - RimRelief %.3f)"
+  % (float(feat.Radius), float(vs.HingeTabRadius), float(vs.RimRelief)))
+p("tip %s: valid=%s closed=%s solids=%d vol=%.3f"
+  % (body.Tip.Name, body.Tip.Shape.isValid(), body.Tip.Shape.isClosed(),
+     len(body.Tip.Shape.Solids), body.Tip.Shape.Volume))
+p("OK - %s captured (created=%s). NOTHING SAVED; save from the GUI." % (FEAT_NAME, created))

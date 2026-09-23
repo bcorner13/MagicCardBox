@@ -25,3 +25,7 @@ gcode/*
 
 # Python
 __pycache__/
+
+# Macro run reports — transient artifacts, regenerated on every run
+# (the export matrix's own report lands in gcode/ and is already covered above)
+macros/*-report.json
