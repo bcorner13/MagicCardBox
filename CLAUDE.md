@@ -1634,6 +1634,134 @@ part in a screenshot is FreeCAD's **selection bounding box**, not geometry.
 
 ---
 
+## FIFTEENTH ROUND — 2026-11-14 — Alchemy cards, and a ramp that could flip itself inside-out (macros 56-58)
+
+Bradley asked for a third product family: **Alchemy cards, 125 x 90 mm, BARE (unsleeved), 60
+count, all three surfaces.** Card size is now **per-variant** in macro 41's MATRIX, beside
+`CardCount` / `CardPitch` — the round-8 rule (card spec is per product, not global) applied
+to the other two card dimensions.
+
+```
+                 MTG 60            Alchemy 60
+card             93 x 66 sleeved   125 x 90 bare
+Width x Depth    111 x 73          143 x 97
+interior         95 x 68 x 43.198  127 x 92 x 43.198     <- measured off the solid
+print bbox       116.8 x 114.5 x 77   148.8 x 138.5 x 101
+mesh volume      149.92 cm3 (fl)   225.26 cm3 (fl)
+```
+
+**`CardPitch` 0.7033 is Bradley's choice, and it is a SLEEVED pitch.** He chose to keep the
+MTG-60 internal height. A bare card is likely ~0.3–0.35 mm, so 60 Alchemy cards probably
+stand ~18–21 mm in a 43 mm cavity. If a measured stack says otherwise, give Alchemy its own
+pitch constant in macro 41 — one line.
+
+**Flutes stay at 24**, so on the 143 box their pitch widens 4.30 → 5.70 mm and the Ø5 flutes
+leave 0.7 mm flats between them instead of sharp ridges. Deliberate default; making
+`FluteCountFront` per-variant (~31) would restore the MTG look.
+
+### Measured at 143 x 97 (macro 56, dry run, `TEST ENVIRONMENT VERIFIED` banner)
+
+W 143 was **outside the range the model had ever been swept over** (W 80–130). Everything held:
+LidBack swing flat **0.4000** 0–90 deg with zero interference, ramp wall min **0.8955** (guard
+0.8), magnet skin **1.000**, shape-invalid count 8 → 8, no dead refs, all three exported
+meshes solid / manifold / self-intersection-free / 2 components / gap 0.4.
+
+### THE RAMP COULD FLIP TO ITS MIRROR SOLUTION — and nothing said so (macro 58)
+
+The dry run's restore check failed: after **111 → 143 → 111** the box came back
+**+150.885 mm³**, at x ±50.1, y 29–36.5, z 0–8 — the ramp's top no longer cut. Repeatable to
+the third decimal. Cause, measured against the reopened disk copy:
+
+```
+Sketch013 pole 1     on disk (36.5, 6.0812)     after round trip (40.5, 6.0812)
+```
+
+`Constraints[28]` was an **unsigned point-to-line `Distance`**: `RampPole1In` = 2 from the frame
+line x = 38.5. Both 36.5 and 40.5 satisfy it. After a large jump the solver took the mirror.
+**DoF stayed 0, `FullyConstrained` True, nothing Invalid, State Up-to-date** — and the ramp
+lost the vertical top tangent round 10 locked in. Eight constraints had this form ([24], [25],
+[28]–[33]); only [28] flipped.
+
+Fix: each became a **signed `DistanceX` / `DistanceY`, in place** (same index, so every
+expression key survives), same Param expression. The frame lines are exactly H/V, so the value
+is unchanged and only the mirror solution is gone. Gated on: sketch geometry delta 0.0,
+Pocket010 and tip boolean difference 0 both ways, DoF 0 / no redundant/conflicting/malformed.
+Round trip after the fix: boolean difference **0.0** both ways, pole 1 stays at (36.5, 6.0812).
+
+> **An unsigned `Distance` from a point to a line has TWO solutions. A fully-constrained
+> sketch can still be WRONG — DoF counts equations, not which root the solver picked.** Any
+> sketch whose geometry has to stay on one side of a line should use signed
+> `DistanceX`/`DistanceY` between points. This only shows up under a LARGE parameter jump —
+> every sweep before this one moved Depth by a few mm.
+
+### I NAMED THE WRONG CAUSE FIRST — round 9's rule, broken and caught
+
+First diagnosis: `Pocket010` was `UpToFace → Pocket009.Face114` and the face had renumbered.
+Plausible, stated as found, and **wrong** — macro 57 replaced it with a bound Length and the
+round trip produced **107735.705 again, identical to the third decimal**. A repeatable,
+identical wrong value is a solver picking a discrete alternative, not a stale reference.
+Macro 57 is valid hardening (proven same solid) but **was not applied**; kept in `macros/`
+unrun-in-model.
+
+### `Shape.Volume` IS NOT A SAME-SOLID TEST
+
+Three times this round, an identical solid read a different volume:
+
+```
+macro 57   UpToFace vs bound Length   +0.0195 mm3   boolean diff 0 / 0, 168 vs 167 faces
+macro 56   round trip after 58        +0.0086 mm3   boolean diff 0 / 0, 170 vs 170 faces
+```
+
+`Shape.Volume` integrates face by face; an extra split face or a re-built B-spline moves it in
+the 5th significant figure. **Gate "same geometry" on `a.cut(b).Volume` AND `b.cut(a).Volume`**
+(both exactly 0 here). Macros 56, 57 and 41's restore now do. Volume stays the right gate for
+"did a feature add what it should" — just not for identity.
+
+### The assembly — don't recompute it at another card size
+
+Macro 56 deliberately skipped the assembly recompute, yet the joint's `Placement1` still came
+back as **(69.5, 43.5, 5) — the Alchemy-size lid's pin hole** — and the lid link solved to
+−87.5 deg. The references stayed correct (`Face22` / `Face170` by geometry); only the derived
+placement was stale. Fixed by closing MagicCardAssembly without saving and reopening (disk was
+always right). **Macro 41 now never recomputes the assembly** — the export builds its own pose.
+It asserts `Placement1` is unchanged at the end.
+
+### Macro 41 changes
+
+- MATRIX rows carry a card size (`MTG` 93x66, `ALCHEMY` 125x90); 9 variants; Alchemy rows LAST
+  so the model makes one trip to the large size.
+- **Restores the variant it FOUND**, not CANONICAL — round 13's trap (memory left on a different
+  card count from disk, nothing Touched) is closed. Proven by a boolean diff of all three bodies
+  against their start shapes (0.0 / 0.0 on every body) plus the joint check.
+- `require_laptop()` banner first — macro 41 never had it.
+
+### Exports — 2026-11-14, `all_ok: True`
+
+```
+tag                     gap  bbox                     facets  vol_cm3  vd%
+100-smooth              0.4  116.81 x 134.26 x  77.0   15208   194.40  0.006
+100-fluted              0.4  116.81 x 134.26 x  77.0   31308   186.57  0.005
+100-fluted-label        0.4  116.81 x 134.26 x  77.0   34468   183.94  0.005
+60-smooth               0.4  116.81 x 114.46 x  77.0   15146   155.97  0.003
+60-fluted               0.4  116.81 x 114.46 x  77.0   31246   149.92  0.001
+60-fluted-label         0.4  116.81 x 114.46 x  77.0   34406   147.29  0.001
+alchemy60-smooth        0.4  148.81 x 138.46 x 101.0   15302   232.27  0.007
+alchemy60-fluted        0.4  148.81 x 138.46 x 101.0   31402   225.26  0.006
+alchemy60-fluted-label  0.4  148.81 x 138.46 x 101.0   34566   219.39  0.007
+```
+
+The six MTG files match HEAD's volumes to 0.001 cm³ but carry +14/+20 facets. **Not
+identified** — suspected re-tessellation of the recomputed ramp B-spline (poles unmoved,
+boolean 0). Unverified.
+
+**Slicer projects had been saved over three tracked deliverables** (`100-fluted-label`,
+`100-fluted` Creality, `60-fluted` PrusaSlicer 2026-11-13) — the `last_export_path` drift this
+file already warns about. Copied byte-identical to `gcode/MagicCardBox-<tag>.slicer-project.3mf`
+**before** the export overwrote them. `gcode/` is gitignored: those copies are local only.
+**Check `3mf/` entry counts before any export** — 4 entries is a deliverable, 16+ is a project.
+
+---
+
 | Defect | Status |
 |---|---|
 | D1 / D1b — projected external geometry in the box sketches | ✅ fixed (macro 02) |
@@ -2517,7 +2645,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-55. Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-58 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 

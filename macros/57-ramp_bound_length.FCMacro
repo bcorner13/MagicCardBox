@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+"""57-ramp_bound_length.FCMacro -- Pocket010 (the rear ramp) stops depending on a
+named face. NOTHING IS SAVED.
+
+WHY (found by macro 56, 2026-11-14)
+  Pocket010 was Type UpToFace -> Pocket009.Face114, SideType Symmetric.
+  Face114 is the hinge-socket floor: plane x = Width/2 - (HingeTabThickness +
+  HingeTabClearance) = 50.1 at Width 111. Changing Width renumbers Pocket009's
+  faces; after a 111 -> 143 -> 111 round trip 'Face114' resolved to a DIFFERENT
+  face and the box gained 150.894 mm3 - no '?', nothing Invalid, State
+  Up-to-date. Same silent re-resolve as round 7 (PanelBottomChamfer) and round
+  13 (the joint face), now on an UpToFace. Macro 41 never exposed it because it
+  only ever changes Height, which does not renumber this face.
+
+THE FIX
+  Type Length, still Symmetric, with
+      Length = Width - 2 * (HingeTabThickness + HingeTabClearance)
+  i.e. exactly the plane Face114 lies on, mirrored. No named reference remains.
+
+GATE (phase-A no-op): at the current card size the new cut must be the SAME
+SOLID as the old: boolean difference 0 both ways and the ramp's B-spline faces
+identical. (Volume equality was tried first and is the wrong test - see the
+comment at the gate.) Otherwise the
+original UpToFace is put back and the macro aborts. Idempotent: on a re-run
+the expression is re-asserted and the gate re-measured.
+
+Writes macros/57-report.json.
+"""
+
+import importlib
+import json
+import os
+import sys
+import time
+import traceback
+
+import FreeCAD
+
+PROJ = os.path.dirname(os.path.abspath(FreeCAD.getDocument("Params").FileName))
+REPORT = os.path.join(PROJ, "macros", "57-report.json")
+V = "<<Params>>#VarSet."
+EXPR = "%sWidth - 2 * (%sHingeTabThickness + %sHingeTabClearance)" % (V, V, V)
+TOL = 1e-3
+
+out = {"macro": "57-ramp_bound_length", "status": "RUNNING", "log": []}
+
+
+def log(m):
+    out["log"].append(str(m))
+    FreeCAD.Console.PrintMessage("[57] %s\n" % m)
+
+
+def flush():
+    with open(REPORT, "w") as fh:
+        json.dump(out, fh, indent=1, default=str)
+
+
+def recompute():
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+
+
+def chain_invalid(b):
+    return [o.Name for o in b.Group if hasattr(o, "BaseFeature") and not o.Shape.isValid()]
+
+
+def main():
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    log(out["banner"])
+
+    mb = FreeCAD.getDocument("MagicCardBox")
+    body = mb.getObject("Body")
+    pk = mb.getObject("Pocket010")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+
+    recompute()
+    base_tip = body.Tip.Shape.Volume
+    base_pk = pk.Shape.Volume
+    base_shape = pk.Shape.copy()
+    base_bad = chain_invalid(body)
+    orig = {"Type": pk.Type, "UpToFace": pk.UpToFace, "SideType": pk.SideType,
+            "expr": [e for e in pk.ExpressionEngine if e[0] == "Length"]}
+    out["before"] = {"tip": round(base_tip, 4), "pocket010": round(base_pk, 4),
+                     "Type": orig["Type"], "UpToFace": str(orig["UpToFace"]),
+                     "SideType": orig["SideType"], "invalid": base_bad,
+                     "Width": vs.Width.Value, "tip_name": body.Tip.Name}
+    log("before %s" % out["before"])
+    if orig["SideType"] != "Symmetric":
+        raise RuntimeError("Pocket010 SideType is %s, expected Symmetric - the bound "
+                           "Length assumes a symmetric cut" % orig["SideType"])
+
+    # Midplane is deprecated (CLAUDE.md): never touch it; SideType already Symmetric.
+    pk.Type = "Length"
+    pk.setExpression("Length", EXPR)
+    pk.UpToFace = None
+    recompute()
+
+    tip = body.Tip.Shape.Volume
+    pv = pk.Shape.Volume
+    after_bad = chain_invalid(body)
+    out["after"] = {"tip": round(tip, 4), "pocket010": round(pv, 4), "Type": pk.Type,
+                    "Length": pk.Length.Value, "SideType": pk.SideType,
+                    "UpToFace": str(pk.UpToFace), "invalid": after_bad,
+                    "state": list(pk.State), "tip_valid": body.Tip.Shape.isValid()}
+    log("after %s" % out["after"])
+
+    # SAME-CUT GATE. Not Shape.Volume equality: the UpToFace cut leaves one extra
+    # split face (168 vs 167 faces) and Shape.Volume integrates per face, so the
+    # identical solid read 0.0195 mm3 different on the first run while both
+    # boolean differences were exactly 0. Volume drift is LOGGED, not gated.
+    B = pk.Shape.copy()
+    ab, ba = base_shape.cut(B).Volume, B.cut(base_shape).Volume
+    bs = lambda s: sorted(round(f.Area, 4) for f in s.Faces if "BSpline" in f.Surface.TypeId)
+    out["same_cut"] = {"A_minus_B": ab, "B_minus_A": ba,
+                       "bspline_before": bs(base_shape), "bspline_after": bs(B),
+                       "faces": [len(base_shape.Faces), len(B.Faces)],
+                       "volume_drift_logged": round(pv - base_pk, 4)}
+    log("same-cut %s" % out["same_cut"])
+    problems = []
+    if ab > TOL or ba > TOL:
+        problems.append("boolean difference not zero: A-B %.6f B-A %.6f" % (ab, ba))
+    if bs(base_shape) != bs(B):
+        problems.append("ramp B-spline faces changed %s -> %s" % (bs(base_shape), bs(B)))
+    if len(after_bad) > len(base_bad):
+        problems.append("shape-invalid count grew %s -> %s" % (base_bad, after_bad))
+    if "Invalid" in pk.State or not body.Tip.Shape.isValid():
+        problems.append("Pocket010 / tip invalid")
+    out["problems"] = problems
+
+    if problems:
+        log("REVERTING to UpToFace: %s" % problems)
+        pk.setExpression("Length", None)
+        pk.Type = orig["Type"]
+        pk.UpToFace = orig["UpToFace"]
+        recompute()
+        out["reverted_tip"] = round(body.Tip.Shape.Volume, 4)
+        if abs(body.Tip.Shape.Volume - base_tip) > TOL:
+            problems.append("REVERT DID NOT RESTORE (D5) - close all four documents "
+                            "WITHOUT saving")
+        raise RuntimeError("; ".join(problems))
+
+
+try:
+    main()
+    out["status"] = "OK"
+except Exception as exc:
+    out["status"] = "ABORT"
+    out["error"] = str(exc)
+    out["traceback"] = traceback.format_exc()
+finally:
+    out["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    flush()
+    log("status %s. NOTHING SAVED." % out["status"])

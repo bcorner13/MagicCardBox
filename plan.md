@@ -368,3 +368,88 @@ into it). A circle has no branch ambiguity.
 
 **Verified across W 80–130, D 50–100, H 50–95** (9 cases): disc intact, all dimensions
 tracking, **swing interference 0.0000 mm³**, every solid valid/closed/single.
+
+---
+
+## Alchemy 60-card set — DONE 2026-11-14 (approved and executed)
+
+**Outcome:** built as planned; 9 variants exported, `all_ok: True`. The dry run (macro 56)
+found a real defect the plan did not anticipate — Sketch013's ramp pole could solve to its
+mirror after a size round trip — fixed by macro 58 (signed constraints). Macro 57 (UpToFace →
+bound Length) was a wrong first diagnosis and is NOT applied. Macro 41 no longer recomputes the
+assembly. Full write-up: CLAUDE.md, FIFTEENTH ROUND. Flutes left at 24; pitch 0.7033 by choice.
+
+
+**Request:** a third product family for Alchemy cards, **125 x 90 mm, bare (unsleeved)**,
+60 count, all three surfaces (smooth / fluted / fluted-label).
+
+### PARAMETERS
+
+No new VarSet variables. The card size becomes **per-variant** in macro 41's MATRIX,
+beside `CardCount` / `CardPitch` (the round-8 rule: card spec is per product, not global).
+
+| Name | Type | Alchemy value | Existing (MTG) value |
+|---|---|---|---|
+| `CardLength` | Length | **125.0** | 93.0 |
+| `CardWidth` | Length | **90.0** | 66.0 |
+| `CardCount` | Integer | 60 | 60 / 100 |
+| `CardPitch` | Length | **0.7033** (THICK_SLEEVE, per Bradley) | 0.62 / 0.7033 |
+
+Derived, unchanged expressions:
+
+```
+Width  = 125 + 2*1 + 2*8         = 143.0   (was 111)
+Depth  =  90 + 2*1 + 2 + 3       =  97.0   (was 73)
+Height = 60*0.7033 + 1 + 2       =  45.2   (same as the MTG 60)
+interior 127 x 92 x 43.2
+```
+
+**⚠️ OPEN — pitch for BARE cards.** 0.7033 was measured on Ryan's *sleeved* cards. An
+unsleeved card is typically ~0.3–0.35 mm, so 60 bare cards are likely ~18–21 mm and this box
+would leave ~20 mm of empty headroom. Built as instructed; **measure a real Alchemy stack**
+and replace the pitch with an `ALCHEMY_BARE` constant in macro 41 (one-line change).
+
+### FEATURE TREE
+
+No new features. Every feature is already bound to Width/Depth/Height, so the change is:
+
+1. `macros/56-alchemy_variant.FCMacro` (new, dry-run first): sets CardLength 125 /
+   CardWidth 90 in memory, recomputes, runs the VALIDATION gates below, **saves nothing**,
+   and restores 93 / 66 in a `finally`. This answers "does the model survive W 143 / D 97"
+   before any export is attempted. The model has only been swept over W 80–130, D 50–100,
+   so W 143 is **outside the verified range**.
+2. Macro 41: add `card_len, card_wid` columns to MATRIX and set them in `set_variant()`;
+   add three rows `alchemy60-{smooth,fluted,fluted-label}`; CANONICAL row also gets 93/66.
+3. Run macro 41 → 9 variants; outputs `3mf/MagicCardBox-alchemy60-*.3mf` and `stl/…`.
+
+### CONSTRAINT STRATEGY
+
+Unchanged — no sketch is touched. If a gate fails at the new size, the fix is a Param or
+an added constraint, never a coordinate edit; stop and report before any fix.
+
+### VALIDATION (all after `require_laptop(need_freecad=True)`, banner quoted)
+
+- Audit clean (`scripts/audit_parametric.py`).
+- No dead `?Edge` refs; `Fillet003` (11 refs) and the fillet chain resolve **by position**.
+- `chain_validity()` count does not GROW (box baseline 8, lid 0).
+- Panel-vs-box swing, measured **separately per body**, 0–90°: gap flat at 0.4000,
+  interference 0.0000 mm³. Gusset gap ≥ 0.4.
+- Ramp rear-wall minimum ≥ `RampMinWall` 0.8; footer-lid bed gap = `FooterLidClearance`.
+- Magnet skin under the outer flute ≥ 0.99 (flute and magnet both reference `Width/2`, so
+  it should be unchanged — measured, not assumed).
+- Name plate floor below flute bottoms by `NamePlateSink`; exported mesh solid, manifold,
+  no self-intersections at the default export tessellation.
+- Interior measured 127.000 x 92.000 x 43.198.
+- Assembly joint faces re-checked by geometry (macro 05).
+
+### Things that change that you should decide on
+
+- **Flute pitch widens** 4.30 → 5.70 mm (24 flutes across 131 mm instead of 99). The flutes
+  are Ø5, so the ridges between them go from sharp to 0.7 mm flats. To keep the MTG look,
+  `FluteCountFront` would have to become per-variant (~31). **Default: leave it at 24.**
+- **Print footprint ≈ 149 x 139 x 101 mm** (was 117 x 114 x 77). Fits the K2 Plus easily,
+  but exceeds the "120 x 140" figure in CAD_STANDARDS.md §1. ~50 % more material and time.
+- Magnet fit is still mid-decision (round 14, per-material). Alchemy inherits whatever
+  the MTG boxes carry; it doesn't change anything here.
+- **Nothing is saved without your approval** (bootstrap step 6). Macro 41 restores the
+  CANONICAL MTG variant at the end.

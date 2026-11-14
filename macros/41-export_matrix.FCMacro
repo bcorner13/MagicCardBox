@@ -2,8 +2,19 @@
 """
 41-export_matrix.FCMacro
 
-Exports the whole product matrix in one run: {100, 60} card counts x
-{smooth, fluted, fluted-label} surfaces = 6 variants, STL + 3MF each.
+Exports the whole product matrix in one run: {MTG 100, MTG 60, Alchemy 60}
+x {smooth, fluted, fluted-label} surfaces = 9 variants, STL + 3MF each.
+
+CARD SIZE IS PER-VARIANT (2026-11-14, Alchemy). CardLength / CardWidth live in
+the MATRIX beside CardCount / CardPitch. Width and Depth derive from them, so an
+Alchemy row changes the box from 111 x 73 to 143 x 97. Alchemy rows are LAST so
+the model makes ONE trip to the large size and back.
+  - Macro 58 must be in the model first: before it, Sketch013's ramp pole could
+    solve to its MIRROR position after a size round trip (+150.885 mm3, silent).
+  - The ASSEMBLY IS NOT RECOMPUTED here. Recomputing it at the Alchemy size
+    re-derives the joint's Placement1 from the large lid (69.5, 43.5, 5) and
+    leaves it stale after the restore - observed 2026-11-14. The export builds
+    its own pose and never reads the assembly.
 
 WHY THIS REPLACES THE MANUAL CYCLE
   The old procedure was: set CardCount, flip Pocket009.Suppressed in BOTH
@@ -46,13 +57,17 @@ THE TWO SWITCHES
   Both features sit at the TIP of their bodies (macros 24, 38), which is what
   makes them suppressible without disturbing any edge reference.
 
-RESTORES A CANONICAL STATE
-  Always, even on failure, so the model is never left in a half-configured
-  variant for the next session to trip over.
+RESTORES THE STATE IT FOUND (was: a CANONICAL 100-card state)
+  Always, even on failure. It used to restore CANONICAL, which silently left
+  memory on a different card count from disk with nothing Touched (round 13).
+  It now captures the loaded variant at start and puts THAT back, then proves
+  it with a boolean comparison of all three bodies against their start shapes.
 """
 
+import importlib
 import json
 import os
+import sys
 import traceback
 
 import FreeCAD
@@ -95,27 +110,51 @@ VOL_TOL = 0.01
 THIN_SLEEVE = 0.62
 THICK_SLEEVE = 0.7033
 
-#        cards, pitch,        flutes, label, tag
-MATRIX = [(100, THIN_SLEEVE,  False, False, "100-smooth"),
-          (100, THIN_SLEEVE,  True,  False, "100-fluted"),
-          (100, THIN_SLEEVE,  True,  True,  "100-fluted-label"),
-          (60,  THICK_SLEEVE, False, False, "60-smooth"),
-          (60,  THICK_SLEEVE, True,  False, "60-fluted"),
-          (60,  THICK_SLEEVE, True,  True,  "60-fluted-label")]
+# CARD SIZE, per product family. MTG 93 x 66 is the sleeved size (CardWidth 66
+# still an ASSUMPTION - see CLAUDE.md). Alchemy 125 x 90 is BARE (unsleeved),
+# Bradley 2026-11-14. Alchemy uses THICK_SLEEVE pitch BY CHOICE, to keep the
+# MTG-60 internal height of 43.198 - a bare card is likely ~0.3 mm, so a
+# measured Alchemy stack may justify its own pitch later.
+MTG = (93.0, 66.0)
+ALCHEMY = (125.0, 90.0)
 
-CANONICAL = (100, THIN_SLEEVE, True, True, "100-fluted-label")
+#        cards, pitch,        card size, flutes, label, tag
+MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
+          (100, THIN_SLEEVE,  MTG,     True,  False, "100-fluted"),
+          (100, THIN_SLEEVE,  MTG,     True,  True,  "100-fluted-label"),
+          (60,  THICK_SLEEVE, MTG,     False, False, "60-smooth"),
+          (60,  THICK_SLEEVE, MTG,     True,  False, "60-fluted"),
+          (60,  THICK_SLEEVE, MTG,     True,  True,  "60-fluted-label"),
+          (60,  THICK_SLEEVE, ALCHEMY, False, False, "alchemy60-smooth"),
+          (60,  THICK_SLEEVE, ALCHEMY, True,  False, "alchemy60-fluted"),
+          (60,  THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy60-fluted-label")]
+
+# Fallback only - the macro restores the state it FOUND (see header).
+CANONICAL = (100, THIN_SLEEVE, MTG, True, True, "100-fluted-label")
 
 
-def set_variant(cards, pitch, flutes, label):
+def current_variant():
+    mb = FreeCAD.getDocument("MagicCardBox")
+    ld = FreeCAD.getDocument("Lid")
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    return (int(vs.CardCount), float(vs.CardPitch.Value),
+            (float(vs.CardLength.Value), float(vs.CardWidth.Value)),
+            not mb.getObject("Pocket009").Suppressed,
+            not ld.getObject("PocketNamePlate").Suppressed, "as-found")
+
+
+def set_variant(cards, pitch, size, flutes, label):
     mb = FreeCAD.getDocument("MagicCardBox")
     ld = FreeCAD.getDocument("Lid")
     vs = FreeCAD.getDocument("Params").getObject("VarSet")
     vs.CardCount = cards
     vs.CardPitch = pitch
+    vs.CardLength = size[0]
+    vs.CardWidth = size[1]
     mb.getObject("Pocket009").Suppressed = not flutes
     ld.getObject("Pocket009").Suppressed = not flutes
     ld.getObject("PocketNamePlate").Suppressed = not label
-    for dn in ("Params", "Lid", "MagicCardBox", "MagicCardAssembly"):
+    for dn in ("Params", "Lid", "MagicCardBox"):        # NOT the assembly - see header
         FreeCAD.getDocument(dn).recompute()
     bad = []
     for dn in ("Lid", "MagicCardBox"):
@@ -186,11 +225,11 @@ def tris_in_3mf(path):
 
 def run():
     results = []
-    for cards, pitch, flutes, label, tag in MATRIX:
-        row = {"tag": tag, "cards": cards, "pitch": pitch, "flutes": flutes,
-               "label": label, "problems": []}
+    for cards, pitch, size, flutes, label, tag in MATRIX:
+        row = {"tag": tag, "cards": cards, "pitch": pitch, "card_size": list(size),
+               "flutes": flutes, "label": label, "problems": []}
         try:
-            bad = set_variant(cards, pitch, flutes, label)
+            bad = set_variant(cards, pitch, size, flutes, label)
             if bad:
                 row["problems"].append("invalid after recompute: %s" % bad)
 
@@ -252,19 +291,51 @@ def run():
     return results
 
 
+def body_shapes():
+    return {"box": FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape.copy(),
+            "lid_plate": FreeCAD.getDocument("Lid").getObject("Body").Shape.copy(),
+            "lid_back": FreeCAD.getDocument("Lid").getObject("Body001").Shape.copy()}
+
+
+def joint_p1():
+    return str(FreeCAD.getDocument("MagicCardAssembly").getObject("Joint").Placement1)
+
+
 out = {"results": [], "restored": None, "error": None}
+start_variant = start_shapes = start_p1 = None
 try:
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    start_variant = current_variant()
+    start_shapes = body_shapes()
+    start_p1 = joint_p1()
+    out["start_variant"] = [start_variant[0], start_variant[1], list(start_variant[2]),
+                            start_variant[3], start_variant[4]]
     out["results"] = run()
 except Exception:
     out["error"] = traceback.format_exc()[-800:]
 finally:
+    restore_ok = False
     try:
-        set_variant(CANONICAL[0], CANONICAL[1], CANONICAL[2], CANONICAL[3])
-        out["restored"] = CANONICAL[4]
+        v = start_variant or CANONICAL
+        set_variant(v[0], v[1], v[2], v[3], v[4])
+        out["restored"] = v[5]
+        if start_shapes is not None:
+            now = body_shapes()
+            diff = {k: [start_shapes[k].cut(now[k]).Volume, now[k].cut(start_shapes[k]).Volume]
+                    for k in now}
+            out["restore_boolean_diff"] = diff
+            out["joint_p1"] = [start_p1, joint_p1()]
+            restore_ok = all(max(d) <= 1e-3 for d in diff.values()) and start_p1 == joint_p1()
+            if not restore_ok:
+                out["restored"] = ("RESTORE DID NOT RETURN TO START - close all four "
+                                   "documents WITHOUT saving")
     except Exception:
-        out["restored"] = "RESTORE FAILED"
+        out["restored"] = "RESTORE FAILED: " + traceback.format_exc()[-400:]
     out["all_ok"] = bool(out["results"]) and all(r["ok"] for r in out["results"]) \
-        and out["error"] is None
+        and out["error"] is None and restore_ok
     try:
         os.makedirs(os.path.dirname(REPORT), exist_ok=True)
         with open(REPORT, "w") as fh:

@@ -1,0 +1,433 @@
+# -*- coding: utf-8 -*-
+"""56-alchemy_variant_dryrun.FCMacro -- DRY RUN. NOTHING IS SAVED.
+
+Question answered: does the model survive the Alchemy card size?
+
+    Alchemy cards, BARE (unsleeved): 125 x 90 mm, 60 count, CardPitch 0.7033
+    (Bradley's choice 2026-11-14: keep the MTG-60 internal height of 43.198)
+
+    Width  = 125 + 2*CardClearance + 2*SideWallThickness = 143   (MTG 111)
+    Depth  =  90 + 2*CardClearance + Wall + RearWall      =  97   (MTG  73)
+    Height unchanged at 45.198
+
+W 143 is OUTSIDE the range the model was ever swept over (W 80-130, D 50-100),
+so this macro measures the gates in plan.md "Alchemy 60-card set" at the new
+size, then RESTORES the MTG card size in a `finally` and proves the restore
+(D5: a failed recompute does not roll back - volumes are compared to baseline).
+
+Deliberately does NOT recompute MagicCardAssembly. Recomputing the assembly
+re-derives the joint placement from whatever face the stored name resolves to
+(round 13), and restoring the placement does not undo that. The joint gate here
+compares stored face names against find_disc() geometry WITHOUT recomputing.
+
+Writes macros/56-report.json (the MCP bridge's 30 s cap - poll the file).
+"""
+
+import importlib
+import json
+import math
+import os
+import sys
+import time
+import traceback
+
+import FreeCAD
+import Part
+from FreeCAD import Vector
+
+PROJ = os.path.dirname(os.path.abspath(FreeCAD.getDocument("Params").FileName))
+REPORT = os.path.join(PROJ, "macros", "56-report.json")
+MESH_OUT = os.path.join(PROJ, "gcode", "56-dryrun-%s.stl")     # gitignored dir
+
+ALCHEMY = {"CardLength": 125.0, "CardWidth": 90.0}
+SWING_ANGLES = [0.0, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0]
+GAP_EPS = 1e-3
+
+out = {"macro": "56-alchemy_variant_dryrun", "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+       "status": "RUNNING", "problems": [], "log": []}
+
+
+def log(m):
+    out["log"].append(str(m))
+    FreeCAD.Console.PrintMessage("[56] %s\n" % m)
+
+
+def flush():
+    with open(REPORT, "w") as fh:
+        json.dump(out, fh, indent=1, default=str)
+
+
+def docs():
+    return (FreeCAD.getDocument("Params").getObject("VarSet"),
+            FreeCAD.getDocument("MagicCardBox"), FreeCAD.getDocument("Lid"))
+
+
+def recompute():
+    for dn in ("Params", "MagicCardBox", "Lid"):        # NOT the assembly - see header
+        FreeCAD.getDocument(dn).recompute()
+
+
+def chain_validity():
+    """Shape.isValid() per feature. o.State is NOT shape health (round 9)."""
+    r = {}
+    for dn, bodies in (("MagicCardBox", ["Body"]), ("Lid", ["Body", "Body001"])):
+        d = FreeCAD.getDocument(dn)
+        for bn in bodies:
+            b = d.getObject(bn)
+            r["%s/%s" % (dn, bn)] = [o.Name for o in b.Group
+                                     if hasattr(o, "BaseFeature") and not o.Shape.isValid()]
+    return r
+
+
+def state_errors():
+    bad = []
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            st = o.State or []
+            if "Invalid" in st or "Error" in st:
+                bad.append("%s/%s %s" % (dn, o.Name, st))
+    return bad
+
+
+def dead_edge_refs():
+    """Any dress-up feature whose stored sub-element carries FreeCAD's '?'."""
+    dead = []
+    for dn in ("MagicCardBox", "Lid"):
+        for o in FreeCAD.getDocument(dn).Objects:
+            if not hasattr(o, "Base") or o.TypeId not in (
+                    "PartDesign::Fillet", "PartDesign::Chamfer"):
+                continue
+            base = o.Base
+            subs = base[1] if isinstance(base, tuple) and len(base) > 1 else []
+            bad = [s for s in subs if "?" in s]
+            if bad:
+                dead.append("%s/%s %s" % (dn, o.Name, bad))
+    return dead
+
+
+def volumes():
+    _, mb, ld = docs()
+    return {"box": mb.getObject("Body").Shape.Volume,
+            "lid_plate": ld.getObject("Body").Shape.Volume,
+            "lid_back": ld.getObject("Body001").Shape.Volume}
+
+
+def spans(shape, a, b):
+    cc = shape.common(Part.makeLine(a, b))
+    segs = sorted((s.BoundBox.XMin, s.BoundBox.XMax, s.BoundBox.YMin, s.BoundBox.YMax,
+                   s.BoundBox.ZMin, s.BoundBox.ZMax) for s in cc.Edges)
+    return segs
+
+
+def merged_1d(segs, idx):
+    iv = sorted((s[idx], s[idx + 1]) for s in segs)
+    m = []
+    for a, b in iv:
+        if m and abs(a - m[-1][1]) < 1e-6:
+            m[-1][1] = b
+        else:
+            m.append([a, b])
+    return m
+
+
+def interior():
+    vs, mb, _ = docs()
+    box = mb.getObject("Body").Shape
+    W2, D2 = vs.Width.Value / 2, vs.Depth.Value / 2
+    r = {}
+    my = merged_1d(spans(box, Vector(30, -D2 - 1, 20), Vector(30, D2 + 1, 20)), 2)
+    mx = merged_1d(spans(box, Vector(-W2 - 1, 0, 20), Vector(W2 + 1, 0, 20)), 0)
+    mz = merged_1d(spans(box, Vector(30, 0, -10), Vector(30, 0, vs.Height.Value + 1)), 4)
+    if len(my) >= 2:
+        r["depth"] = round(my[1][0] - my[0][1], 4)
+    if len(mx) >= 2:
+        r["width"] = round(mx[-1][0] - mx[0][1], 4)
+    if mz:
+        r["height"] = round(vs.Height.Value - mz[0][1], 4)
+    return r
+
+
+def ramp_wall_min():
+    vs, mb, _ = docs()
+    box = mb.getObject("Body").Shape
+    D2 = vs.Depth.Value / 2
+    inner = D2 - vs.RearWallThickness.Value
+    best = None
+    for i in range(25):
+        z = 2.0 + i * 0.25
+        cc = box.common(Part.makeLine(Vector(20, inner + 0.001, z), Vector(20, D2 + 5, z)))
+        if cc.Edges:
+            w = max(s.BoundBox.YMax for s in cc.Edges) - inner
+            if best is None or w < best[1]:
+                best = (round(z, 2), round(w, 4))
+    return best
+
+
+def magnet_skin():
+    """Lid plastic above the lid magnet pocket ceiling, sampled across the bore,
+    both sides. Worst case is under the outer flute (documented 0.9995)."""
+    vs, _, ld = docs()
+    lid = ld.getObject("Body").Shape
+    cx = vs.Width.Value / 2 - vs.SideWallThickness.Value / 2
+    cy = -vs.Depth.Value / 2 + vs.MagnetFromFront.Value
+    ceil = vs.Height.Value + vs.LidSeatClearance.Value + vs.MagnetPocketDepth.Value
+    rb = 2.0
+    worst = None
+    for sgn in (1, -1):
+        for i in range(41):
+            x = sgn * (cx - rb + i * (2 * rb / 40))
+            cc = lid.common(Part.makeLine(Vector(x, cy, ceil + 0.001), Vector(x, cy, ceil + 10)))
+            if not cc.Edges:
+                continue
+            zs = merged_1d(sorted((s.BoundBox.XMin, s.BoundBox.XMax, s.BoundBox.YMin,
+                                   s.BoundBox.YMax, s.BoundBox.ZMin, s.BoundBox.ZMax)
+                                  for s in cc.Edges), 4)
+            t = zs[0][1] - ceil
+            if worst is None or t < worst[1]:
+                worst = (round(x, 3), round(t, 4))
+    return worst
+
+
+def swing():
+    """Rule 1b: gate on the SPECIFIC pair (LidBack panel vs box); plate is info."""
+    vs, mb, ld = docs()
+    box = mb.getObject("Body").Shape
+    back = ld.getObject("Body001").Shape
+    plate = ld.getObject("Body").Shape
+    ap = Vector(0, vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value, vs.HingeAxisFromBottom.Value)
+    rows = []
+    for a in SWING_ANGLES:
+        b = back.copy(); b.rotate(ap, Vector(1, 0, 0), -a)
+        row = {"deg": a, "back_gap": round(box.distToShape(b)[0], 4),
+               "back_interf": round(box.common(b).Volume, 6)}
+        if a in (0.0, 8.0, 90.0):
+            p = plate.copy(); p.rotate(ap, Vector(1, 0, 0), -a)
+            row["plate_gap"] = round(box.distToShape(p)[0], 4)
+            row["plate_interf"] = round(box.common(p).Volume, 6)
+        rows.append(row)
+    return rows
+
+
+def find_disc(shape, radius, aY, aZ):
+    hits = []
+    want = math.pi * radius * radius
+    for i, f in enumerate(shape.Faces):
+        if f.Surface.TypeId != "Part::GeomPlane":
+            continue
+        c = f.CenterOfMass
+        if abs(c.y - aY) > 1e-3 or abs(c.z - aZ) > 1e-3 or c.x <= 0:
+            continue
+        if abs(f.Area - want) > 1e-2:
+            continue
+        hits.append(("Face%d" % (i + 1), round(c.x, 3)))
+    hits.sort(key=lambda h: -h[1])
+    return hits
+
+
+def joint_check():
+    """Stored joint face names vs the faces find_disc() locates. No recompute."""
+    vs, mb, ld = docs()
+    aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+    aZ = vs.HingeAxisFromBottom.Value
+    rp = vs.HingePinDia.Value / 2
+    bh = find_disc(mb.getObject("Body").Shape, rp, aY, aZ)
+    lh = find_disc(ld.getObject("Body001").Shape, rp + vs.HingePinClearance.Value, aY, aZ)
+    j = FreeCAD.getDocument("MagicCardAssembly").getObject("Joint")
+    return {"box_disc": bh[:1], "lid_disc": lh[:1],
+            "ref1": str(j.Reference1), "ref2": str(j.Reference2)}
+
+
+def posed_mesh_check(tag):
+    """Macro 41's pose; export with Mesh.export (the DEFAULT export tessellation,
+    which is what round 6 found the defect at) and re-read the FILE."""
+    import Mesh
+    vs, mb, ld = docs()
+    aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+    aZ = vs.HingeAxisFromBottom.Value
+    box = mb.getObject("Body").Shape.copy()
+    lid = ld.getObject("Body").Shape.fuse(ld.getObject("Body001").Shape).removeSplitter()
+    if len(lid.Solids) != 1:
+        return {"error": "lid did not fuse into one solid (%d)" % len(lid.Solids)}
+    lid.rotate(Vector(0, aY, aZ), Vector(1, 0, 0), -90)
+    gap = box.distToShape(lid)[0]
+    comb = Part.makeCompound([box, lid])
+    b = comb.BoundBox
+    comb.translate(Vector(-(b.XMin + b.XMax) / 2, -(b.YMin + b.YMax) / 2, -b.ZMin))
+    feat = FreeCAD.getDocument("MagicCardBox").addObject("Part::Feature", "TMP_56_pose")
+    try:
+        feat.Shape = comb
+        path = MESH_OUT % tag
+        Mesh.export([feat], path)
+        m = Mesh.Mesh(path)
+        bb = m.BoundBox
+        return {"gap": round(gap, 4), "facets": m.CountFacets,
+                "solid": bool(m.isSolid()), "non_manifold": bool(m.hasNonManifolds()),
+                "self_intersect": bool(m.hasSelfIntersections()),
+                "components": len(m.getSeparateComponents()),
+                "bbox": [round(bb.XLength, 2), round(bb.YLength, 2), round(bb.ZLength, 2)],
+                "file": path}
+    finally:
+        FreeCAD.getDocument("MagicCardBox").removeObject(feat.Name)
+
+
+def measure(label):
+    t0 = time.time()
+    m = {"Width": FreeCAD.getDocument("Params").getObject("VarSet").Width.Value,
+         "Depth": FreeCAD.getDocument("Params").getObject("VarSet").Depth.Value,
+         "Height": FreeCAD.getDocument("Params").getObject("VarSet").Height.Value,
+         "state_errors": state_errors(), "dead_refs": dead_edge_refs(),
+         "chain_invalid": chain_validity(),
+         "volumes": {k: round(v, 3) for k, v in volumes().items()},
+         "interior": interior(), "ramp_wall_min": ramp_wall_min(),
+         "magnet_skin_min": magnet_skin()}
+    _, mb, ld = docs()
+    for nm, s in (("box", mb.getObject("Body").Shape), ("lid_plate", ld.getObject("Body").Shape),
+                  ("lid_back", ld.getObject("Body001").Shape)):
+        m.setdefault("tips", {})[nm] = {"valid": s.isValid(), "closed": s.isClosed(),
+                                        "solids": len(s.Solids)}
+    out[label] = m
+    flush()
+    m["swing"] = swing()
+    m["joint"] = joint_check()
+    m["secs"] = round(time.time() - t0, 1)
+    out[label] = m
+    flush()
+    log("%s measured in %.0f s" % (label, m["secs"]))
+    return m
+
+
+def gate(label, m, base):
+    P = out["problems"]
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    if m["state_errors"]:
+        P.append("%s: State Invalid/Error %s" % (label, m["state_errors"]))
+    if m["dead_refs"]:
+        P.append("%s: dead edge refs %s" % (label, m["dead_refs"]))
+    for k, v in m["chain_invalid"].items():
+        if len(v) > len(base["chain_invalid"][k]):
+            P.append("%s: shape-invalid count GREW in %s: %d -> %d %s"
+                     % (label, k, len(base["chain_invalid"][k]), len(v), v))
+    for k, t in m["tips"].items():
+        if not (t["valid"] and t["closed"] and t["solids"] == 1):
+            P.append("%s: tip %s %s" % (label, k, t))
+    floor = vs.HingeTabClearance.Value - GAP_EPS
+    gaps = [r["back_gap"] for r in m["swing"]]
+    if min(gaps) < floor:
+        P.append("%s: LidBack gap fell to %.4f (floor %.4f)" % (label, min(gaps), floor))
+    if max(gaps) - min(gaps) > 0.002:
+        P.append("%s: LidBack gap NOT flat across swing %s" % (label, gaps))
+    if max(r["back_interf"] for r in m["swing"]) > 1e-4:
+        P.append("%s: LidBack interference in swing" % label)
+    rw = m["ramp_wall_min"]
+    if rw is None or rw[1] < vs.RampMinWall.Value:
+        P.append("%s: ramp wall %s below RampMinWall %.2f" % (label, rw, vs.RampMinWall.Value))
+    sk, bsk = m["magnet_skin_min"], base["magnet_skin_min"]
+    if sk is None or (bsk and sk[1] < bsk[1] - 0.01):
+        P.append("%s: magnet skin %s worse than baseline %s" % (label, sk, bsk))
+
+
+def main():
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    log(out["banner"])
+    flush()
+
+    vs, mb, ld = docs()
+    orig = {k: float(getattr(vs, k).Value) for k in ALCHEMY}
+    orig["CardCount"] = int(vs.CardCount)
+    orig["CardPitch"] = float(vs.CardPitch.Value)
+    sup = {"box_flutes": mb.getObject("Pocket009").Suppressed,
+           "lid_flutes": ld.getObject("Pocket009").Suppressed,
+           "label": ld.getObject("PocketNamePlate").Suppressed}
+    out["original"] = {"params": orig, "suppressed": sup}
+    log("original %s %s" % (orig, sup))
+    if orig["CardCount"] != 60 or abs(orig["CardPitch"] - 0.7033) > 1e-6:
+        raise RuntimeError("expected the 60 / 0.7033 variant to be loaded, found %s" % orig)
+
+    def set_surface(flutes, label):
+        mb.getObject("Pocket009").Suppressed = not flutes
+        ld.getObject("Pocket009").Suppressed = not flutes
+        ld.getObject("PocketNamePlate").Suppressed = not label
+
+    base = None
+    base_tip = None
+    try:
+        set_surface(True, True)
+        recompute()
+        base = measure("baseline_mtg60_fluted_label")
+        base_tip = mb.getObject("Body").Tip.Shape.copy()
+
+        for k, v in ALCHEMY.items():
+            setattr(vs, k, v)
+        recompute()
+        alc = measure("alchemy60_fluted_label")
+        gate("alchemy60_fluted_label", alc, base)
+        if alc["interior"] != {"depth": 92.0, "width": 127.0, "height": 43.198}:
+            out["problems"].append("interior %s != 127 x 92 x 43.198" % alc["interior"])
+        out["mesh"] = {"alchemy60-fluted-label": posed_mesh_check("alchemy60-fluted-label")}
+        flush()
+
+        set_surface(False, False)
+        recompute()
+        out["alchemy60_smooth"] = {"state_errors": state_errors(),
+                                   "dead_refs": dead_edge_refs(),
+                                   "chain_invalid": chain_validity()}
+        out["mesh"]["alchemy60-smooth"] = posed_mesh_check("alchemy60-smooth")
+        set_surface(True, False)
+        recompute()
+        out["alchemy60_fluted"] = {"state_errors": state_errors(), "dead_refs": dead_edge_refs()}
+        out["mesh"]["alchemy60-fluted"] = posed_mesh_check("alchemy60-fluted")
+        for tag, mm in out["mesh"].items():
+            if "error" in mm or not mm["solid"] or mm["non_manifold"] or mm["self_intersect"] \
+                    or mm["components"] != 2 or mm["gap"] < 0.4 - GAP_EPS:
+                out["problems"].append("mesh %s: %s" % (tag, mm))
+        for tag in ("alchemy60_smooth", "alchemy60_fluted"):
+            if out[tag]["state_errors"] or out[tag]["dead_refs"]:
+                out["problems"].append("%s: %s" % (tag, out[tag]))
+        flush()
+    finally:
+        for k in ALCHEMY:
+            setattr(vs, k, orig[k])
+        mb.getObject("Pocket009").Suppressed = sup["box_flutes"]
+        ld.getObject("Pocket009").Suppressed = sup["lid_flutes"]
+        ld.getObject("PocketNamePlate").Suppressed = sup["label"]
+        recompute()
+        # D5 PROOF: the restore must reproduce the baseline exactly
+        if base is not None and not any(sup.values()):
+            after = {k: round(v, 3) for k, v in volumes().items()}
+            out["restore"] = {"volumes": after, "baseline": base["volumes"],
+                              "chain_invalid": chain_validity(),
+                              "state_errors": state_errors(), "dead_refs": dead_edge_refs()}
+            # BOOLEAN, not volume equality: a recomputed B-spline integrates
+            # ~0.01 mm3 differently while the solid is identical (macros 57/58).
+            # The real defect this gate caught (pole flip) was +150.885 mm3.
+            tip = mb.getObject("Body").Tip.Shape
+            out["restore"]["box_A_minus_B"] = base_tip.cut(tip).Volume
+            out["restore"]["box_B_minus_A"] = tip.cut(base_tip).Volume
+            lid_same = all(abs(after[k] - base["volumes"][k]) < 1e-3
+                           for k in ("lid_plate", "lid_back"))
+            if max(out["restore"]["box_A_minus_B"], out["restore"]["box_B_minus_A"]) > 1e-3 \
+                    or not lid_same or out["restore"]["state_errors"] \
+                    or out["restore"]["dead_refs"]:
+                out["problems"].append("RESTORE DID NOT RETURN TO BASELINE (D5) - close all "
+                                       "four documents WITHOUT saving: %s" % out["restore"])
+        else:
+            out["restore"] = {"volumes": {k: round(v, 3) for k, v in volumes().items()},
+                              "note": "original suppression differed from baseline pose; "
+                                      "volumes not comparable", "state_errors": state_errors()}
+        flush()
+
+
+try:
+    main()
+    out["status"] = "OK" if not out["problems"] else "FAIL"
+except Exception as exc:
+    out["status"] = "ABORT"
+    out["error"] = str(exc)
+    out["traceback"] = traceback.format_exc()
+finally:
+    out["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    flush()
+    log("status %s, %d problems. NOTHING SAVED." % (out["status"], len(out["problems"])))

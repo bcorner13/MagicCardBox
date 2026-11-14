@@ -1,0 +1,205 @@
+# -*- coding: utf-8 -*-
+"""58-ramp_signed_constraints.FCMacro -- Sketch013 (the rear ramp) loses its
+mirror solutions. NOTHING IS SAVED.
+
+WHY (found by macro 56, 2026-11-14, measured both ways)
+  After a Width/Depth round trip 111x73 -> 143x97 -> 111x73 the box came back
+  +150.885 mm3 (x +/-50.1, y 29..36.5, z 0..8 - the ramp's top no longer cut).
+  Cause: Sketch013 pole 1 FLIPPED across its frame line,
+
+      on disk (36.5, 6.0812)    after round trip (40.5, 6.0812)
+
+  because Constraints[28] is an UNSIGNED point-to-line Distance (RampPole1In
+  = 2 from the line x = 38.5). Both 36.5 and 40.5 satisfy it; DoF stays 0,
+  nothing is Invalid, nothing complains. The ramp loses the vertical top
+  tangent that round 10 locked in (RampPole1In == RampOvershoot).
+
+  Eight constraints in this sketch have that form. Only [28] flipped this time;
+  all eight can. (Macro 57's UpToFace diagnosis was WRONG - named from one
+  reading. Its change is valid hardening but did not cause this.)
+
+THE FIX
+  Each becomes a SIGNED DistanceX / DistanceY, in place (same index, so every
+  expression binding keeps its key), same Param expression. The frame lines are
+  exactly horizontal/vertical, so the value is unchanged at today's size and
+  only the mirror solution is removed. Sketch frame: x = global Y, y = global Z.
+
+      [24] DistanceX(geo0.start -> geo2.start)  Depth/2 + RampOvershoot - RampBottomY
+      [25] DistanceX(root -> geo0.end)          RampBottomY
+      [28..30] DistanceX(pole -> geo2.start)    RampPole{1,2,3}In
+      [31..33] DistanceY(geo1.start -> pole)    RampPole{3,2,1}Up
+
+GATES: sketch geometry identical (1e-6), DoF 0 / FullyConstrained / no
+redundant, conflicting or malformed constraints, Pocket010 boolean difference
+0 both ways. On failure the original constraints are restored. Idempotent.
+Writes macros/58-report.json.
+"""
+
+import importlib
+import json
+import os
+import sys
+import time
+import traceback
+
+import FreeCAD
+import Sketcher
+
+PROJ = os.path.dirname(os.path.abspath(FreeCAD.getDocument("Params").FileName))
+REPORT = os.path.join(PROJ, "macros", "58-report.json")
+V = "<<Params>>#VarSet."
+TOL = 1e-6
+
+#   idx: (type, g1, p1, g2, p2, expression)
+NEW = {
+    24: ("DistanceX", 0, 1, 2, 1,
+         "%sDepth / 2 + %sRampOvershoot - %sRampBottomY" % (V, V, V)),
+    25: ("DistanceX", -1, 1, 0, 2, V + "RampBottomY"),
+    28: ("DistanceX", 5, 3, 2, 1, V + "RampPole1In"),
+    29: ("DistanceX", 6, 3, 2, 1, V + "RampPole2In"),
+    30: ("DistanceX", 7, 3, 2, 1, V + "RampPole3In"),
+    31: ("DistanceY", 1, 1, 7, 3, V + "RampPole3Up"),
+    32: ("DistanceY", 1, 1, 6, 3, V + "RampPole2Up"),
+    33: ("DistanceY", 1, 1, 5, 3, V + "RampPole1Up"),
+}
+# what each index must currently be, if not yet converted (refuse otherwise)
+OLD = {24: (0, 1, 2), 25: (0, 2, -2), 28: (5, 3, 2), 29: (6, 3, 2), 30: (7, 3, 2),
+       31: (7, 3, 1), 32: (6, 3, 1), 33: (5, 3, 1)}
+
+out = {"macro": "58-ramp_signed_constraints", "status": "RUNNING", "log": []}
+
+
+def log(m):
+    out["log"].append(str(m))
+    FreeCAD.Console.PrintMessage("[58] %s\n" % m)
+
+
+def geo_snapshot(sk):
+    pts = []
+    for i, g in enumerate(sk.Geometry):
+        if hasattr(g, "getPoles"):
+            pts.append([(p.x, p.y) for p in g.getPoles()])
+        elif hasattr(g, "Center"):
+            pts.append([(g.Center.x, g.Center.y)])
+        elif hasattr(g, "StartPoint"):
+            pts.append([(g.StartPoint.x, g.StartPoint.y), (g.EndPoint.x, g.EndPoint.y)])
+        else:
+            pts.append([(g.X, g.Y)])
+    return pts
+
+
+def geo_delta(a, b):
+    return max(abs(p[0] - q[0]) + abs(p[1] - q[1])
+               for ga, gb in zip(a, b) for p, q in zip(ga, gb))
+
+
+def sketch_health(sk):
+    return {"DoF": sk.DoF, "FullyConstrained": sk.FullyConstrained,
+            "Redundant": list(sk.RedundantConstraints),
+            "Conflicting": list(sk.ConflictingConstraints),
+            "Malformed": list(sk.MalformedConstraints)}
+
+
+def recompute():
+    for dn in ("Params", "MagicCardBox", "Lid"):
+        FreeCAD.getDocument(dn).recompute()
+
+
+def main():
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    log(out["banner"])
+
+    mb = FreeCAD.getDocument("MagicCardBox")
+    sk = mb.getObject("Sketch013")
+    pk = mb.getObject("Pocket010")
+    body = mb.getObject("Body")
+    recompute()
+
+    geo0 = geo_snapshot(sk)
+    pk0 = pk.Shape.copy()
+    tip0 = body.Tip.Shape.copy()
+    orig_cons = list(sk.Constraints)
+    orig_expr = dict(sk.ExpressionEngine)
+    out["before"] = {"health": sketch_health(sk), "pole1": geo0[5],
+                     "pocket010": round(pk0.Volume, 4)}
+    log("before %s" % out["before"])
+
+    cons = list(sk.Constraints)
+    changed = []
+    for i, (typ, g1, p1, g2, p2, expr) in NEW.items():
+        c = cons[i]
+        if c.Type == typ and (c.First, c.FirstPos, c.Second, c.SecondPos) == (g1, p1, g2, p2):
+            continue                                       # already converted
+        want = OLD[i]
+        if c.Type != "Distance" or (c.First, c.FirstPos, c.Second) != want:
+            raise RuntimeError("Constraints[%d] is %s %s, expected unsigned Distance %s - "
+                               "the sketch is not what this macro was written against"
+                               % (i, c.Type, (c.First, c.FirstPos, c.Second), want))
+        nc = Sketcher.Constraint(typ, g1, p1, g2, p2, c.Value)
+        if c.Name:
+            nc.Name = c.Name
+        cons[i] = nc
+        changed.append(i)
+    out["changed"] = changed
+    if changed:
+        sk.Constraints = cons
+    for i, (_t, _a, _b, _c, _d, expr) in NEW.items():      # re-assert every run
+        sk.setExpression("Constraints[%d]" % i, expr)
+    recompute()
+
+    geo1 = geo_snapshot(sk)
+    h = sketch_health(sk)
+    pk1 = pk.Shape
+    d = geo_delta(geo0, geo1)
+    ab, ba = pk0.cut(pk1).Volume, pk1.cut(pk0).Volume
+    tab, tba = tip0.cut(body.Tip.Shape).Volume, body.Tip.Shape.cut(tip0).Volume
+    out["after"] = {"health": h, "pole1": geo1[5], "geo_delta": d,
+                    "pocket010_A_minus_B": ab, "pocket010_B_minus_A": ba,
+                    "tip_A_minus_B": tab, "tip_B_minus_A": tba,
+                    "pocket010": round(pk1.Volume, 4),
+                    "types": {i: sk.Constraints[i].Type for i in NEW},
+                    "exprs": {i: dict(sk.ExpressionEngine).get("Constraints[%d]" % i)
+                              for i in NEW}}
+    log("after %s" % out["after"])
+
+    problems = []
+    if d > TOL:
+        problems.append("sketch geometry moved by %.3g" % d)
+    if h["DoF"] != 0 or not h["FullyConstrained"]:
+        problems.append("not fully constrained %s" % h)
+    if h["Redundant"] or h["Conflicting"] or h["Malformed"]:
+        problems.append("constraint problems %s" % h)
+    if max(ab, ba, tab, tba) > 1e-3:
+        problems.append("solid changed: pocket %.4f/%.4f tip %.4f/%.4f" % (ab, ba, tab, tba))
+    for i, (_t, _a, _b, _c, _d, expr) in NEW.items():
+        if out["after"]["exprs"][i] != expr:
+            problems.append("Constraints[%d] expression %s != %s"
+                            % (i, out["after"]["exprs"][i], expr))
+    out["problems"] = problems
+
+    if problems:
+        log("REVERTING: %s" % problems)
+        sk.Constraints = orig_cons
+        for k, v in orig_expr.items():
+            sk.setExpression(k, v)
+        recompute()
+        if geo_delta(geo0, geo_snapshot(sk)) > TOL:
+            problems.append("REVERT DID NOT RESTORE - close all four documents WITHOUT saving")
+        raise RuntimeError("; ".join(problems))
+
+
+try:
+    main()
+    out["status"] = "OK"
+except Exception as exc:
+    out["status"] = "ABORT"
+    out["error"] = str(exc)
+    out["traceback"] = traceback.format_exc()
+finally:
+    out["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(REPORT, "w") as fh:
+        json.dump(out, fh, indent=1, default=str)
+    log("status %s. NOTHING SAVED." % out["status"])
