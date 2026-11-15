@@ -1,0 +1,325 @@
+# -*- coding: utf-8 -*-
+"""59-ramp_landing_follows_depth.FCMacro -- the rear ramp keeps its shape at any
+Depth. NOTHING IS SAVED.
+
+WHY (Alchemy print, 2026-11-14, measured on the exported meshes)
+  The alchemy60-fluted print came off with the whole hinge band full of beaded
+  spaghetti. The export carried 2178 mm2 of near-flat (<10 deg) down-facing surface at
+  print z 4-8 across x +/-68; the 60-fluted carries 13 mm2. Ramp section at x=0:
+
+      60-fluted     ~4 mm long at ~20 deg       (round 10's design)
+      alchemy60     ~14 mm long at ~7 deg       a flat ledge printed in air
+
+  Cause: RampBottomY = 29 is an ABSOLUTE closed-frame y, while the ramp's top rides
+  Depth/2 (Sketch013 [24] = Depth/2 + RampOvershoot - RampBottomY). The curve's span
+  was 9.5 mm at Depth 73 and 21.5 mm at Depth 97 - same poles, stretched 2.26x
+  horizontally. Every sweep before Alchemy moved Depth a few mm, so it never showed.
+  Macro 56 measured the ramp's WALL at Alchemy size, never its ANGLE.
+
+THE FIX
+      RampLandingInset  7.5   FREE DESIGN INPUT  (= Depth/2 - 29 at Depth 73)
+      RampBottomY             DERIVED = Depth/2 - RampLandingInset
+  Span becomes RampOvershoot + RampLandingInset = 9.5 at every Depth. The footer
+  relief edge (Sketch006 [7]) already rides Depth/2, so the landing now moves with it.
+
+PHASES
+  A  baseline at the loaded size: tip, outer rear profile, ramp metrics
+  C  CONTROL - Alchemy size with the OLD binding: the detector must go RED
+  B  bind; at the loaded size the box must be the SAME SOLID (boolean diff 0 both ways)
+  D  Alchemy size with the new binding: profile == baseline shifted by dDepth/2,
+     ramp min angle >= RAMP_MIN_ANGLE, flat (<10 deg) area ~ baseline, rear wall >=
+     RampMinWall, LidBack swing flat at HingeTabClearance, no new invalid features
+  R  restore the card size; boolean diff 0 vs baseline (D5 / pole-flip check)
+  Any problem in B or D unbinds again (property removed, RampBottomY back to 29).
+
+Writes macros/59-report.json.
+"""
+
+import importlib
+import json
+import math
+import os
+import sys
+import time
+import traceback
+
+import FreeCAD
+import MeshPart
+import Part
+from FreeCAD import Vector
+
+PROJ = os.path.dirname(os.path.abspath(FreeCAD.getDocument("Params").FileName))
+REPORT = os.path.join(PROJ, "macros", "59-report.json")
+V = "<<Params>>#VarSet."
+ALCHEMY = {"CardLength": 125.0, "CardWidth": 90.0}
+INSET = 7.5
+RAMP_MIN_ANGLE = 15.0          # round 10's absolute floor
+FLAT_DEG = 10.0
+SWING_ANGLES = [0.0, 2.0, 8.0, 30.0, 60.0, 90.0]
+GAP_EPS = 1e-3
+
+out = {"macro": "59-ramp_landing_follows_depth", "status": "RUNNING",
+       "started": time.strftime("%Y-%m-%d %H:%M:%S"), "problems": [], "log": []}
+
+
+def log(m):
+    out["log"].append(str(m))
+    FreeCAD.Console.PrintMessage("[59] %s\n" % m)
+
+
+def flush():
+    with open(REPORT, "w") as fh:
+        json.dump(out, fh, indent=1, default=str)
+
+
+def vs():
+    return FreeCAD.getDocument("Params").getObject("VarSet")
+
+
+def box_tip():
+    return FreeCAD.getDocument("MagicCardBox").getObject("Body").Tip.Shape
+
+
+def recompute():
+    for dn in ("Params", "MagicCardBox", "Lid"):        # never the assembly (round 15)
+        FreeCAD.getDocument(dn).recompute()
+
+
+def chain_validity():
+    r = {}
+    for dn, bodies in (("MagicCardBox", ["Body"]), ("Lid", ["Body", "Body001"])):
+        d = FreeCAD.getDocument(dn)
+        for bn in bodies:
+            b = d.getObject(bn)
+            r["%s/%s" % (dn, bn)] = len([o for o in b.Group if hasattr(o, "BaseFeature")
+                                         and not o.Shape.isValid()])
+    return r
+
+
+def state_errors():
+    return ["%s/%s" % (dn, o.Name) for dn in ("MagicCardBox", "Lid")
+            for o in FreeCAD.getDocument(dn).Objects
+            if "Invalid" in (o.State or []) or "Error" in (o.State or [])]
+
+
+def rear_profile():
+    """Rearmost solid y, minus Depth/2, at x = 30 for z 0.25..7.75. Pure shape."""
+    p = vs()
+    D2 = p.Depth.Value / 2
+    box = box_tip()
+    prof = []
+    for i in range(16):
+        z = 0.25 + 0.5 * i
+        cc = box.common(Part.makeLine(Vector(30, D2 - 16, z), Vector(30, D2 + 6, z)))
+        prof.append(round(max(e.BoundBox.YMax for e in cc.Edges) - D2, 4) if cc.Edges else None)
+    return prof
+
+
+def ramp_metrics():
+    """Down-facing facets of the box tip in the ramp region (sockets excluded).
+    Angle = surface angle from horizontal; 0 = flat ceiling."""
+    p = vs()
+    D2, W2 = p.Depth.Value / 2, p.Width.Value / 2
+    xlim = W2 - p.SideWallThickness.Value - 1.0
+    m = MeshPart.meshFromShape(Shape=box_tip(), LinearDeflection=0.02, AngularDeflection=0.1)
+    area_flat, area_15, mn, tot = 0.0, 0.0, 90.0, 0.0
+    for f in m.Facets:
+        n = f.Normal
+        pts = f.Points
+        c = Vector(sum(q[0] for q in pts) / 3, sum(q[1] for q in pts) / 3,
+                   sum(q[2] for q in pts) / 3)
+        if n.z > -0.05 or abs(c.x) > xlim or c.y < D2 - 16 or not (0.05 < c.z < p.RampTopZ.Value + 0.5):
+            continue
+        ang = math.degrees(math.acos(min(1.0, -n.z)))
+        tot += f.Area
+        if ang < FLAT_DEG:
+            area_flat += f.Area
+        if ang < RAMP_MIN_ANGLE:
+            area_15 += f.Area
+        if f.Area > 0.01:
+            mn = min(mn, ang)
+    return {"min_angle": round(mn, 2), "area_lt10": round(area_flat, 2),
+            "area_lt15": round(area_15, 2), "area_down": round(tot, 2)}
+
+
+def ramp_wall_min():
+    p = vs()
+    box = box_tip()
+    D2 = p.Depth.Value / 2
+    inner = D2 - p.RearWallThickness.Value
+    best = None
+    for i in range(25):
+        z = 2.0 + i * 0.25
+        cc = box.common(Part.makeLine(Vector(20, inner + 0.001, z), Vector(20, D2 + 5, z)))
+        if cc.Edges:
+            w = max(s.BoundBox.YMax for s in cc.Edges) - inner
+            if best is None or w < best[1]:
+                best = (round(z, 2), round(w, 4))
+    return best
+
+
+def swing():
+    p = vs()
+    box = box_tip()
+    back = FreeCAD.getDocument("Lid").getObject("Body001").Shape
+    ap = Vector(0, p.Depth.Value / 2 - p.HingeAxisFromRear.Value, p.HingeAxisFromBottom.Value)
+    rows = []
+    for a in SWING_ANGLES:
+        b = back.copy()
+        b.rotate(ap, Vector(1, 0, 0), -a)
+        rows.append({"deg": a, "gap": round(box.distToShape(b)[0], 4),
+                     "interf": round(box.common(b).Volume, 6)})
+    return rows
+
+
+def same_solid(a, b):
+    return a.cut(b).Volume, b.cut(a).Volume
+
+
+def set_size(size):
+    p = vs()
+    for k, v in size.items():
+        setattr(p, k, v)
+    recompute()
+
+
+def bind():
+    p = vs()
+    if "RampLandingInset" not in p.PropertiesList:
+        p.addProperty("App::PropertyLength", "RampLandingInset", "Ramp",
+                      "Closed-frame Y distance from the box rear face (Depth/2) back to where "
+                      "the ramp lands. FREE DESIGN INPUT. RampBottomY derives from it so the "
+                      "ramp keeps its 9.5 mm span (RampOvershoot + this) at every Depth. Macro 59.")
+        p.RampLandingInset = INSET
+    p.setExpression("RampBottomY", "%sDepth / 2 - %sRampLandingInset" % (V, V))
+    recompute()
+
+
+def unbind(orig_bottom):
+    p = vs()
+    p.setExpression("RampBottomY", None)
+    p.RampBottomY = orig_bottom
+    if "RampLandingInset" in p.PropertiesList:
+        p.removeProperty("RampLandingInset")
+    recompute()
+
+
+def main():
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    log(out["banner"])
+    P = out["problems"]
+    p = vs()
+    orig_size = {k: float(getattr(p, k).Value) for k in ALCHEMY}
+    orig_bottom = float(p.RampBottomY.Value)
+    already = any(e[0] == "RampBottomY" for e in p.ExpressionEngine)
+    out["original"] = {"size": orig_size, "RampBottomY": orig_bottom, "already_bound": already,
+                       "Depth": p.Depth.Value}
+    if orig_size["CardWidth"] != 66.0:
+        raise RuntimeError("expected an MTG-size variant loaded, found %s" % orig_size)
+    if not already and abs(p.Depth.Value / 2 - orig_bottom - INSET) > 1e-6:
+        raise RuntimeError("Depth/2 - RampBottomY = %.4f, expected %.4f - model is not what "
+                           "this macro was written against"
+                           % (p.Depth.Value / 2 - orig_bottom, INSET))
+
+    recompute()
+    base_tip = box_tip().copy()
+    base = {"profile": rear_profile(), "ramp": ramp_metrics(), "wall": ramp_wall_min(),
+            "chain_invalid": chain_validity()}
+    out["A_baseline"] = base
+    log("A baseline %s" % base["ramp"])
+    flush()
+
+    bound = already
+    try:
+        if not already:
+            # C - CONTROL: the detector must fire on the known-bad binding
+            set_size(ALCHEMY)
+            ctl = {"ramp": ramp_metrics(), "profile": rear_profile(), "RampBottomY": p.RampBottomY.Value}
+            out["C_control_old_binding"] = ctl
+            log("C control %s" % ctl["ramp"])
+            if ctl["ramp"]["area_lt10"] < 100.0:
+                P.append("CONTROL did not go red: old binding at Alchemy shows only %.1f mm2 "
+                         "flat - the detector cannot be trusted" % ctl["ramp"]["area_lt10"])
+            set_size(orig_size)
+            a, b = same_solid(base_tip, box_tip())
+            out["C_restore"] = [a, b]
+            if max(a, b) > 1e-3:
+                raise RuntimeError("control round trip did not restore (%.4f / %.4f) - close "
+                                   "all four documents WITHOUT saving" % (a, b))
+            flush()
+
+            # B - bind, phase-A no-op
+            bind()
+            bound = True
+            a, b = same_solid(base_tip, box_tip())
+            out["B_bind"] = {"RampBottomY": p.RampBottomY.Value, "A_minus_B": a, "B_minus_A": b,
+                             "expr": [e for e in p.ExpressionEngine if e[0] == "RampBottomY"]}
+            log("B bind %s" % out["B_bind"])
+            if max(a, b) > 1e-3 or abs(p.RampBottomY.Value - orig_bottom) > 1e-6:
+                P.append("binding changed the loaded box: %s" % out["B_bind"])
+            flush()
+
+        # D - Alchemy with the new binding
+        if not P:
+            set_size(ALCHEMY)
+            d = {"Depth": p.Depth.Value, "RampBottomY": p.RampBottomY.Value,
+                 "profile": rear_profile(), "ramp": ramp_metrics(), "wall": ramp_wall_min(),
+                 "chain_invalid": chain_validity(), "state_errors": state_errors()}
+            out["D_alchemy"] = d
+            flush()
+            d["swing"] = swing()
+            out["D_alchemy"] = d
+            log("D alchemy %s wall %s" % (d["ramp"], d["wall"]))
+            dev = [abs(x - y) for x, y in zip(d["profile"], base["profile"])
+                   if x is not None and y is not None]
+            d["profile_max_dev"] = round(max(dev), 4) if dev else None
+            if None in d["profile"] or not dev or max(dev) > 1e-3:
+                P.append("ramp profile does not match baseline shifted by dDepth/2: %s vs %s"
+                         % (d["profile"], base["profile"]))
+            if d["ramp"]["min_angle"] < RAMP_MIN_ANGLE:
+                P.append("ramp min angle %.2f < %.1f" % (d["ramp"]["min_angle"], RAMP_MIN_ANGLE))
+            if d["ramp"]["area_lt10"] > base["ramp"]["area_lt10"] + 1.0:
+                P.append("flat area %.2f vs baseline %.2f" % (d["ramp"]["area_lt10"],
+                                                             base["ramp"]["area_lt10"]))
+            if d["wall"] is None or d["wall"][1] < p.RampMinWall.Value:
+                P.append("rear wall %s < RampMinWall" % (d["wall"],))
+            floor = p.HingeTabClearance.Value - GAP_EPS
+            gaps = [r["gap"] for r in d["swing"]]
+            if min(gaps) < floor or max(gaps) - min(gaps) > 0.002 \
+                    or max(r["interf"] for r in d["swing"]) > 1e-4:
+                P.append("swing not flat at HingeTabClearance: %s" % d["swing"])
+            for k, n in d["chain_invalid"].items():
+                if n > base["chain_invalid"][k]:
+                    P.append("shape-invalid count grew in %s: %d -> %d"
+                             % (k, base["chain_invalid"][k], n))
+            if d["state_errors"]:
+                P.append("state errors %s" % d["state_errors"])
+            flush()
+    finally:
+        set_size(orig_size)
+        if P and bound and not already:
+            log("REVERTING binding: %s" % P)
+            unbind(orig_bottom)
+        a, b = same_solid(base_tip, box_tip())
+        out["R_restore"] = {"A_minus_B": a, "B_minus_A": b, "RampBottomY": vs().RampBottomY.Value,
+                            "bound": any(e[0] == "RampBottomY" for e in vs().ExpressionEngine)}
+        if max(a, b) > 1e-3:
+            P.append("RESTORE DID NOT RETURN TO BASELINE (%.4f / %.4f) - close all four "
+                     "documents WITHOUT saving" % (a, b))
+        flush()
+
+
+try:
+    main()
+    out["status"] = "OK" if not out["problems"] else "FAIL"
+except Exception as exc:
+    out["status"] = "ABORT"
+    out["error"] = str(exc)
+    out["traceback"] = traceback.format_exc()
+finally:
+    out["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    flush()
+    log("status %s, %d problems. NOTHING SAVED." % (out["status"], len(out["problems"])))

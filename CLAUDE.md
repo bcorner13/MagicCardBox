@@ -1782,8 +1782,9 @@ bores came out closer to nominal and the magnets sit loose. Not fixed — deferr
     Better than round 12's geometry-only prediction (0.20 / tan 20° = 0.55 mm step, >1 line
     width), which ignored this printer's cooling / dynamic overhang slowdown.
   - alchemy60-fluted @ **0.15 BALANCED**: 7 h 12 m, 148.2 g (vs 5 h 44 m, 146.6 g at 0.20).
-    Sent to print 2026-11-14 — **result pending.** If no visibly better than the 0.20 print,
-    0.20 is the production setting on this printer (~1.5 h saved per Alchemy box).
+    Printed 2026-11-14 — **the A/B is VOID.** The hinge band failed into spaghetti because
+    that export's ramp was a ~7 deg flat ledge (see the SIXTEENTH ROUND), not because of the
+    layer height. Re-run the comparison on a post-macro-59 Alchemy export.
 
 ### MATERIAL IS A THIRD AXIS — the coincidence trap, waiting to happen
 
@@ -1952,6 +1953,88 @@ boolean 0). Unverified.
 file already warns about. Copied byte-identical to `gcode/MagicCardBox-<tag>.slicer-project.3mf`
 **before** the export overwrote them. `gcode/` is gitignored: those copies are local only.
 **Check `3mf/` entry counts before any export** — 4 entries is a deliverable, 16+ is a project.
+
+## SIXTEENTH ROUND — 2026-11-15 — the first Alchemy print, and an absolute value in a relative frame (macro 59)
+
+The alchemy60-fluted print (Prusament PETG, Core One L, 0.15 BALANCED) came off with the
+**whole hinge band between the knuckles full of beaded spaghetti** and a stringy, open seam
+between the box's rear wall and the lid panel. **The bare Alchemy cards fit fine** (Bradley) —
+the interior sizing is confirmed; only the ramp failed.
+
+### Measured on the exported mesh, not argued
+
+`scripts/mesh_overhang_audit.py`, same script and band on both files:
+
+```
+                         near-flat (<10 deg) down-facing, print z 0-20     ramp at x=0
+60-fluted (printed ok)     13.4 mm2                                      ~4 mm at ~20 deg
+alchemy60-fluted         2178.6 mm2, x +/-68, print z 4-6                ~14 mm at ~7 deg
+```
+
+A 136 x 14 mm ledge printed in air. Beads along a strand = a perimeter laid on nothing.
+
+### Cause — `RampBottomY` was ABSOLUTE while the ramp's top rides `Depth/2`
+
+```
+Sketch013 [24]  = Depth/2 + RampOvershoot - RampBottomY     <- the ramp's horizontal span
+RampBottomY     = 29                                         <- a literal closed-frame y
+Depth 73 -> span  9.5     Depth 97 -> span 21.5     same poles, stretched 2.26x
+```
+
+The pole offsets are offsets from the frame, so a wider frame flattens the curve. Every
+sweep before Alchemy moved `Depth` a few mm. **Macro 56 measured the ramp's WALL at the
+Alchemy size (0.8955, passed) and never its ANGLE** — the gate covered the failure it had
+seen before, not this one.
+
+> **A "frame" Param that is an absolute coordinate is only parametric while the thing it
+> frames stays put.** Round 8 recorded RampBottomY as "the frame — the whole curve translates
+> when Depth moves". It did not translate; one end did. When a sketch's extent is
+> `A - B`, check that A and B ride the SAME reference.
+
+### The fix (macro 59)
+
+```
+RampLandingInset  7.5   FREE DESIGN INPUT  (= 36.5 - 29 at Depth 73)
+RampBottomY             DERIVED = Depth/2 - RampLandingInset    (29.0 at 73, 41.0 at 97)
+```
+
+Span is now `RampOvershoot + RampLandingInset` = 9.5 at every Depth. The footer relief edge
+(`Sketch006 [7]`) already rides `Depth/2`, so the landing moves with it.
+
+| (macro 59, banner verified) | ramp min angle | area < 10 deg |
+|---|---|---|
+| MTG baseline | 19.88 | 0 |
+| **CONTROL** — Alchemy, old binding | **6.52** | **1624.85** |
+| Alchemy, bound | **19.88** | **0** |
+
+- MTG box: boolean diff **0.0 / 0.0** after binding — the 100/60 products are unchanged.
+- Alchemy rear profile at x=30 = MTG profile shifted by `dDepth/2`, max deviation **0.0000**.
+- Rear wall 0.8532 (guard 0.8), LidBack swing **0.4000 flat** 0–90, chain-invalid 8 → 8.
+- Restore round trip 0.0 / 0.0. The control went RED first, so the green means something.
+
+### Exports — 2026-11-15, `all_ok: True`, only the Alchemy three committed
+
+```
+alchemy60-smooth        0.4  148.81 x 138.46 x 101.0   16072   236.66  0.004
+alchemy60-fluted        0.4  148.81 x 138.46 x 101.0   32052   229.64  0.003
+alchemy60-fluted-label  0.4  148.81 x 138.46 x 101.0   35216   223.77  0.004
+```
+
+alchemy60-fluted re-audited from the FILE: **13.4 mm2** under 10 deg — identical to 60-fluted.
+The six MTG files re-exported with different facet counts only (proven same solid) and were
+**reverted to HEAD** to keep the history honest.
+
+PrusaSlicer had saved the print project over `3mf/MagicCardBox-alchemy60-fluted.3mf` again
+(7 entries). Copied byte-identical to `gcode/MagicCardBox-alchemy60-fluted.slicer-project.3mf`
+before the export. **It carries the OLD ramp — re-slice from the new export.**
+
+### Still open
+
+- **Assembly joint `Placement1` reads (69.5, 43.5, 5) in memory again** — the Alchemy-size pin
+  hole, same staleness as round 15. Exports don't use the assembly. Close MagicCardAssembly
+  WITHOUT saving and reopen before trusting it.
+- Macro 41 has no ramp-angle gate yet. Macro 59's `ramp_metrics()` is the one to copy in.
+- The 0.15 vs 0.20 layer-height A/B on the Core One L needs a fresh Alchemy print.
 
 ---
 
@@ -2516,8 +2599,10 @@ middle of the plate instead of its surface.
   is tangent to flute 2 along the whole X edge and the exported STL self-intersects)
 - **Rear-bottom ramp** (Bradley's B-spline, bound by macro 48). The FRAME is parametric and
   the curve is offsets from it, which is why the whole thing tracks `Depth`:
-  `RampBottomY` 29.0 (where it lands — must stay inside the footer's reach at z=0 or the
-  ledge returns), `RampTopZ` 8.0, `RampOvershoot` 2.0, `RampUndercut` 2.0,
+  `RampBottomY` **DERIVED = `Depth/2 - RampLandingInset`** (29.0 at Depth 73; it was an
+  absolute 29 until macro 59, which flattened the Alchemy ramp to ~7 deg — see the sixteenth
+  round), `RampLandingInset` **7.5 — free design input** (where it lands, measured back from
+  the rear face — must stay inside the footer's reach at z=0 or the ledge returns), `RampTopZ` 8.0, `RampOvershoot` 2.0, `RampUndercut` 2.0,
   `RampPole1In` **BOUND to `RampOvershoot`** (that equality IS the vertical-top-tangent
   condition — see the tenth round; do not free it), `RampPole1Up` 8.0812,
   `RampPole2In/Up` 2.6794/4.0859, `RampPole3In/Up` 4.1874/3.9787 — **optimised by macro
@@ -2841,7 +2926,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-58 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-59 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
