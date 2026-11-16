@@ -57,6 +57,19 @@ THE TWO SWITCHES
   Both features sit at the TIP of their bodies (macros 24, 38), which is what
   makes them suppressible without disturbing any edge reference.
 
+RAMP-ANGLE GATE (2026-11-15, round 16) - checked BEFORE anything is written
+  The first Alchemy export shipped a rear ramp that had gone ~7 deg flat
+  (RampBottomY was absolute; macro 59 fixed it) and printed as spaghetti. Every
+  gate here passed it: valid, watertight, manifold, bbox and volume all correct.
+  None of them asks whether a surface can be PRINTED. ramp_metrics() is macro
+  59's measurement: down-facing facets of the box in the ramp region (sockets
+  excluded), min surface angle from horizontal and the area under FLAT_DEG.
+      min angle >= RAMP_MIN_ANGLE (15, round 10's floor; design value 19.88)
+      area under 10 deg <= RAMP_FLAT_MAX (1 mm2; design value 0.0)
+  Macro 59's control proved it fires: the old binding at Alchemy size read
+  6.52 deg and 1624.85 mm2. A variant that fails is NOT exported, so a bad
+  geometry can never overwrite a good deliverable.
+
 RESTORES THE STATE IT FOUND (was: a CANONICAL 100-card state)
   Always, even on failure. It used to restore CANONICAL, which silently left
   memory on a different card count from disk with nothing Touched (round 13).
@@ -92,6 +105,9 @@ REPORT = os.path.join(PROJ, "gcode", "export_matrix.json")
 NOZZLE = 0.4
 BED = 350.0
 VOL_TOL = 0.01
+RAMP_MIN_ANGLE = 15.0   # deg from horizontal - round 10's absolute floor
+FLAT_DEG = 10.0
+RAMP_FLAT_MAX = 1.0     # mm2 of down-facing ramp surface flatter than FLAT_DEG
 
 # CardPitch IS A PROPERTY OF THE SLEEVE, NOT OF THE DESIGN - so it lives in this
 # table beside CardCount, not as one global constant.
@@ -165,6 +181,34 @@ def set_variant(cards, pitch, size, flutes, label):
     return bad
 
 
+def ramp_metrics():
+    """Macro 59's measurement, closed frame (box upright = print orientation).
+    Down-facing facets of the box in the rear ramp region, the side-wall hinge
+    sockets excluded. Angle = surface angle from horizontal; 0 = flat ceiling."""
+    import math
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    D2, W2 = vs.Depth.Value / 2, vs.Width.Value / 2
+    xlim = W2 - vs.SideWallThickness.Value - 1.0
+    ztop = vs.RampTopZ.Value + 0.5
+    box = FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape
+    m = MeshPart.meshFromShape(Shape=box, LinearDeflection=0.02, AngularDeflection=0.1)
+    flat, mn = 0.0, 90.0
+    for f in m.Facets:
+        n = f.Normal
+        if n.z > -0.05:
+            continue
+        p = f.Points
+        cx, cy, cz = (sum(q[i] for q in p) / 3 for i in range(3))
+        if abs(cx) > xlim or cy < D2 - 16 or not (0.05 < cz < ztop):
+            continue
+        ang = math.degrees(math.acos(min(1.0, -n.z)))
+        if ang < FLAT_DEG:
+            flat += f.Area
+        if f.Area > 0.01:
+            mn = min(mn, ang)
+    return {"min_angle": round(mn, 2), "area_lt10": round(flat, 2)}
+
+
 def posed_compound():
     """Box + lid folded open 90 deg, sat on Z=0 and centred. Same pose as macro 16."""
     mb = FreeCAD.getDocument("MagicCardBox")
@@ -232,6 +276,18 @@ def run():
             bad = set_variant(cards, pitch, size, flutes, label)
             if bad:
                 row["problems"].append("invalid after recompute: %s" % bad)
+
+            rm = ramp_metrics()
+            row["ramp"] = rm
+            if rm["min_angle"] < RAMP_MIN_ANGLE or rm["area_lt10"] > RAMP_FLAT_MAX:
+                row["problems"].append(
+                    "RAMP NOT PRINTABLE: min %.2f deg (floor %.1f), %.2f mm2 under %d deg "
+                    "(max %.1f) - NOT EXPORTED, existing file left untouched"
+                    % (rm["min_angle"], RAMP_MIN_ANGLE, rm["area_lt10"], FLAT_DEG,
+                       RAMP_FLAT_MAX))
+                row["ok"] = False
+                results.append(row)
+                continue
 
             comb, gap = posed_compound()
             row["gap"] = round(gap, 4)

@@ -2033,7 +2033,10 @@ before the export. **It carries the OLD ramp — re-slice from the new export.**
 - **Assembly joint `Placement1` reads (69.5, 43.5, 5) in memory again** — the Alchemy-size pin
   hole, same staleness as round 15. Exports don't use the assembly. Close MagicCardAssembly
   WITHOUT saving and reopen before trusting it.
-- Macro 41 has no ramp-angle gate yet. Macro 59's `ramp_metrics()` is the one to copy in.
+- ~~Macro 41 has no ramp-angle gate yet.~~ **Added 2026-11-15**: `ramp_metrics()` runs
+  BEFORE each variant is written — min angle >= 15 deg and <= 1 mm2 under 10 deg, else the
+  variant is NOT exported and the existing file is left alone. First run: all 9 at
+  19.88–19.89 deg, 0.00 mm2. (The red path is macro 59's control: 6.52 deg / 1624.85 mm2.)
 - The 0.15 vs 0.20 layer-height A/B on the Core One L needs a fresh Alchemy print.
 
 ---
