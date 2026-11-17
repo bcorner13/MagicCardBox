@@ -2082,7 +2082,20 @@ Alchemy (143x97)    0.4000 flat 0-90    0.4000 flat 0-90  box clip 2101.7935 / 2
 
 Identical gap, contact point mirror-for-mirror, volumes equal to 0.0007 mm3. A one-sided stick
 with symmetric solids is a print effect (seam, cooling direction, stringing order, or a blob).
-Alchemy was set in memory only; restore boolean diff 0/0 on all three bodies, nothing saved. Ask before
+Alchemy was set in memory only; restore boolean diff 0/0 on all three bodies, nothing saved.
+
+**It was the RIGHT knuckle (Bradley), facing the front with the lid closed = closed-frame +x.**
+Round 11's only sub-design toolpath gap (0.3391, Creality slice) was also on +x — a different
+printer and slicer, so treat it as a coincidence until a slice shows otherwise.
+
+Slicer settings, read from the PrusaSlicer project in `3mf/MagicCardBox-alchemy60-fluted.3mf`
+(saved 2026-11-16 16:25, after the print — assumed the same slice, not verified):
+`seam_position = aligned`, `staggered_inner_seams = 0`, `avoid_crossing_perimeters = 0`,
+`wipe = 0`, `retract_length 0.7`, `travel_speed 500`, fan 30–60 % always on, arachne,
+external perimeter 200 mm/s. **Two candidates, both one-sided by nature:** an `aligned` seam
+stacks every layer's start/stop at one spot, which can land in one knuckle's 0.4 gap; and with
+`avoid_crossing_perimeters = 0` travels cross the hinge gap freely. Check the PrusaSlicer
+preview (seams + travel) at the +x knuckle before changing any model Param. Ask before
 changing anything; prints 5/6 (Creality PETG) came off free at these same values, so this is
 the Core One L + Prusament combination, the same two-variables-at-once caveat as the magnets.
 
