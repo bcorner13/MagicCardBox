@@ -1785,6 +1785,13 @@ bores came out closer to nominal and the magnets sit loose. Not fixed — deferr
     Printed 2026-11-14 — **the A/B is VOID.** The hinge band failed into spaghetti because
     that export's ramp was a ~7 deg flat ledge (see the SIXTEENTH ROUND), not because of the
     layer height. Re-run the comparison on a post-macro-59 Alchemy export.
+  - alchemy60-fluted @ **0.15 BALANCED, post-macro-59** (Prusament PETG Matt Blue, 15 % grid,
+    variable layer height on; est. 6 h 55 m, 147.8 g): printed 2026-11-15/16, DONE 03:23Z.
+    Bradley: **"the hinge looks clean, lid swings free"** — then: **"it almost fused but I was
+    able to work it loose."** Ramp: both layer heights print the ~20 deg ramp acceptably on this
+    printer. Not a strict A/B (0.20 was on the MTG 60, 0.15 on the Alchemy), and the near-fusion
+    below is NOT yet compared across them — check whether the 0.20 MTG print came off free
+    without working it loose before concluding anything about layer height.
 
 ### MATERIAL IS A THIRD AXIS — the coincidence trap, waiting to happen
 
@@ -2037,7 +2044,47 @@ before the export. **It carries the OLD ramp — re-slice from the new export.**
   BEFORE each variant is written — min angle >= 15 deg and <= 1 mm2 under 10 deg, else the
   variant is NOT exported and the existing file is left alone. First run: all 9 at
   19.88–19.89 deg, 0.00 mm2. (The red path is macro 59's control: 6.52 deg / 1624.85 mm2.)
-- The 0.15 vs 0.20 layer-height A/B on the Core One L needs a fresh Alchemy print.
+- ~~The 0.15 vs 0.20 layer-height A/B on the Core One L needs a fresh Alchemy print.~~
+  **Done 2026-11-16** — see the Core One L A/B note in the fourteenth round.
+
+### PRINT RESULT — 2026-11-16, the fix confirmed on the part
+
+The re-sliced alchemy60-fluted (post-macro-59 export, Prusament PETG, Core One L, 0.15
+BALANCED, Prusa Connect job `7547e7d7`) finished clean — no failure seen on camera at any
+check, including the planned pause at ~40 %. Bradley, off the plate: **"the hinge looks clean,
+lid swings free"**, and **"it almost fused but I was able to work it loose."** Same printer,
+material and profile as the spaghetti print; only the ramp changed (6.52 → 19.88 deg). **The
+ramp fix (macro 59) is confirmed by the object** — the spaghetti is gone.
+
+**OPEN — the hinge nearly fused in PETG on the Core One L.** It came free by hand, so the part
+is usable, but "almost fused" is the one failure a print-in-place hinge cannot recover from.
+The clearances still hold PLA values (`HingeTabClearance` 0.4, `HingePinClearance` 0.4,
+`HingeSwingClearance` 0.5, `FooterLidClearance` 0.62); this file's print-profile section already
+says PETG usually wants 0.5–0.6 and to open `HingeTabClearance` / `HingeSwingClearance` first
+if a PETG build fuses. **Where it stuck: "the knuckle at one end"** (Bradley) — ONE knuckle, not
+both. The model is mirrored, so a symmetric clearance cannot by itself explain a one-sided
+stick: suspect something one-sided in the PRINT (seam placement, part-cooling direction,
+travel/stringing order) or an asymmetry in the solids. Round 11's slice-level check already
+found the only sub-design gap on ONE knuckle (0.3391 mm at closed-frame x ≈ +49.9, Creality
+slice). Measure both knuckles' gap in the solids, closed and at 90 deg, before opening
+`HingeTabClearance`. Which end (+x / −x) is not yet recorded.
+
+**Measured 2026-11-17 (banner `TEST ENVIRONMENT VERIFIED … FreeCAD 1.1.4 GUI`): the solids are
+symmetric — the cause is NOT in the model.** Knuckle region clipped per side (box socket +
+lid knuckle), swing 0–90 deg in 15 deg steps:
+
+```
+                    +x knuckle          -x knuckle
+MTG 60 (disk)       0.4000, 0 mm3       0.4000, 0 mm3     box clip 2094.131 / 2094.130
+Alchemy (143x97)    0.4000 flat 0-90    0.4000 flat 0-90  box clip 2101.7935 / 2101.7928
+                    lid clip 884.5875 both sides
+```
+
+Identical gap, contact point mirror-for-mirror, volumes equal to 0.0007 mm3. A one-sided stick
+with symmetric solids is a print effect (seam, cooling direction, stringing order, or a blob).
+Alchemy was set in memory only; restore boolean diff 0/0 on all three bodies, nothing saved. Ask before
+changing anything; prints 5/6 (Creality PETG) came off free at these same values, so this is
+the Core One L + Prusament combination, the same two-variables-at-once caveat as the magnets.
 
 ---
 
