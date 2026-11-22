@@ -1,0 +1,146 @@
+# -*- coding: utf-8 -*-
+"""
+60-maker_ops_price_matrix.FCMacro
+
+Runs the Maker-Ops cost estimator (local backend, http://127.0.0.1:8000) against
+EVERY variant in macro 41's MATRIX and writes the prices to
+gcode/maker_ops_prices.json (gitignored - regenerable).
+
+READ-ONLY on the model: changes Params/suppression in MEMORY only, never saves,
+and restores the variant it FOUND, proven by a boolean diff of all three bodies
+(0.0 / 0.0) - same contract as macro 41.
+
+POSE MATTERS. The estimator uses dimensions_mm, and the same lid volume prices
+at 61.99 g with its open-pose bbox vs 49.85 g closed (measured 2026-11-21). So
+every body is priced in the PRINT POSE: macro 41's posed_compound() - box
+upright, lid folded open 90 deg about the hinge axis. The assembly is NOT used:
+it must not be recomputed at another card size (fifteenth round).
+
+Payload is identical to the MakerOps workbench's call_api() (machine 1,
+material 1, save False, colour changes 0, lateral area = Shape.Area), with the
+print profile chosen below.
+"""
+import FreeCAD, Part, os, sys, json, importlib, urllib.request, traceback
+from FreeCAD import Vector
+
+PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
+REPORT = os.path.join(PROJ, "gcode", "maker_ops_prices.json")
+API = "http://127.0.0.1:8000/products/estimate-from-geometry"
+PROFILE_ID = 4          # "0.4mm Standard, 20% infill" - what Bradley picked in the workbench
+# Real records, created 2026-11-21 (were test fixtures 1/1: "Verify Printer" $1.15/h,
+# "Asset Material" $0.05/g - see CornerCAD content/square-descriptions-card-boxes.md).
+MACHINE_ID = 92         # Prusa CORE One L (HF0.4): $1,599 / 5,000 h x 1.125 (maint + power) = $0.36/h
+MATERIAL_ID = 65        # Prusament PETG, $29.99/kg
+WASTE_FACTOR = 1.05     # Bradley 2026-11-21 (API default is 1.1)
+# SUPERSEDED for pricing by scripts/slice_price_matrix.py (real PrusaSlicer slices).
+# Labor and magnets are deliberately NOT sent here: box and lid are priced as two
+# calls, so a per-box charge would be counted twice. Add them per box downstream.
+
+# Pull MATRIX / set_variant / current_variant / posed pose from macro 41 so the
+# variant table can never drift between the two macros. Only the definitions are
+# executed - macro 41's run() block is guarded off by stopping at its marker.
+_src = open(os.path.join(PROJ, "macros", "41-export_matrix.FCMacro")).read()
+_defs = _src.split("\nout = {\"results\"")[0]
+_ns = {"__name__": "macro41_defs"}
+exec(compile(_defs, "41-export_matrix.FCMacro", "exec"), _ns)
+MATRIX, set_variant, current_variant = _ns["MATRIX"], _ns["set_variant"], _ns["current_variant"]
+
+
+def body_shapes():
+    return {"box": FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape.copy(),
+            "lid_plate": FreeCAD.getDocument("Lid").getObject("Body").Shape.copy(),
+            "lid_back": FreeCAD.getDocument("Lid").getObject("Body001").Shape.copy()}
+
+
+def posed_bodies():
+    """Box and lid in the print pose, as two separate shapes (macro 41's pose)."""
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    aY = vs.Depth.Value / 2 - vs.HingeAxisFromRear.Value
+    aZ = vs.HingeAxisFromBottom.Value
+    box = FreeCAD.getDocument("MagicCardBox").getObject("Body").Shape.copy()
+    ld = FreeCAD.getDocument("Lid")
+    lid = ld.getObject("Body").Shape.fuse(ld.getObject("Body001").Shape).removeSplitter()
+    if len(lid.Solids) != 1:
+        raise RuntimeError("lid did not fuse into one solid (%d)" % len(lid.Solids))
+    lid.rotate(Vector(0, aY, aZ), Vector(1, 0, 0), -90)
+    for tag, s in (("box", box), ("lid", lid)):
+        if not (s.isValid() and s.isClosed()):
+            raise RuntimeError("%s is not a valid closed solid" % tag)
+    return box, lid
+
+
+def estimate(name, shape):
+    bb = shape.BoundBox
+    payload = {"name": name, "volume_mm3": float(shape.Volume),
+               "machine_id": MACHINE_ID, "material_id": MATERIAL_ID,
+               "waste_factor": WASTE_FACTOR,
+               "dimensions_mm": {"x": bb.XLength, "y": bb.YLength, "z": bb.ZLength},
+               "save": False, "color_changes": 0,
+               "lateral_surface_area_mm2": float(shape.Area),
+               "print_profile_id": PROFILE_ID}
+    req = urllib.request.Request(API, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    r = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+    c = r["calculation"]
+    return {"volume_mm3": round(shape.Volume, 1),
+            "dims": [round(bb.XLength, 1), round(bb.YLength, 1), round(bb.ZLength, 1)],
+            "mass_g": r["estimated_mass_g"], "hours": r["estimated_print_hours"],
+            "true_cost": c["true_cost"], "srp": c["suggested_price"],
+            "margin_pct": c["profit_margin"], "profit_per_hr": c["profit_per_print_hour"]}
+
+
+out = {"profile_id": PROFILE_ID, "results": [], "restored": None, "error": None, "done": False}
+start = start_shapes = None
+try:
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    # 2026-11-21: Lid had been pulled in PARTIALLY through MagicCardAssembly's links
+    # and stayed Partial after the assembly closed. A Partial document never
+    # recomputes - silently, rc 0, nothing logged - so every lid priced at one size.
+    partial = [d.Name for d in FreeCAD.listDocuments().values() if getattr(d, "Partial", False)]
+    if partial:
+        raise RuntimeError("partially loaded, cannot recompute: %s - close WITHOUT "
+                           "saving and reopen from disk" % partial)
+    start = current_variant()
+    start_shapes = body_shapes()
+    for cards, pitch, size, flutes, label, tag in MATRIX:
+        row = {"tag": tag}
+        try:
+            bad = set_variant(cards, pitch, size, flutes, label)
+            if bad:
+                raise RuntimeError("invalid after recompute: %s" % bad)
+            # 2026-11-21: with MagicCardAssembly open in edit mode, Lid.recompute()
+            # returned 0 and silently did nothing - every lid priced at one size.
+            # Refuse a variant whose documents did not actually recompute.
+            stale = ["%s/%s" % (dn, o.Name) for dn in ("Lid", "MagicCardBox")
+                     for o in FreeCAD.getDocument(dn).Objects if "Touched" in (o.State or [])]
+            if stale:
+                raise RuntimeError("did not recompute (%d Touched), e.g. %s"
+                                   % (len(stale), stale[:3]))
+            box, lid = posed_bodies()
+            row["box"] = estimate("%s-box" % tag, box)
+            row["lid"] = estimate("%s-lid" % tag, lid)
+            row["total"] = {k: round(row["box"][k] + row["lid"][k], 2)
+                            for k in ("mass_g", "hours", "true_cost", "srp")}
+        except Exception as e:
+            row["error"] = repr(e)
+        out["results"].append(row)
+        json.dump(out, open(REPORT, "w"), indent=1)
+except Exception:
+    out["error"] = traceback.format_exc()
+finally:
+    if start is not None:
+        set_variant(*start[:5])
+        now = body_shapes()
+        diffs = {k: [round(start_shapes[k].cut(now[k]).Volume, 6),
+                     round(now[k].cut(start_shapes[k]).Volume, 6)] for k in now}
+        touched = ["%s/%s" % (dn, o.Name) for dn in ("Lid", "MagicCardBox")
+                   for o in FreeCAD.getDocument(dn).Objects if "Touched" in (o.State or [])]
+        out["restored"] = {"variant": list(start[:5]), "boolean_diff": diffs,
+                           "touched": len(touched),
+                           "ok": all(v == [0.0, 0.0] for v in diffs.values()) and not touched}
+    out["done"] = True
+    json.dump(out, open(REPORT, "w"), indent=1)
+    FreeCAD.Console.PrintMessage("Macro 60 done -> %s\n" % REPORT)

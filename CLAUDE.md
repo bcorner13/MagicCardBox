@@ -1852,9 +1852,12 @@ mesh volume      149.92 cm3 (fl)   225.26 cm3 (fl)
 ```
 
 **`CardPitch` 0.7033 is Bradley's choice, and it is a SLEEVED pitch.** He chose to keep the
-MTG-60 internal height. A bare card is likely ~0.3–0.35 mm, so 60 Alchemy cards probably
-stand ~18–21 mm in a 43 mm cavity. If a measured stack says otherwise, give Alchemy its own
-pitch constant in macro 41 — one line.
+MTG-60 internal height. ~~A bare card is likely ~0.3–0.35 mm, so 60 Alchemy cards probably
+stand ~18–21 mm in a 43 mm cavity.~~ **WRONG, measured by the object 2026-11-21:** the
+printed alchemy60 (43.2 interior) held 60 real oversized cards with only "a little bit to
+spare" (Bradley, relayed) — so the real pitch is ~0.67–0.70, near THICK_SLEEVE, not 0.3.
+The inferred figure was off by 2x; card dimensions have been wrong every time they were
+inferred. alchemy100 therefore uses THICK_SLEEVE (interior 71.3, Height ~73.3), not THIN.
 
 **Flutes stay at 24**, so on the 143 box their pitch widens 4.30 → 5.70 mm and the Ø5 flutes
 leave 0.7 mm flats between them instead of sharp ridges. Deliberate default; making
@@ -2099,6 +2102,27 @@ preview (seams + travel) at the +x knuckle before changing any model Param. Ask 
 changing anything; prints 5/6 (Creality PETG) came off free at these same values, so this is
 the Core One L + Prusament combination, the same two-variables-at-once caveat as the magnets.
 
+## 2026-11-21 — Maker-Ops pricing (macro 60), and a PARTIAL document that never recomputes
+
+`macros/60-maker_ops_price_matrix.FCMacro` prices every macro 41 MATRIX row through the
+Maker-Ops backend (`127.0.0.1:8000`, `Mod/MakerOps`) in the PRINT POSE, writes
+`gcode/maker_ops_prices.json`, restores the found variant. **Pose matters**: the estimator
+uses `dimensions_mm`, and the same lid prices 61.99 g in the assembly's open pose vs 49.85 g
+closed. The estimator reads ~28–42 % heavy against real slices (60-fluted-label: 87.29 g /
+97.01 g sliced vs 124.2 g) and ignores the name plate — use it to compare, not to price.
+
+**THE TRAP:** opening MagicCardAssembly pulls `Lid` in as a **partial** document
+(`doc.Partial == True`), and it stays partial after the assembly closes. A partial document
+**never recomputes** — `recompute()` returns 0, nothing logged, nothing Invalid, 28 features
+just stay Touched — so the first run priced every lid at MTG-60 size, and its 0/0 restore
+diff passed because the lid never moved. Fix: Close All, reopen the part files directly.
+Check `[d.Name for d in App.listDocuments().values() if d.Partial]` before any sweep;
+macro 60 now refuses on it and on anything left Touched. **Macro 41 got both checks the
+same day**: a partial doc aborts the run before anything is exported, and a variant left
+Touched/Invalid after recompute is NOT exported (previously "invalid after recompute" was
+logged and the files were written anyway). Its restore gate also fails on stale features,
+since a 0/0 boolean diff passes when nothing recomputed at all.
+
 ---
 
 | Defect | Status |
@@ -2215,8 +2239,8 @@ These restate the global rules in `~/.claude/CLAUDE.md` with project-specific co
    Check those by hand via `execute_python`. Two real defects hid in exactly those gaps:
    the footer's unbound 36° `TaperAngle`, and `Lid/Sketch001`'s hard-coded `Placement`.
 
-   *(Housekeeping: `Binder001` has an empty `Support` — it is orphaned and appears to be
-   dead. Confirm before deleting.)*
+   *(Housekeeping: `Binder001` — orphaned, empty `Support` — was deleted 2026-11-21 by
+   macro 61 after confirming no dependents; lid bodies boolean diff 0/0.)*
 
 4. **Clearance concepts stay decoupled.** Two clearance Params now exist, deliberately
    separate because they are different physical interfaces:
@@ -2443,7 +2467,7 @@ be designed for; it is not a slicer setting.
   several dimension changes, but they are the remaining topological-naming exposure. Retarget
   them to datums **before** any further binding pass; that change can move geometry and needs
   a clean recompute plus a re-solve of the assembly joint afterward.
-- `Binder001` still has an empty `Support` — orphaned, appears dead. Confirm before deleting.
+- ~~`Binder001`~~ deleted 2026-11-21 (macro 61): no Support, no dependents, null shape; lid unchanged 0/0. Not saved yet.
 - Nothing is broken — all three shape-bearing docs recompute clean and every body is a
   single valid solid. This is debt, not breakage. The one functional defect is the zero
   running clearance documented at the top of this file.

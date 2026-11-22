@@ -1,0 +1,56 @@
+# -*- coding: utf-8 -*-
+"""
+61-remove_orphan_binder.FCMacro
+
+Deletes Lid/Binder001, the orphaned SubShapeBinder listed as known debt since
+2026-09-13 ("empty Support - orphaned, appears dead. Confirm before deleting").
+
+Confirmed 2026-11-21 before deleting, and re-checked here every run:
+  Support []   InList []   OutList []   Parents []   Shape null
+  no expression in any open document mentions it
+It was the only object left Touched after a clean reopen.
+
+Refuses if any of that has changed. Proves the lid is unchanged by a boolean
+diff of both lid bodies (0/0). Never saves. Idempotent: no binder, no-op.
+"""
+import FreeCAD, sys, os, importlib, json
+
+PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
+NAME = "Binder001"
+out = {}
+
+sys.path.insert(0, os.path.join(PROJ, "scripts"))
+import test_env_guard
+importlib.reload(test_env_guard)
+out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+
+ld = FreeCAD.getDocument("Lid")
+if getattr(ld, "Partial", False):
+    raise RuntimeError("Lid is partially loaded - reopen it directly first")
+b = ld.getObject(NAME)
+if b is None:
+    out["result"] = "already gone - nothing to do"
+else:
+    refs = [(o.Name, k) for d in FreeCAD.listDocuments().values() for o in d.Objects
+            for k, v in (getattr(o, "ExpressionEngine", None) or []) if NAME in v]
+    problems = []
+    if list(b.Support): problems.append("Support %s" % b.Support)
+    if b.InList: problems.append("InList %s" % [o.Name for o in b.InList])
+    if b.OutList: problems.append("OutList %s" % [o.Name for o in b.OutList])
+    if b.Parents: problems.append("Parents %s" % b.Parents)
+    if not b.Shape.isNull(): problems.append("Shape is not null (%.3f mm3)" % b.Shape.Volume)
+    if refs: problems.append("expression refs %s" % refs)
+    if problems:
+        raise RuntimeError("%s is NOT orphaned, refusing: %s" % (NAME, problems))
+
+    before = {k: ld.getObject(k).Shape.copy() for k in ("Body", "Body001")}
+    ld.removeObject(NAME)
+    ld.recompute()
+    diff = {k: [round(before[k].cut(ld.getObject(k).Shape).Volume, 6),
+                round(ld.getObject(k).Shape.cut(before[k]).Volume, 6)] for k in before}
+    touched = [o.Name for o in ld.Objects if "Touched" in (o.State or [])]
+    invalid = [o.Name for o in ld.Objects if "Invalid" in (o.State or [])]
+    out.update({"result": "removed", "boolean_diff": diff, "touched": touched,
+                "invalid": invalid,
+                "ok": all(v == [0.0, 0.0] for v in diff.values()) and not touched and not invalid})
+print(json.dumps(out, indent=1))

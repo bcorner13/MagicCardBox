@@ -2,8 +2,8 @@
 """
 41-export_matrix.FCMacro
 
-Exports the whole product matrix in one run: {MTG 100, MTG 60, Alchemy 60}
-x {smooth, fluted, fluted-label} surfaces = 9 variants, STL + 3MF each.
+Exports the whole product matrix in one run: {MTG 100, MTG 60, Alchemy 60, Alchemy 100}
+x {smooth, fluted, fluted-label} surfaces = 12 variants, STL + 3MF each.
 
 CARD SIZE IS PER-VARIANT (2026-11-14, Alchemy). CardLength / CardWidth live in
 the MATRIX beside CardCount / CardPitch. Width and Depth derive from them, so an
@@ -143,7 +143,15 @@ MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
           (60,  THICK_SLEEVE, MTG,     True,  True,  "60-fluted-label"),
           (60,  THICK_SLEEVE, ALCHEMY, False, False, "alchemy60-smooth"),
           (60,  THICK_SLEEVE, ALCHEMY, True,  False, "alchemy60-fluted"),
-          (60,  THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy60-fluted-label")]
+          (60,  THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy60-fluted-label"),
+          # Alchemy/Oversized 100 (Bradley 2026-11-21). THICK_SLEEVE, not THIN: the printed
+          # alchemy60 (THICK, 43.2 interior) held 60 real oversized cards with only "a little
+          # to spare", so the real pitch is near 0.67 - above THIN's 0.62, which would make a
+          # 63 mm interior for a ~67 mm stack. THICK gives 71.3. W 143 / D 97 / H ~73 is a NEW
+          # combination - alchemy60 proved W/D only at H 45.2; the per-variant gates must pass.
+          (100, THICK_SLEEVE, ALCHEMY, False, False, "alchemy100-smooth"),
+          (100, THICK_SLEEVE, ALCHEMY, True,  False, "alchemy100-fluted"),
+          (100, THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy100-fluted-label")]
 
 # Fallback only - the macro restores the state it FOUND (see header).
 CANONICAL = (100, THIN_SLEEVE, MTG, True, True, "100-fluted-label")
@@ -178,7 +186,18 @@ def set_variant(cards, pitch, size, flutes, label):
             st = o.State or []
             if "Invalid" in st or "Error" in st:
                 bad.append("%s/%s" % (dn, o.Name))
+            elif "Touched" in st:
+                # 2026-11-21: a document that did not actually recompute (e.g. a
+                # PARTIAL one) leaves its features Touched and its shapes stale -
+                # recompute() returns 0 and logs nothing. Stale is as bad as Invalid.
+                bad.append("%s/%s [Touched - did not recompute]" % (dn, o.Name))
     return bad
+
+
+def partial_docs():
+    """Documents loaded PARTIALLY (e.g. pulled in through MagicCardAssembly's links).
+    FreeCAD never recomputes one - silently - so every variant would get stale geometry."""
+    return [d.Name for d in FreeCAD.listDocuments().values() if getattr(d, "Partial", False)]
 
 
 def ramp_metrics():
@@ -268,14 +287,26 @@ def tris_in_3mf(path):
 
 
 def run():
+    # Optional subset: pre-seed MCB41_ONLY = {"tag", ...} in the exec namespace to
+    # export only those rows and leave every other tracked file untouched.
+    only = globals().get("MCB41_ONLY")
     results = []
     for cards, pitch, size, flutes, label, tag in MATRIX:
+        if only and tag not in only:
+            continue
         row = {"tag": tag, "cards": cards, "pitch": pitch, "card_size": list(size),
                "flutes": flutes, "label": label, "problems": []}
         try:
             bad = set_variant(cards, pitch, size, flutes, label)
             if bad:
-                row["problems"].append("invalid after recompute: %s" % bad)
+                # Blocks the export (was: logged, files written anyway). Stale or
+                # invalid geometry must never overwrite a tracked deliverable.
+                row["problems"].append("invalid or stale after recompute (%d): %s - NOT "
+                                       "EXPORTED, existing file left untouched"
+                                       % (len(bad), bad[:5]))
+                row["ok"] = False
+                results.append(row)
+                continue
 
             rm = ramp_metrics()
             row["ramp"] = rm
@@ -357,13 +388,19 @@ def joint_p1():
     return str(FreeCAD.getDocument("MagicCardAssembly").getObject("Joint").Placement1)
 
 
-out = {"results": [], "restored": None, "error": None}
+out = {"results": [], "restored": None, "error": None,
+       "only": sorted(globals().get("MCB41_ONLY") or [])}
 start_variant = start_shapes = start_p1 = None
 try:
     sys.path.insert(0, os.path.join(PROJ, "scripts"))
     import test_env_guard
     importlib.reload(test_env_guard)
     out["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    partial = partial_docs()
+    if partial:
+        raise RuntimeError("partially loaded, cannot recompute: %s - Close All WITHOUT "
+                           "saving and reopen the part files directly. Nothing exported."
+                           % partial)
     start_variant = current_variant()
     start_shapes = body_shapes()
     start_p1 = joint_p1()
@@ -376,7 +413,8 @@ finally:
     restore_ok = False
     try:
         v = start_variant or CANONICAL
-        set_variant(v[0], v[1], v[2], v[3], v[4])
+        restore_bad = set_variant(v[0], v[1], v[2], v[3], v[4])
+        out["restore_stale_or_invalid"] = restore_bad
         out["restored"] = v[5]
         if start_shapes is not None:
             now = body_shapes()
@@ -384,7 +422,10 @@ finally:
                     for k in now}
             out["restore_boolean_diff"] = diff
             out["joint_p1"] = [start_p1, joint_p1()]
-            restore_ok = all(max(d) <= 1e-3 for d in diff.values()) and start_p1 == joint_p1()
+            # A boolean diff of 0/0 also passes when nothing recomputed at all (the
+            # 2026-11-21 partial-Lid case), so stale features fail the restore too.
+            restore_ok = all(max(d) <= 1e-3 for d in diff.values()) \
+                and start_p1 == joint_p1() and not restore_bad
             if not restore_ok:
                 out["restored"] = ("RESTORE DID NOT RETURN TO START - close all four "
                                    "documents WITHOUT saving")

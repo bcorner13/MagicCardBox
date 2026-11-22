@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "prusa": {
+      "type": "http",
+      "url": "https://mcp.prusa3d.com/mcp"
+    }
+  }
+}
