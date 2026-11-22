@@ -3013,7 +3013,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-59 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-62 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
@@ -3255,3 +3255,40 @@ material-dependent and get tuned from a real print, not defaults. They currently
 values. Prints 1–4 were PLA; **print 5 is PETG** because black was requested and the black
 loaded is CR-PETG. Production in ASA was the original intent and would need its own pass —
 ASA shrinks ~0.5–0.7 % against PLA's ~0.2 %, so those three Params cannot simply carry over.
+
+## 2026-11-22 — both PETG prints stuck on the LEFT knuckle; the socket ceiling sags (macro 62)
+
+Two prints in CR-PETG the same day: 60-fluted on the Core One L (0.15 SPEED) and the first
+**alchemy100-fluted** on the K2. Both came off with the **left knuckle (lid closed, box facing
+you = closed-frame −x) slightly fused**, freed with careful pressure. The 2026-11-16 Alchemy print
+stuck on the RIGHT. A side that switches, with solids measured symmetric, rules out a fixed
+one-sided cause (seam, cooling direction). Bradley: **the gap at the TOP of the hinge looks
+smaller than the rest**, plus slight droop in the inside gap.
+
+Cause, by mechanism (not yet measured on a part): the socket is a SIDEWAYS hole in the print pose,
+and the top of a sideways hole is an arch printed over air. It sags and closes the 0.4 mm
+`HingeTabClearance` there first. Measured on the solid before the fix: the ceiling follows the R5.4
+bore and is near-horizontal over y ≈ 28–31 (z 10.0–10.4). Only behind the axis does
+`BackHengeFilet` roll it upward.
+
+**Macro 62 — `SocketTeardropAngle` 45°, a pointed cap on the socket**, appended at the TIP
+(sketch → pocket → mirror, suppressible, no named edges). Arc bound to the bore's own expression,
+so it stays coincident. Apex at `HingeAxisFromBottom + r/sin(angle)` = 12.637. Banner-verified result:
+
+```
+removed            23.43 mm3 per side, +x == -x (the cap's rear half was already open)
+ceiling y=29.5     10.016 -> 10.637     y=31.5   10.644 -> 12.637   (both knuckles)
+LidBack swing      0.4000 flat 0-90, unchanged; plate unchanged; interference 0
+chain-invalid      8 -> 8; tip valid/closed/1 solid; mesh @0.02 solid, manifold, no self-int
+```
+
+From outside, a small pointed gap now shows above each knuckle. **Saved and exported 2026-11-22** — all 12
+variants passed macro 41 at gap 0.4; each file is ~47 mm3 lighter than HEAD (2 x 23.43). Macro 41's restore gate failed only on the stale assembly `Placement1` (rounds 15-16); fixed by closing the assembly without saving and reopening.
+
+**Also reported:**
+- **alchemy100 lid height "off a tiny bit".** It is NOT the model. Closing the lid on the exported
+  meshes gives a 0.150 mm plate-over-rim gap on 60, alchemy60 and alchemy100 alike. Not yet
+  explained: Height 73.33 is not a whole number of layers, and the magnets are untested in PETG.
+- **Magnets loose in every pocket on both prints.** Measured magnet **Ø3.96** (`MagnetDia` is still
+  4.0). Bores are box Ø4.70 / lid Ø4.30 (macro 53's swapped orientations). No PETG coupon exists
+  for either printer.
