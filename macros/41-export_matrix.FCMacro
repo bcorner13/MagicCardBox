@@ -153,6 +153,33 @@ MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
           (100, THICK_SLEEVE, ALCHEMY, True,  False, "alchemy100-fluted"),
           (100, THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy100-fluted-label")]
 
+# MAGNET FIT IS A PROPERTY OF PRINTER + SLICER + MATERIAL, not of the design (macro 63,
+# 2026-11-22). Each profile is the winning coupon result, as per-side offsets from the
+# measured MagnetDia 3.96:
+#   MagnetFitBoxRim       box rim bore (opens UP in print)       Ø = MagnetDia + 2*fit
+#   MagnetFitLidArc       lid double-D arcs (opens SIDEWAYS)     Ø = MagnetDia + 2*fit
+#   MagnetLidFlatSqueeze  lid double-D flats, INTERFERENCE       W = MagnetDia - 2*squeeze
+# Only the Core One L + CR-PETG coupons exist, so the exports carry that profile and the
+# file names are unchanged. When a second profile is added (K2 + CR-PETG), put the
+# profile key into the export file name so the two sets cannot be confused.
+FIT_PROFILES = {
+    "CoreOneL-CR-PETG": {"MagnetFitBoxRim": 0.095,      # Ø4.15 plain round held
+                         "MagnetFitLidArc": 0.22,       # Ø4.40, as coupon v2
+                         "MagnetLidFlatSqueeze": 0.03},  # W 3.90 held
+}
+EXPORT_FIT_PROFILE = "CoreOneL-CR-PETG"
+
+
+def apply_fit_profile(name):
+    """Set the fit Params; return the values found, for the restore."""
+    vs = FreeCAD.getDocument("Params").getObject("VarSet")
+    found = {}
+    for k, v in FIT_PROFILES[name].items():
+        found[k] = float(getattr(vs, k))
+        setattr(vs, k, v)
+    return found
+
+
 # Fallback only - the macro restores the state it FOUND (see header).
 CANONICAL = (100, THIN_SLEEVE, MTG, True, True, "100-fluted-label")
 
@@ -390,7 +417,7 @@ def joint_p1():
 
 out = {"results": [], "restored": None, "error": None,
        "only": sorted(globals().get("MCB41_ONLY") or [])}
-start_variant = start_shapes = start_p1 = None
+start_variant = start_shapes = start_p1 = start_fits = None
 try:
     sys.path.insert(0, os.path.join(PROJ, "scripts"))
     import test_env_guard
@@ -406,12 +433,20 @@ try:
     start_p1 = joint_p1()
     out["start_variant"] = [start_variant[0], start_variant[1], list(start_variant[2]),
                             start_variant[3], start_variant[4]]
+    start_fits = apply_fit_profile(EXPORT_FIT_PROFILE)
+    out["fit_profile"] = {"name": EXPORT_FIT_PROFILE,
+                          "values": FIT_PROFILES[EXPORT_FIT_PROFILE],
+                          "found": start_fits}
     out["results"] = run()
 except Exception:
     out["error"] = traceback.format_exc()[-800:]
 finally:
     restore_ok = False
     try:
+        if start_fits:
+            vsr = FreeCAD.getDocument("Params").getObject("VarSet")
+            for k, val in start_fits.items():
+                setattr(vsr, k, val)
         v = start_variant or CANONICAL
         restore_bad = set_variant(v[0], v[1], v[2], v[3], v[4])
         out["restore_stale_or_invalid"] = restore_bad

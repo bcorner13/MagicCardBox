@@ -3013,7 +3013,7 @@ No project-scoped memories for MagicCardBox yet — this project was bootstrappe
   re-solve the assembly after a hinge edit and confirm the joint still binds.
 - All four documents (`Params`, `MagicCardBox`, `Lid`, `MagicCardAssembly`) should be open
   together; editing `Params` while the others are closed leaves them stale until reopened.
-- `macros/` holds 01-62 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
+- `macros/` holds 01-63 (57 is written but NOT applied - see the fifteenth round). Every change from here forward goes in as a `.FCMacro`, symlinked
   into `~/Library/Application Support/FreeCAD/v1-1/Macro/` as `MCB-<name>.FCMacro` so it
   appears in Macro -> Macros...
 
@@ -3292,3 +3292,60 @@ variants passed macro 41 at gap 0.4; each file is ~47 mm3 lighter than HEAD (2 x
 - **Magnets loose in every pocket on both prints.** Measured magnet **Ø3.96** (`MagnetDia` is still
   4.0). Bores are box Ø4.70 / lid Ø4.30 (macro 53's swapped orientations). No PETG coupon exists
   for either printer.
+- **Coupon result, Core One L, CR-PETG, sideways-v2 (2026-11-22):** the best pocket is the
+  **DOUBLE-D, flat-to-flat W 3.90** (front face; label sequence 85 90 95 00 ... confirms the face,
+  from Bradley's photo). That is a 0.06 mm diametral squeeze on a Ø3.96 magnet, taken on the
+  vertical flats. It is the first sideways pocket on any material or printer that grips, and it
+  confirms the coupon-v2 idea: the flats grip and the drooping top and bottom stay clear.
+- **Coupon result, Core One L, CR-PETG, v1 FLAT row (box rim), 2026-11-22:** the magnet holds at
+  **Ø4.15 PLAIN** (photo: labels 95 00 05 10 15 ..., magnet in the 15 pocket of the flat row).
+  RIBBED: even the smallest (3.95 inscribed) "looked nice but pulled out". PETG ribs behave like
+  silk ribs (they flatten instead of gripping), so the box rim uses the plain round bore. For comparison: CR-Silk 4.25 and PLA-CF 4.20, both on the K2. Today's box
+  pocket is Ø4.70, which explains the loose magnets.
+- **Core One L + CR-PETG set:** box rim round Ø4.15; lid face double-D W 3.90. The K2 + CR-PETG
+  coupons are still to print.
+
+### Macro 63 — the coupon values go into the model (2026-11-23)
+
+`macros/63-magnet_fit_from_coupons.FCMacro`, banner-verified, every gate passing, and safe to re-run (a second
+run changed nothing):
+
+```
+MagnetDia             4.0 -> 3.96     MEASURED fact
+MagnetFitBoxRim       0.095   NEW     box rim bore  Ø4.15, plain round
+MagnetFitLidArc       0.22    NEW     lid arcs      Ø4.40
+MagnetLidFlatSqueeze  0.03    NEW     lid flats     W 3.90 (interference)
+MagnetFitHorizontal / MagnetFitVertical   RETIRED (0 references; names were backwards)
+```
+
+- **The lid pocket is now a DOUBLE-D.** `SketchMagnetLid` and `SketchMagnetLeadLid` were rebuilt
+  as two arcs plus two flats per pocket. The flats are lines of constant closed-frame X, so they
+  stand vertical in print, as on coupon v2. The lead-in sketch is the same outline grown by
+  `MagnetLeadIn`, so the -45 deg taper leads the magnet onto the flats too.
+- **⚠️ The first build of these sketches FLIPPED on the size jump, and every gate had passed.**
+  Corners were placed with `DistanceX` + `Vertical`. A point on a circle at a fixed x has two
+  roots (y = +/-s). During macro 41's Alchemy rows the lead-in sketch took the other root: both
+  flats went to zero length, the lead-in became a round cone again, DoF still 0, nothing Invalid.
+  Macro 41's restore gate caught it as a 0.427 mm3 lid-plate difference. **Fix:** each corner is
+  now set by a construction ray from the centre with a signed `Angle` (a, 180-a, 180+a, -a,
+  a = acos(h/R) as an expression). An angle has one solution, and the flats follow exactly.
+  Macro 63 now resizes to alchemy100 and back as a gate: probes pass at both sizes, and the
+  boolean diff is 0/0 on both parts. **Rule: a sketch is not proven until it survives the
+  largest size jump the export matrix makes; DoF 0 counts equations, not roots.**
+- **Measured on the solids by line probes**, both pockets, symmetric: box 4.150 x 4.150; lid flats
+  3.900, arcs 4.400; lid mouth 4.40 / 4.90 (lead-in present on both axes); depth 1.505 on both
+  parts. Closed plate-vs-box gap 0.1500 unchanged, interference 0. Chain-invalid 8 -> 8 (box),
+  0 -> 0 (lid). Mesh solid, manifold, no self-intersections. Box +11.65 mm3, lid plate -0.002 mm3.
+- **Macro 41 now has `FIT_PROFILES` / `EXPORT_FIT_PROFILE`.** It applies the profile before
+  exporting, restores the fit values it found, and writes the profile into the report. Only
+  `CoreOneL-CR-PETG` exists, so the file names are unchanged. **When the K2 profile is added, put
+  the profile key into the export file name.**
+- Macro 53 is superseded: its two Params no longer exist, and re-running it would recreate them.
+- **Not yet tested on a printed box.** The coupons were small parts printed by themselves. First box
+  print: check the magnets press in with a thumb, stay put when the lid is opened, and that the lid
+  still closes flush.
+- **PrusaSlicer saved its project over `calibration/MagnetFitCoupon-sideways-v2.3mf`** (7 entries
+  vs 3). Copied byte-identical to `gcode/MagnetFitCoupon-sideways-v2.slicer-project.3mf`, then
+  the tracked file was restored from git. Same `last_export_path` drift as the `3mf/` files.
+- **Saved 2026-11-23** (Params, MagicCardBox, Lid; audit clean). First box test of these pockets:
+  **60-fluted-label on the Core One L in CR-PETG** (Bradley).

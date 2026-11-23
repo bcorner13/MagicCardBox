@@ -1,0 +1,445 @@
+# -*- coding: utf-8 -*-
+"""
+63 - Magnet pockets from the CR-PETG / Core One L coupons, and a double-D lid pocket.
+
+WHY
+---
+Every magnet was loose on both 2026-11-22 PETG prints. The coupons
+(calibration/MagnetFitCoupon.3mf and MagnetFitCoupon-sideways-v2.3mf), printed by
+Bradley on the Core One L in CR-PETG the same day, settled both orientations:
+
+    box rim  (pocket opens UP in print)      plain round Ø4.15 holds; ribbed did not
+    lid face (pocket opens SIDEWAYS in print) double-D, flat-to-flat W 3.90 holds;
+                                              no round sideways pocket has ever held
+
+Calipers on the magnet: Ø3.96, not the 4.0 the model carried. MagnetDia is a FACT
+about the purchased part, so it is corrected first. Every fit below is a per-side
+offset from that fact, chosen so the modelled size equals the coupon's winner.
+
+WHAT THIS DOES
+--------------
+Params (created only if absent; values = the Core One L + CR-PETG coupon):
+    MagnetDia            4.0 -> 3.96   MEASURED - asserted every run
+    MagnetFitBoxRim      0.095         box bore  = 3.96 + 2*0.095 = 4.15
+    MagnetFitLidArc      0.22          lid arcs  = 3.96 + 2*0.22  = 4.40 (coupon DD_HEIGHT)
+    MagnetLidFlatSqueeze 0.03          lid flats = 3.96 - 2*0.03  = 3.90 (interference)
+    MagnetFitHorizontal / MagnetFitVertical   RETIRED once unreferenced. Their names
+                                              were backwards (round 14); the new names
+                                              say WHICH POCKET, not an orientation.
+
+Box: SketchMagnetBox / SketchMagnetLeadBox rebound to MagnetFitBoxRim. Shape unchanged
+     apart from the diameter.
+
+Lid: SketchMagnetLid and SketchMagnetLeadLid are REBUILT as double-D outlines - two
+     arcs on Ø(MagnetDia + 2*MagnetFitLidArc) cut by two flats at
+     x = cx +/- (MagnetDia/2 - MagnetLidFlatSqueeze). The lead-in sketch is the same
+     outline grown by MagnetLeadIn, so the existing -45 deg tapered pocket now leads
+     the magnet onto the flats too (coupon v2 hulled its lead-in for the same reason).
+
+     The flats are lines of constant CLOSED-FRAME X. The lid prints folded 90 deg about
+     the hinge axis (X), which maps closed Y onto print Z and leaves X alone, so the
+     flats stand VERTICAL in print - the coupon's winning orientation - and grip at the
+     sides, where the round pockets printed wide.
+
+     Rebuilding is safe here: PocketMagnetLid and PocketMagnetLeadLid reference only
+     their sketch, nothing downstream in the lid plate references their edges, and the
+     assembly joint lives on Body001 / the box, not on the lid plate.
+
+     All flat-and-arc constraints are SIGNED DistanceX (round 15: an unsigned distance
+     has a mirror solution that a fully constrained sketch can silently pick).
+
+GATES - measured off the SOLIDS by line probes, never trusted from the Params
+---------------------------------------------------------------------------------
+  * banner; no partial documents
+  * both lid sketches DoF 0, FullyConstrained, no redundant/conflicting/malformed
+  * box bore 4.15 across X and Y at mid-depth, both pockets
+  * lid flat-to-flat 3.90 across X, arc 4.40 across Y, at mid-depth, both pockets
+  * lead-in present at the mouth on BOTH lid axes (wider than the body of the pocket)
+  * pocket depth 1.505 unchanged, both parts
+  * closed lid plate vs box: interference 0, gap unchanged
+  * chain_validity regression (count must not grow); tips valid, closed, one solid
+  * mesh at 0.02: solid, manifold, no self-intersections
+
+Writes macros/63-report.json. DOES NOT SAVE.
+"""
+import json
+import math
+import os
+import sys
+import importlib
+import traceback
+
+import FreeCAD as App
+import Part
+import Sketcher
+import MeshPart
+from FreeCAD import Vector
+
+PROJ = "/Users/bradleycorner/Documents/3dPrinting/Commercial License/MagicCardBox"
+REPORT = os.path.join(PROJ, "macros", "63-report.json")
+BOX, LID, PAR = "MagicCardBox", "Lid", "Params"
+TOL = 0.01
+V = "<<Params>>#VarSet."
+
+MAGNET_DIA_MEASURED = 3.96          # calipers, 2026-11-22
+
+NEW = [
+    ("MagnetFitBoxRim", 0.095,
+     "Per-side bore fit of the BOX rim pockets (open UP in print). Core One L + CR-PETG "
+     "coupon: plain round Ø4.15 holds a Ø3.96 magnet. Per printer+material - see macro 41."),
+    ("MagnetFitLidArc", 0.22,
+     "Per-side clearance of the LID pocket's arcs (pocket opens SIDEWAYS in print). The "
+     "arcs only clear the drooping top/bottom; the flats do the gripping. Coupon v2: Ø4.40."),
+    ("MagnetLidFlatSqueeze", 0.03,
+     "Per-side INTERFERENCE of the LID pocket's two flats (vertical in print). Core One L + "
+     "CR-PETG coupon v2: flat-to-flat W 3.90 holds a Ø3.96 magnet."),
+]
+RETIRE = ["MagnetFitHorizontal", "MagnetFitVertical"]
+
+CX = V + "Width / 2 - " + V + "SideWallThickness / 2"
+CY = "-" + V + "Depth / 2 + " + V + "MagnetFromFront"
+
+BOX_REBIND = [
+    ("SketchMagnetBox",     V + "MagnetDia / 2 + " + V + "MagnetFitBoxRim"),
+    ("SketchMagnetLeadBox", V + "MagnetDia / 2 + " + V + "MagnetFitBoxRim + " + V + "MagnetLeadIn"),
+]
+LID_SKETCHES = [
+    # name, R expression, half-flat expression
+    ("SketchMagnetLid",
+     V + "MagnetDia / 2 + " + V + "MagnetFitLidArc",
+     V + "MagnetDia / 2 - " + V + "MagnetLidFlatSqueeze"),
+    ("SketchMagnetLeadLid",
+     V + "MagnetDia / 2 + " + V + "MagnetFitLidArc + " + V + "MagnetLeadIn",
+     V + "MagnetDia / 2 - " + V + "MagnetLidFlatSqueeze + " + V + "MagnetLeadIn"),
+]
+
+rep = {"log": [], "fails": []}
+
+
+def log(m):
+    rep["log"].append(m)
+    App.Console.PrintMessage("[63] %s\n" % m)
+
+
+def chain_validity(doc):
+    out = {}
+    for o in doc.Objects:
+        if not hasattr(o, "BaseFeature"):
+            continue
+        try:
+            out[o.Name] = bool(o.Shape.isValid())
+        except Exception:
+            out[o.Name] = False
+    return out
+
+
+def bad(v):
+    return sorted(k for k, ok in v.items() if not ok)
+
+
+def void_width(shape, p0, p1, centre):
+    """Width of the empty interval of segment p0->p1 that contains `centre`
+    (a scalar position along the segment, measured from p0)."""
+    seg = Part.makeLine(p0, p1)
+    inside = shape.common(seg)
+    d = (p1 - p0)
+    L = d.Length
+    d.normalize()
+    lo, hi = 0.0, L
+    for e in inside.Edges:
+        a = (e.Vertexes[0].Point - p0).dot(d)
+        b = (e.Vertexes[-1].Point - p0).dot(d)
+        a, b = min(a, b), max(a, b)
+        if b <= centre + 1e-9:
+            lo = max(lo, b)
+        elif a >= centre - 1e-9:
+            hi = min(hi, a)
+        else:
+            return 0.0            # solid at the centre: no pocket here
+    return hi - lo
+
+
+def rebuild_dd(sk, cx_val, cy_val, R, h, r_expr, h_expr):
+    """Two double-D outlines, centres at (+cx, cy) and (-cx, cy).
+
+    Each corner is placed by a CONSTRUCTION RAY from the centre with a signed Angle
+    constraint (a, 180-a, 180+a, -a, where a = acos(h/R)). An angle has ONE solution.
+
+    The first build placed the corners with DistanceX + Vertical instead. A point on a
+    circle at a given x has TWO solutions (y = +/-s), and on the Alchemy round trip in
+    macro 41 the LEAD-IN sketch picked the other one: both flats collapsed to zero
+    length at the bottom and the lead-in became a plain round cone again. DoF stayed 0,
+    nothing was Invalid - round 15's lesson, met through a different constraint type.
+    The flats now follow from the angles: x = cx + R cos(a) = cx + h exactly.
+    """
+    for path, _ in list(sk.ExpressionEngine):
+        if path.startswith("Constraints"):
+            sk.setExpression(path, None)
+    sk.deleteAllGeometry()
+    a = math.acos(h / R)
+    s = math.sqrt(R * R - h * h)
+    z = Vector(0, 0, 1)
+    acos = "acos((" + h_expr + ") / (" + r_expr + "))"
+    C = Sketcher.Constraint
+    for k, sx in enumerate((1.0, -1.0)):
+        cx = sx * cx_val
+        c = Vector(cx, cy_val, 0)
+        RT = Vector(cx + h, cy_val + s, 0)
+        LT = Vector(cx - h, cy_val + s, 0)
+        LB = Vector(cx - h, cy_val - s, 0)
+        RB = Vector(cx + h, cy_val - s, 0)
+        g = 8 * k
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(c, z, R), a, math.pi - a), False)            # g+0 top RT->LT
+        sk.addGeometry(Part.ArcOfCircle(Part.Circle(c, z, R), math.pi + a, 2 * math.pi - a), False)  # g+1 bottom LB->RB
+        sk.addGeometry(Part.LineSegment(RB, RT), False)                                        # g+2 right flat
+        sk.addGeometry(Part.LineSegment(LT, LB), False)                                        # g+3 left flat
+        for p_ in (RT, LT, LB, RB):                                                            # g+4..g+7 rays
+            sk.addGeometry(Part.LineSegment(c, p_), True)
+        sk.addConstraint(C("Coincident", g + 2, 1, g + 1, 2))
+        sk.addConstraint(C("Coincident", g + 2, 2, g + 0, 1))
+        sk.addConstraint(C("Coincident", g + 3, 1, g + 0, 2))
+        sk.addConstraint(C("Coincident", g + 3, 2, g + 1, 1))
+        sk.addConstraint(C("Coincident", g + 1, 3, g + 0, 3))
+        sk.addConstraint(C("Equal", g + 0, g + 1))
+        i_r = sk.addConstraint(C("Radius", g + 0, R))
+        i_x = sk.addConstraint(C("DistanceX", -1, 1, g + 0, 3, cx))
+        i_y = sk.addConstraint(C("DistanceY", -1, 1, g + 0, 3, cy_val))
+        sk.setExpression("Constraints[%d]" % i_r, r_expr)
+        sk.setExpression("Constraints[%d]" % i_x, CX if sx > 0 else "-(" + CX + ")")
+        sk.setExpression("Constraints[%d]" % i_y, CY)
+        rays = [(g + 4, g + 0, 1, a, acos),                              # RT = top arc start
+                (g + 5, g + 0, 2, math.pi - a, "180 deg - " + acos),     # LT = top arc end
+                (g + 6, g + 1, 1, math.pi + a, "180 deg + " + acos),     # LB = bottom arc start
+                (g + 7, g + 1, 2, -a, "-" + acos)]                       # RB = bottom arc end
+        for ray, arc, pos, ang, expr in rays:
+            sk.addConstraint(C("Coincident", ray, 1, g + 0, 3))
+            sk.addConstraint(C("Coincident", ray, 2, arc, pos))
+            i_a = sk.addConstraint(C("Angle", ray, ang))
+            sk.setExpression("Constraints[%d]" % i_a, expr)
+
+
+def main():
+    sys.path.insert(0, os.path.join(PROJ, "scripts"))
+    import test_env_guard
+    importlib.reload(test_env_guard)
+    rep["banner"] = test_env_guard.require_laptop(need_freecad=True)
+    log(rep["banner"])
+    partial = [d.Name for d in App.listDocuments().values() if getattr(d, "Partial", False)]
+    if partial:
+        raise RuntimeError("partial documents %s - reopen the part files directly" % partial)
+
+    docs = {n: App.getDocument(n) for n in (BOX, LID, PAR)}
+    if not docs[PAR].FileName.startswith(PROJ):
+        raise RuntimeError("Params is %s, not this project's" % docs[PAR].FileName)
+    vs = docs[PAR].getObject("VarSet")
+    box_body = docs[BOX].getObject("Body")
+    plate = docs[LID].getObject("Body")
+
+    before = {n: chain_validity(docs[n]) for n in (BOX, LID)}
+    vol0 = {"box": box_body.Shape.Volume, "plate": plate.Shape.Volume}
+    gap0 = box_body.Shape.distToShape(plate.Shape)[0]
+
+    # ---- 1. Params --------------------------------------------------------
+    if abs(float(vs.MagnetDia) - MAGNET_DIA_MEASURED) > 1e-9:
+        log("MagnetDia %s -> %.2f (measured)" % (vs.MagnetDia, MAGNET_DIA_MEASURED))
+        vs.MagnetDia = MAGNET_DIA_MEASURED
+    for name, val, doc in NEW:
+        if name in vs.PropertiesList:
+            log("Param %s exists = %s (left alone)" % (name, getattr(vs, name)))
+        else:
+            vs.addProperty("App::PropertyLength", name, "Magnets", doc)
+            setattr(vs, name, val)
+            log("Param %s CREATED = %s" % (name, val))
+
+    # ---- 2. Box: rebind (always) -------------------------------------------
+    for name, expr in BOX_REBIND:
+        sk = docs[BOX].getObject(name)
+        for p in ("Constraints[2]", "Constraints[5]"):
+            sk.setExpression(p, expr)
+        log("rebound %s/%s" % (BOX, name))
+
+    # ---- 3. Lid: double-D (rebuild once, re-assert expressions every run) ---
+    docs[PAR].recompute()
+    cx_val = float(vs.Width) / 2 - float(vs.SideWallThickness) / 2
+    cy_val = -float(vs.Depth) / 2 + float(vs.MagnetFromFront)
+    dia = float(vs.MagnetDia)
+    lead = float(vs.MagnetLeadIn)
+    R = dia / 2 + float(vs.MagnetFitLidArc)
+    h = dia / 2 - float(vs.MagnetLidFlatSqueeze)
+    if not h < R - 0.05:
+        raise RuntimeError("flats at %.3f do not cut the %.3f arc" % (h, R))
+    for name, r_expr, h_expr in LID_SKETCHES:
+        sk = docs[LID].getObject(name)
+        extra = lead if "Lead" in name else 0.0
+        rebuild_dd(sk, cx_val, cy_val, R + extra, h + extra, r_expr, h_expr)
+        log("built %s/%s as double-D (rebuilt every run; deterministic)" % (LID, name))
+
+    for n in (PAR, BOX, LID):
+        docs[n].recompute()
+
+    # ---- 4. Retire the misnamed fit Params if nothing references them ------
+    for old in RETIRE:
+        refs = []
+        for dn, d in docs.items():
+            for o in d.Objects:
+                for path, expr in (getattr(o, "ExpressionEngine", None) or []):
+                    if old in expr:
+                        refs.append("%s/%s.%s" % (dn, o.Name, path))
+        if refs:
+            log("%s STILL REFERENCED, kept: %s" % (old, refs))
+        elif old in vs.PropertiesList:
+            vs.removeProperty(old)
+            log("Param %s RETIRED (0 references)" % old)
+    for n in (PAR, BOX, LID):
+        docs[n].recompute()
+
+    # ---- 5. GATES -----------------------------------------------------------
+    F = rep["fails"]
+    for n in (BOX, LID):
+        st = [o.Name for o in docs[n].Objects
+              if set(o.State or []) & {"Touched", "Invalid", "Error"}]
+        if st:
+            F.append("%s stale/invalid after recompute: %s" % (n, st))
+    for name, _, _ in LID_SKETCHES:
+        sk = docs[LID].getObject(name)
+        info = (sk.DoF, sk.FullyConstrained, list(sk.RedundantConstraints),
+                list(sk.ConflictingConstraints), list(sk.MalformedConstraints))
+        log("%s DoF %d full %s red %s conf %s mal %s" % ((name,) + info))
+        if info[0] != 0 or not info[1] or info[2] or info[3] or info[4]:
+            F.append("%s not cleanly fully constrained" % name)
+
+    H = float(vs.Height)
+    z_lid = H + float(vs.LidSeatClearance)
+    depth = float(vs.MagnetPocketDepth)
+    want_box = dia + 2 * float(vs.MagnetFitBoxRim)
+    want_W, want_A = 2 * h, 2 * R
+    bs, ps = box_body.Shape, plate.Shape
+    meas = {}
+    for sx in (1.0, -1.0):
+        cx = sx * cx_val
+        k = "+x" if sx > 0 else "-x"
+        zb = H - depth / 2
+        zl = z_lid + depth / 2
+        m = {
+            "box_X": void_width(bs, Vector(cx - 3, cy_val, zb), Vector(cx + 3, cy_val, zb), 3.0),
+            "box_Y": void_width(bs, Vector(cx, cy_val - 3, zb), Vector(cx, cy_val + 3, zb), 3.0),
+            "lid_X_flats": void_width(ps, Vector(cx - 3, cy_val, zl), Vector(cx + 3, cy_val, zl), 3.0),
+            "lid_Y_arcs": void_width(ps, Vector(cx, cy_val - 3, zl), Vector(cx, cy_val + 3, zl), 3.0),
+            "lid_X_mouth": void_width(ps, Vector(cx - 3, cy_val, z_lid + 0.05),
+                                      Vector(cx + 3, cy_val, z_lid + 0.05), 3.0),
+            "lid_Y_mouth": void_width(ps, Vector(cx, cy_val - 3, z_lid + 0.05),
+                                      Vector(cx, cy_val + 3, z_lid + 0.05), 3.0),
+            "box_depth": void_width(bs, Vector(cx, cy_val, H - 3), Vector(cx, cy_val, H + 0.001), 2.9),
+            "lid_depth": void_width(ps, Vector(cx, cy_val, z_lid - 0.001), Vector(cx, cy_val, z_lid + 3), 0.1),
+        }
+        m = {kk: round(v, 4) for kk, v in m.items()}
+        meas[k] = m
+        log("%s %s" % (k, m))
+        for key, want in (("box_X", want_box), ("box_Y", want_box),
+                          ("lid_X_flats", want_W), ("lid_Y_arcs", want_A)):
+            if abs(m[key] - want) > TOL:
+                F.append("%s %s = %.4f, want %.4f" % (k, key, m[key], want))
+        if not m["lid_X_mouth"] > want_W + 0.3:
+            F.append("%s lid lead-in missing on the flats (%.4f)" % (k, m["lid_X_mouth"]))
+        if not m["lid_Y_mouth"] > want_A + 0.3:
+            F.append("%s lid lead-in missing on the arcs (%.4f)" % (k, m["lid_Y_mouth"]))
+        # the probe runs from below the mouth plane / to above the rim, so allow its overshoot
+        if abs(m["lid_depth"] - depth - 0.001) > TOL:
+            F.append("%s lid depth %.4f != %.4f" % (k, m["lid_depth"], depth))
+        if abs(m["box_depth"] - depth - 0.001) > TOL:
+            F.append("%s box depth %.4f != %.4f" % (k, m["box_depth"], depth))
+    rep["measured"] = meas
+    rep["want"] = {"box": want_box, "lid_flats": want_W, "lid_arcs": want_A}
+    for key in ("box_X", "lid_X_flats", "lid_Y_arcs"):
+        if abs(meas["+x"][key] - meas["-x"][key]) > 1e-4:
+            F.append("asymmetric %s: %s vs %s" % (key, meas["+x"][key], meas["-x"][key]))
+
+    inter = bs.common(ps).Volume
+    gap1 = bs.distToShape(ps)[0]
+    log("closed plate vs box: interference %.6f, gap %.4f -> %.4f" % (inter, gap0, gap1))
+    if inter > 1e-6:
+        F.append("closed lid plate interferes with box: %.6f mm3" % inter)
+    if abs(gap1 - gap0) > 1e-4:
+        F.append("closed gap moved %.4f -> %.4f" % (gap0, gap1))
+
+    for n in (BOX, LID):
+        b0, b1 = bad(before[n]), bad(chain_validity(docs[n]))
+        log("%s chain-invalid %d -> %d" % (n, len(b0), len(b1)))
+        if len(b1) > len(b0):
+            F.append("%s invalid count grew: %s" % (n, sorted(set(b1) - set(b0))))
+    for n in (BOX, LID):
+        for o in docs[n].Objects:
+            if o.TypeId != "PartDesign::Body":
+                continue
+            sh = o.Shape
+            if not (sh.isValid() and sh.isClosed() and len(sh.Solids) == 1):
+                F.append("%s/%s tip not one valid closed solid" % (n, o.Name))
+    for tag, sh in (("box", bs), ("plate", ps)):
+        msh = MeshPart.meshFromShape(Shape=sh, LinearDeflection=0.02, AngularDeflection=0.1)
+        ok = (msh.isSolid(), not msh.hasNonManifolds(), not msh.hasSelfIntersections())
+        log("mesh %s solid %s manifold %s no-self-int %s" % ((tag,) + ok))
+        if not all(ok):
+            F.append("%s mesh not clean %s" % (tag, ok))
+
+    # ---- ROUND TRIP to the largest variant and back -------------------------
+    # The first build of the lid sketches passed every gate above and then flipped to a
+    # degenerate solution during macro 41's Alchemy rows. Prove it at the size jump.
+    plate0, box0 = ps.copy(), bs.copy()
+    keep = {"CardCount": int(vs.CardCount)}
+    keep.update({k: float(getattr(vs, k)) for k in ("CardPitch", "CardLength", "CardWidth")})
+    try:
+        vs.CardCount, vs.CardPitch, vs.CardLength, vs.CardWidth = 100, 0.7033, 125.0, 90.0
+        for n in (PAR, BOX, LID):
+            docs[n].recompute()
+        acx = float(vs.Width) / 2 - float(vs.SideWallThickness) / 2
+        acy = -float(vs.Depth) / 2 + float(vs.MagnetFromFront)
+        aH = float(vs.Height)
+        azl = aH + float(vs.LidSeatClearance)
+        abs_, aps = box_body.Shape, plate.Shape
+        rt = {}
+        for sx in (1.0, -1.0):
+            cx = sx * acx
+            zb, zl = aH - depth / 2, azl + depth / 2
+            rt[sx] = [void_width(abs_, Vector(cx - 3, acy, zb), Vector(cx + 3, acy, zb), 3.0),
+                      void_width(aps, Vector(cx - 3, acy, zl), Vector(cx + 3, acy, zl), 3.0),
+                      void_width(aps, Vector(cx, acy - 3, zl), Vector(cx, acy + 3, zl), 3.0),
+                      void_width(aps, Vector(cx - 3, acy, azl + 0.05), Vector(cx + 3, acy, azl + 0.05), 3.0)]
+            log("alchemy100 %+d: box %.4f flats %.4f arcs %.4f flats-at-mouth %.4f"
+                % ((sx,) + tuple(rt[sx])))
+            for got, want, what in ((rt[sx][0], want_box, "box"), (rt[sx][1], want_W, "flats"),
+                                    (rt[sx][2], want_A, "arcs")):
+                if abs(got - want) > TOL:
+                    F.append("alchemy100 %+d %s %.4f != %.4f" % (sx, what, got, want))
+            if not rt[sx][3] > want_W + 0.3:
+                F.append("alchemy100 %+d lead-in missing on the flats (%.4f)" % (sx, rt[sx][3]))
+        for name, _, _ in LID_SKETCHES:
+            sk = docs[LID].getObject(name)
+            if sk.DoF != 0 or sk.MalformedConstraints or sk.ConflictingConstraints:
+                F.append("alchemy100: %s DoF %d" % (name, sk.DoF))
+    finally:
+        for k, v in keep.items():
+            setattr(vs, k, v)
+        for n in (PAR, BOX, LID):
+            docs[n].recompute()
+    dp = [plate0.cut(plate.Shape).Volume, plate.Shape.cut(plate0).Volume]
+    db = [box0.cut(box_body.Shape).Volume, box_body.Shape.cut(box0).Volume]
+    rep["round_trip_diff"] = {"plate": dp, "box": db}
+    log("round trip boolean diff: plate %s  box %s" % (dp, db))
+    if max(dp + db) > 1e-3:
+        F.append("round trip did not return: plate %s box %s" % (dp, db))
+    bs, ps = box_body.Shape, plate.Shape
+
+    rep["volume"] = {"box": [round(vol0["box"], 4), round(bs.Volume, 4)],
+                     "plate": [round(vol0["plate"], 4), round(ps.Volume, 4)]}
+    log("volume box %.4f -> %.4f   plate %.4f -> %.4f"
+        % (vol0["box"], bs.Volume, vol0["plate"], ps.Volume))
+
+
+try:
+    main()
+except Exception:
+    rep["fails"].append("EXCEPTION: " + traceback.format_exc()[-1200:])
+rep["ok"] = not rep["fails"]
+log("ALL GATES PASS - NOT SAVED" if rep["ok"] else "FAILED: %s" % rep["fails"])
+with open(REPORT, "w") as fh:
+    json.dump(rep, fh, indent=1)

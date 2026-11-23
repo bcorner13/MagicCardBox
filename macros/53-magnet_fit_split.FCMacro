@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """
+SUPERSEDED BY MACRO 63 (2026-11-23) - DO NOT RUN. Its two Params were retired; re-running
+would recreate them with the old, backwards-labelled values.
+
 53 - Split MagnetFit into per-ORIENTATION knobs.
 
 WHY
