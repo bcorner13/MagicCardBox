@@ -3348,4 +3348,6 @@ MagnetFitHorizontal / MagnetFitVertical   RETIRED (0 references; names were back
   vs 3). Copied byte-identical to `gcode/MagnetFitCoupon-sideways-v2.slicer-project.3mf`, then
   the tracked file was restored from git. Same `last_export_path` drift as the `3mf/` files.
 - **Saved 2026-11-23** (Params, MagicCardBox, Lid; audit clean). First box test of these pockets:
-  **60-fluted-label on the Core One L in CR-PETG** (Bradley).
+  **60-fluted-label in CR-PETG** - planned for the Core One L, but sent to the **K2** (Core One
+  busy). The pockets carry the Core One L fit values, so the magnet result is K2 data and does
+  not validate the Core One L profile.
