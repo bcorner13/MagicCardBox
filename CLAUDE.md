@@ -3409,3 +3409,12 @@ Recipe used: config from the 2026-11-16 Alchemy project (0.15 BALANCED) + the us
 (otherwise "outside of the print volume"), `binary_gcode = 0` for a readable check copy.
 Result: 565 layers, 5 h 17 m, 99 g. Prusa Connect's cloud slicer CANNOT do this (only
 draft/normal/detail).
+
+**Height-range modifier in a 3MF (2026-11-24), measured:** PrusaSlicer 2.9.7 reads ranges
+only from `Metadata/Prusa_Slicer_layer_config_ranges.xml`. A file named
+`Metadata/layer_config_ranges.xml` is silently ignored (0 of 20 band layers at 0.08). With the
+right name and `variable_layer_height = 0`: 0.20 base, 50 layers at exactly 0.080 over
+z 3.08–7.00. The GUI's "0.20mm STRUCTURAL" on the HF0.4 printer is the preset
+`0.20mm STRUCTURAL @COREONEL 0.4` (`*C1L_Shared04*` accepts high-flow nozzles too) — do not
+search for an `HF0.4`-suffixed name and conclude it is missing. Tarot with the band:
+STRUCTURAL 5 h 41 m, BALANCED HF0.4 4 h 24 m, SPEED HF0.4 4 h 00 m, 0.15 + VLH band 5 h 17 m.
