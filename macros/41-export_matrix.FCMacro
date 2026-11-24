@@ -386,6 +386,15 @@ def run():
                 Mesh.export([obj], tmf)
             finally:
                 FreeCAD.closeDocument("MCB_Exp")
+            # PrusaSlicer height ranges (ramp 0.08, hinge 0.20, magnet pockets 0.15) -
+            # scripts/inject_layer_ranges.py, proven on the tarot78 print 2026-11-24.
+            try:
+                import inject_layer_ranges
+                importlib.reload(inject_layer_ranges)
+                _h, _bands = inject_layer_ranges.inject(tmf)
+                row["layer_ranges"] = [list(b) for b in _bands]
+            except Exception as exc:
+                row["problems"].append("layer ranges not injected: %s" % exc)
 
             m = Mesh.Mesh(stl)
             row["facets"] = m.CountFacets

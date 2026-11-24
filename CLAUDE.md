@@ -1962,7 +1962,7 @@ boolean 0). Unverified.
 `100-fluted` Creality, `60-fluted` PrusaSlicer 2026-11-13) — the `last_export_path` drift this
 file already warns about. Copied byte-identical to `gcode/MagicCardBox-<tag>.slicer-project.3mf`
 **before** the export overwrote them. `gcode/` is gitignored: those copies are local only.
-**Check `3mf/` entry counts before any export** — 4 entries is a deliverable, 16+ is a project.
+**Check `3mf/` entry counts before any export** — 4 entries (5 since 2026-11-24, with layer ranges) is a deliverable, 16+ is a project.
 
 ## SIXTEENTH ROUND — 2026-11-15 — the first Alchemy print, and an absolute value in a relative frame (macro 59)
 
@@ -3418,3 +3418,23 @@ z 3.08–7.00. The GUI's "0.20mm STRUCTURAL" on the HF0.4 printer is the preset
 `0.20mm STRUCTURAL @COREONEL 0.4` (`*C1L_Shared04*` accepts high-flow nozzles too) — do not
 search for an `HF0.4`-suffixed name and conclude it is missing. Tarot with the band:
 STRUCTURAL 5 h 41 m, BALANCED HF0.4 4 h 24 m, SPEED HF0.4 4 h 00 m, 0.15 + VLH band 5 h 17 m.
+
+### Layer bands in every deliverable 3MF (2026-11-24)
+
+All 14 `3mf/` files now carry `Metadata/Prusa_Slicer_layer_config_ranges.xml`, written by
+`scripts/inject_layer_ranges.py` and re-applied by macro 41 on every export:
+
+```
+print z 0–3      0.20   so the ramp band starts exactly at 3.08
+print z 3–7      0.08   the ~20° rear ramp (same z on every card size)
+print z 7–16     0.20   hinge clearance zone
+top-11 .. top-4  0.15   lid magnet pockets (print z = Depth - 4); MTG 66–73, Alchemy 90–97, tarot 70–77
+elsewhere        the profile's own height (0.25mm SPEED @COREONEL HF0.4 used)
+```
+
+Geometry (`3D/3dmodel.model`) is byte-identical to the previous commit in all 14. Every file
+was sliced with the PrusaSlicer CLI and every band checked layer by layer: zero misses.
+Core One L times at 0.25 SPEED + bands: MTG 2 h 54 m – 4 h 15 m, Alchemy 4 h 08 m – 6 h 26 m,
+tarot 3 h 36 m. **A deliverable now has 5 entries** (model, rels, content types, thumbnail,
+ranges); a slicer project still has many more. These ranges are PrusaSlicer-only — Creality
+Print has not been tested against them.
