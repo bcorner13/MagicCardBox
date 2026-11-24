@@ -133,6 +133,8 @@ THICK_SLEEVE = 0.7033
 # measured Alchemy stack may justify its own pitch later.
 MTG = (93.0, 66.0)
 ALCHEMY = (125.0, 90.0)
+TAROT = (120.0, 70.0)    # bare tarot, Bradley 2026-11-24
+TAROT_BARE = 0.34        # mm/card, from cardstock spec: 300-350 GSM = 0.30-0.33 mm (Bradley), +0.01 margin. Not yet a stack measurement.
 
 #        cards, pitch,        card size, flutes, label, tag
 MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
@@ -141,6 +143,9 @@ MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
           (60,  THICK_SLEEVE, MTG,     False, False, "60-smooth"),
           (60,  THICK_SLEEVE, MTG,     True,  False, "60-fluted"),
           (60,  THICK_SLEEVE, MTG,     True,  True,  "60-fluted-label"),
+          # Tarot 78 (Bradley 2026-11-24): 120 x 70 bare cards. Height = 78*0.34 + 1 + 2 = 29.52,
+          # the LOWEST box ever built (previous minimum 45.2) - the per-variant gates must pass.
+          (78,  TAROT_BARE,   TAROT,   True,  False, "tarot78-fluted"),
           (60,  THICK_SLEEVE, ALCHEMY, False, False, "alchemy60-smooth"),
           (60,  THICK_SLEEVE, ALCHEMY, True,  False, "alchemy60-fluted"),
           (60,  THICK_SLEEVE, ALCHEMY, True,  True,  "alchemy60-fluted-label"),
@@ -159,15 +164,27 @@ MATRIX = [(100, THIN_SLEEVE,  MTG,     False, False, "100-smooth"),
 #   MagnetFitBoxRim       box rim bore (opens UP in print)       Ø = MagnetDia + 2*fit
 #   MagnetFitLidArc       lid double-D arcs (opens SIDEWAYS)     Ø = MagnetDia + 2*fit
 #   MagnetLidFlatSqueeze  lid double-D flats, INTERFERENCE       W = MagnetDia - 2*squeeze
-# Only the Core One L + CR-PETG coupons exist, so the exports carry that profile and the
-# file names are unchanged. When a second profile is added (K2 + CR-PETG), put the
-# profile key into the export file name so the two sets cannot be confused.
+# The Core One L profile came first, so its files keep the plain names (they are the
+# tracked deliverables). Every other profile carries PROFILE_FILE_SUFFIX in the file
+# name, so a K2 file can never be mistaken for a Core One L file.
 FIT_PROFILES = {
     "CoreOneL-CR-PETG": {"MagnetFitBoxRim": 0.095,      # Ø4.15 plain round held
                          "MagnetFitLidArc": 0.22,       # Ø4.40, as coupon v2
                          "MagnetLidFlatSqueeze": 0.03},  # W 3.90 held
+    # K2 Plus + Hyper PETG (filament_settings_id read off the K2 slice, 2026-11-23).
+    # From a BOX print, not a coupon: the Core One L values printed with the box rim
+    # "tight but hold" (kept) and the lid double-D at W 3.90 loose. Bradley picked the
+    # next coupon step tighter: W 3.85 -> squeeze (3.96 - 3.85) / 2 = 0.055.
+    "K2-Hyper-PETG":    {"MagnetFitBoxRim": 0.095,      # Ø4.15, tight but holds
+                         "MagnetFitLidArc": 0.22,       # Ø4.40, unchanged
+                         "MagnetLidFlatSqueeze": 0.055},  # W 3.85, UNTESTED
 }
-EXPORT_FIT_PROFILE = "CoreOneL-CR-PETG"
+PROFILE_FILE_SUFFIX = {"CoreOneL-CR-PETG": "",
+                       "K2-Hyper-PETG": "-K2"}
+# Pre-seed MCB41_PROFILE = "K2-Hyper-PETG" in the exec namespace to export another profile.
+EXPORT_FIT_PROFILE = globals().get("MCB41_PROFILE") or "CoreOneL-CR-PETG"
+if EXPORT_FIT_PROFILE not in FIT_PROFILES:
+    raise RuntimeError("unknown fit profile %r" % EXPORT_FIT_PROFILE)
 
 
 def apply_fit_profile(name):
@@ -362,8 +379,9 @@ def run():
                 obj = doc.addObject("Part::Feature", "part")
                 obj.Shape = comb
                 doc.recompute()
-                stl = os.path.join(PROJ, "stl", "MagicCardBox-%s.stl" % tag)
-                tmf = os.path.join(PROJ, "3mf", "MagicCardBox-%s.3mf" % tag)
+                sfx = PROFILE_FILE_SUFFIX[EXPORT_FIT_PROFILE]
+                stl = os.path.join(PROJ, "stl", "MagicCardBox-%s%s.stl" % (tag, sfx))
+                tmf = os.path.join(PROJ, "3mf", "MagicCardBox-%s%s.3mf" % (tag, sfx))
                 Mesh.export([obj], stl)
                 Mesh.export([obj], tmf)
             finally:

@@ -3351,3 +3351,61 @@ MagnetFitHorizontal / MagnetFitVertical   RETIRED (0 references; names were back
   **60-fluted-label in CR-PETG** - planned for the Core One L, but sent to the **K2** (Core One
   busy). The pockets carry the Core One L fit values, so the magnet result is K2 data and does
   not validate the Core One L profile.
+
+## 2026-11-23 — first box with the coupon pockets (K2), and a K2 fit profile
+
+Printed **60-fluted-label on the K2 Plus in Hyper PETG** (the slice's `filament_settings_id`;
+macro 63 assumed CR-PETG), carrying the Core One L values. Bradley, off the plate:
+
+- **Hinge: no binding.** Macro 62's teardrop socket ceiling is confirmed by the object.
+- **Box rim magnets (Ø4.15 round): tight but hold.** Kept.
+- **Lid magnets (double-D W 3.90): too loose.** Bradley picked the next coupon step tighter,
+  **W 3.85** → `MagnetLidFlatSqueeze` 0.055. NOT yet tested on a print.
+
+**Macro 41 now has a second fit profile, `K2-Hyper-PETG`**, and K2 exports carry a `-K2`
+suffix (`PROFILE_FILE_SUFFIX`); Core One L files keep their plain names. Choose the profile
+without editing the file by pre-seeding `MCB41_PROFILE` (like `MCB41_ONLY`). The model's
+saved Params still hold the Core One L values; the profile is applied only during export
+and then restored.
+
+Measured with the K2 values (banner verified) at 60 MTG AND alchemy100: flats **3.850**
+both sides, arcs 4.400, box 4.150, lead-in present (4.35 at 0.05 below the mouth), closed
+plate gap 0.150, interference 0, chain-invalid 8/0 unchanged, restore 0/0 on all bodies.
+Exported only `60-fluted-label-K2`: `all_ok`, gap 0.4, ramp 19.88°, 33626 facets.
+
+### Delamination under the hinge — the slice, not the model
+
+Photo: wavy, unbonded strands in the middle of the rear ramp's underside. The K2 slice
+(`0.16mm Standard`, 481 layers / 77 mm) had **variable layer height OFF** — every layer
+0.160 through the hinge band. At the ramp's 19.9° that is a 0.442 mm step per layer
+against a 0.42 line: each perimeter laid wholly in air (round 12's 105 % row). PETG's
+`additional_cooling_fan_speed` was 0 as well. Fix in the slicer: a **0.08 height-range
+modifier over print z ~3–9** (or variable layer height on), and more aux fan for PETG
+overhangs. The geometry is at its ceiling (20.67°); don't chase this in CAD.
+
+**K2 re-slice for the W 3.85 print (2026-11-23), checked from the gcode:** variable layer
+height at Quality/Speed 0.40 left the 19.9° ramp band (print z 4.3–5.6) at a flat **0.125**
+(82 % step). A Creality **height-range modifier (z 4–6.2 @ 0.08) was ignored while a
+variable-layer-height curve existed** — observed: same 322 layers, same heights. Re-applying
+VLH at **Quality/Speed 0.25, Smooth 5** gave 0.080 across z 3.2–6.3 (52 % step), 418 layers,
+3 h 10 m (`gcode/Object_1_PETG_3h10m.gcode`). Always read the layer heights out of the
+gcode; the preview's layer count is the quick tell.
+
+## 2026-11-24 — Tarot 78 (client request), and a PrusaSlicer CLI slice with a ramp band
+
+New product row in macro 41: **`tarot78-fluted`** — 78 bare cards, 120 x 70, `TAROT_BARE`
+0.34 mm/card (from the 300–350 GSM cardstock spec, 0.30–0.33, +0.01; NOT a stack
+measurement). Requested by a client for her decks; doubles as the Core One L test of the
+macro-62 teardrop, the coupon magnet fits and the ramp layer band. Height 29.52 — the
+lowest box ever built (previous minimum 45.2); macro 41's gates passed (gap 0.4, ramp
+19.88°, 2 components), restore 0/0. Print bbox 143.81 x 102.78 x 81.0.
+
+**PrusaSlicer 2.9.7's CLI is installed** at `/Applications/Original Prusa Drivers/
+PrusaSlicer.app/Contents/MacOS/PrusaSlicer`. A ramp band can be written into a project as
+`Metadata/Slic3r_PE_layer_heights_profile.txt` (`object_id=1|z;h;z;h;...`, linearly
+interpolated) and the CLI honours it — verified from the gcode: 0.080 on every layer z 3–7.
+Recipe used: config from the 2026-11-16 Alchemy project (0.15 BALANCED) + the user
+`Creality CR-PETG @COREONE HF0.4` filament, `support_material = 0`, `--center 150,150`
+(otherwise "outside of the print volume"), `binary_gcode = 0` for a readable check copy.
+Result: 565 layers, 5 h 17 m, 99 g. Prusa Connect's cloud slicer CANNOT do this (only
+draft/normal/detail).
